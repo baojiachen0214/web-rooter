@@ -1,0 +1,24 @@
+# Web Crawling & Scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+html5lib>=1.1
+
+# Browser Automation
+playwright>=1.40.0
+
+# HTTP Server
+fastapi>=0.109.0
+uvicorn>=0.27.0
+
+# Async Support
+aiohttp>=3.9.0
+asyncio>=3.12.0
+
+# Utilities
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+
+# MCP SDK (for AI agent integration)
+mcp>=1.0.0

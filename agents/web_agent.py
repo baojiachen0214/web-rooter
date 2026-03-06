@@ -1,0 +1,941 @@
+"""
+AI Web Agent - 自然语言网页访问接口
+"""
+import asyncio
+import re
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Callable
+from datetime import datetime
+import logging
+
+from core.crawler import Crawler, CrawlResult
+from core.parser import Parser, ExtractedData
+from core.browser import BrowserManager, BrowserResult
+from core.search_engine import (
+    SearchEngine,
+    SearchResponse,
+    SearchResult,
+    MultiSearchEngine,
+)
+from core.academic_search import (
+    AcademicSource,
+    PaperResult,
+    CodeProjectResult,
+    AcademicSearchEngine,
+    is_academic_query,
+    academic_search,
+    code_search,
+)
+from core.form_search import (
+    FormFiller,
+    SearchFormResult,
+    auto_search,
+)
+from config import crawler_config
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentResponse:
+    """Agent 响应"""
+    success: bool
+    content: str
+    data: Optional[Dict[str, Any]] = None
+    urls: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "content": self.content,
+            "data": self.data,
+            "urls": self.urls,
+            "error": self.error,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class PageKnowledge:
+    """页面知识缓存"""
+    url: str
+    title: str
+    content: str
+    links: List[Dict[str, str]]
+    extracted_info: Dict[str, Any]
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+class WebAgent:
+    """
+    AI Web Agent
+
+    提供自然语言接口来访问和爬取网页
+    """
+
+    def __init__(self):
+        self._crawler: Optional[Crawler] = None
+        self._browser: Optional[BrowserManager] = None
+        self._search_engine: Optional[MultiSearchEngine] = None
+        self._academic_engine: Optional[AcademicSearchEngine] = None
+        self._form_filler: Optional[FormFiller] = None
+        self._cache: Dict[str, PageKnowledge] = {}
+        self._visited_urls: set = set()
+        self._knowledge_base: List[PageKnowledge] = []
+        self._search_cache: Dict[str, SearchResponse] = {}
+        self._academic_cache: Dict[str, List[PaperResult]] = {}
+
+    async def __aenter__(self) -> "WebAgent":
+        await self._init()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    async def _init(self):
+        """初始化"""
+        self._crawler = Crawler()
+        self._browser = None  # 延迟初始化
+
+    async def _ensure_browser(self):
+        """确保浏览器已初始化"""
+        if self._browser is None:
+            self._browser = BrowserManager()
+            await self._browser.start()
+
+    async def close(self):
+        """关闭"""
+        if self._crawler:
+            await self._crawler.close()
+        if self._browser:
+            await self._browser.close()
+        if self._search_engine:
+            await self._search_engine.close()
+        if self._academic_engine:
+            await self._academic_engine.close()
+        if self._form_filler:
+            await self._form_filler.close()
+        self._browser = None
+        self._search_engine = None
+        self._academic_engine = None
+        self._form_filler = None
+
+    # ==================== 核心方法 ====================
+
+    async def visit(self, url: str, use_browser: bool = False) -> AgentResponse:
+        """
+        访问网页
+
+        Args:
+            url: 目标 URL
+            use_browser: 是否使用浏览器（用于 JS 渲染页面）
+
+        Returns:
+            AgentResponse: 访问结果
+        """
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        self._visited_urls.add(url)
+
+        try:
+            if use_browser:
+                result = await self._browser_fetch(url)
+                # BrowserResult 使用 error 字段判断成功与否
+                if result.error is None and result.html:
+                    # 解析内容
+                    parser = Parser().parse(result.html, url)
+                    extracted = parser.extract()
+
+                    # 缓存知识
+                    knowledge = PageKnowledge(
+                        url=url,
+                        title=extracted.title,
+                        content=extracted.text,
+                        links=extracted.links[:20],  # 限制链接数量
+                        extracted_info=extracted.metadata,
+                    )
+                    self._cache[url] = knowledge
+                    self._knowledge_base.append(knowledge)
+
+                    return AgentResponse(
+                        success=True,
+                        content=f"已访问：{extracted.title}\n\n{extracted.text[:2000]}",
+                        data=extracted.to_dict(),
+                        urls=[link["href"] for link in extracted.links[:10]],
+                        metadata={
+                            "url": result.url,
+                            "title": result.title,
+                        },
+                    )
+                else:
+                    return AgentResponse(
+                        success=False,
+                        content=f"访问失败：{url}",
+                        error=result.error or "Empty content",
+                    )
+            else:
+                result = await self._crawler_fetch(url)
+
+                if result.success:
+                    # 解析内容
+                    parser = Parser().parse(result.html, url)
+                    extracted = parser.extract()
+
+                    # 缓存知识
+                    knowledge = PageKnowledge(
+                        url=url,
+                        title=extracted.title,
+                        content=extracted.text,
+                        links=extracted.links[:20],  # 限制链接数量
+                        extracted_info=extracted.metadata,
+                    )
+                    self._cache[url] = knowledge
+                    self._knowledge_base.append(knowledge)
+
+                    return AgentResponse(
+                        success=True,
+                        content=f"已访问：{extracted.title}\n\n{extracted.text[:2000]}",
+                        data=extracted.to_dict(),
+                        urls=[link["href"] for link in extracted.links[:10]],
+                        metadata={
+                            "status_code": result.status_code,
+                            "response_time": result.response_time,
+                        },
+                    )
+                else:
+                    return AgentResponse(
+                        success=False,
+                        content=f"访问失败：{url}",
+                        error=result.error,
+                    )
+
+        except Exception as e:
+            logger.exception(f"Error visiting {url}")
+            return AgentResponse(
+                success=False,
+                content=f"访问失败：{url}",
+                error=str(e),
+            )
+
+    async def search(self, query: str, url: Optional[str] = None) -> AgentResponse:
+        """
+        在已访问的页面或指定页面中搜索信息
+
+        Args:
+            query: 搜索关键词
+            url: 可选的目标 URL
+
+        Returns:
+            AgentResponse: 搜索结果
+        """
+        results = []
+
+        # 如果指定了 URL，先访问
+        if url and url not in self._cache:
+            visit_result = await self.visit(url)
+            if not visit_result.success:
+                return visit_result
+
+        # 在所有已知内容中搜索
+        for knowledge in self._knowledge_base:
+            if query.lower() in knowledge.content.lower():
+                # 找到相关段落
+                content_snippets = self._find_relevant_snippets(
+                    knowledge.content, query, num_snippets=3
+                )
+                results.append({
+                    "url": knowledge.url,
+                    "title": knowledge.title,
+                    "snippets": content_snippets,
+                })
+
+        if results:
+            content = self._format_search_results(results)
+            return AgentResponse(
+                success=True,
+                content=content,
+                data={"results": results},
+                urls=[r["url"] for r in results],
+            )
+        else:
+            return AgentResponse(
+                success=False,
+                content=f"未找到关于 '{query}' 的信息",
+            )
+
+    async def extract(self, url: str, target_info: str) -> AgentResponse:
+        """
+        从网页提取特定信息
+
+        Args:
+            url: 目标 URL
+            target_info: 要提取的信息描述
+
+        Returns:
+            AgentResponse: 提取结果
+        """
+        # 访问页面
+        visit_result = await self.visit(url)
+        if not visit_result.success:
+            return visit_result
+
+        knowledge = self._cache.get(url)
+        if not knowledge:
+            return AgentResponse(
+                success=False,
+                content="页面内容不可用",
+            )
+
+        # 智能提取
+        extracted = self._intelligent_extract(knowledge, target_info)
+
+        return AgentResponse(
+            success=True,
+            content=f"从 {knowledge.title} 提取的信息:\n\n{extracted}",
+            data={"extracted": extracted},
+        )
+
+    async def crawl(
+        self,
+        start_url: str,
+        max_pages: int = 10,
+        max_depth: int = 3,
+        pattern: Optional[str] = None,
+    ) -> AgentResponse:
+        """
+        深度爬取网站
+
+        Args:
+            start_url: 起始 URL
+            max_pages: 最大页面数
+            max_depth: 最大深度
+            pattern: URL 匹配模式（正则）
+
+        Returns:
+            AgentResponse: 爬取结果
+        """
+        url_pattern = re.compile(pattern) if pattern else None
+        crawled = []
+        to_visit = [(start_url, 0)]  # (url, depth)
+
+        while to_visit and len(crawled) < max_pages:
+            url, depth = to_visit.pop(0)
+
+            if depth > max_depth or url in [c["url"] for c in crawled]:
+                continue
+
+            # 访问页面
+            result = await self.visit(url)
+            if result.success:
+                page_data = {
+                    "url": url,
+                    "title": result.data["title"] if result.data else "",
+                    "depth": depth,
+                }
+                crawled.append(page_data)
+                logger.info(f"Crawled [{depth}]: {url}")
+
+                # 添加新链接
+                if result.urls:
+                    for link_url in result.urls:
+                        if url_pattern is None or url_pattern.match(link_url):
+                            to_visit.append((link_url, depth + 1))
+
+        return AgentResponse(
+            success=True,
+            content=f"爬取完成，共 {len(crawled)} 个页面",
+            data={"pages": crawled},
+            urls=[c["url"] for c in crawled],
+        )
+
+    # ==================== 互联网搜索方法 ====================
+
+    async def search_internet(
+        self,
+        query: str,
+        engines: Optional[List[SearchEngine]] = None,
+        num_results: int = 10,
+        auto_crawl: bool = False,
+        crawl_pages: int = 3,
+    ) -> AgentResponse:
+        """
+        互联网搜索 - 支持多引擎并行搜索
+
+        Args:
+            query: 搜索关键词
+            engines: 搜索引擎列表，None 则自动选择
+            num_results: 结果数量
+            auto_crawl: 是否自动爬取搜索结果页面
+            crawl_pages: 自动爬取的页面数
+
+        Returns:
+            AgentResponse: 搜索结果
+        """
+        # 确保搜索引擎初始化
+        if self._search_engine is None:
+            self._search_engine = MultiSearchEngine()
+
+        # 执行搜索
+        if engines is None:
+            engines = self._select_search_engines(query)
+
+        responses = await self._search_engine.search(
+            query, engines, num_results, deduplicate=True, parallel=True
+        )
+
+        # 检查错误
+        failed = [r for r in responses if r.error]
+        success = [r for r in responses if r.error is None]
+
+        if not success:
+            return AgentResponse(
+                success=False,
+                content=f"搜索失败：{', '.join(f.error for f in failed)}",
+            )
+
+        # 合并结果
+        all_results = []
+        for response in success:
+            all_results.extend(response.results)
+
+        # 去重
+        seen_urls = set()
+        unique_results = []
+        for result in all_results:
+            if result.url not in seen_urls:
+                seen_urls.add(result.url)
+                unique_results.append(result)
+
+        # 自动爬取
+        crawled_content = []
+        if auto_crawl and unique_results:
+            crawled_content = await self._crawl_search_results(unique_results[:crawl_pages])
+
+        # 构建响应
+        content = self._format_search_results(unique_results, crawled_content)
+
+        return AgentResponse(
+            success=True,
+            content=content,
+            data={
+                "results": [r.to_dict() for r in unique_results],
+                "crawled_content": crawled_content,
+                "engines_used": [e.value for e in engines],
+            },
+            urls=[r.url for r in unique_results],
+            metadata={
+                "query": query,
+                "total_results": len(unique_results),
+                "engines": [r.engine for r in unique_results],
+            },
+        )
+
+    async def search_and_fetch(
+        self,
+        query: str,
+        num_results: int = 5,
+        fetch_content: bool = True,
+    ) -> AgentResponse:
+        """
+        搜索并获取内容 - 组合搜索和爬虫能力
+
+        Args:
+            query: 搜索关键词
+            num_results: 结果数量
+            fetch_content: 是否获取完整内容
+
+        Returns:
+            AgentResponse: 搜索结果和页面内容
+        """
+        # 第一步：搜索
+        search_result = await self.search_internet(
+            query, num_results=num_results, auto_crawl=fetch_content
+        )
+
+        if not search_result.success:
+            return search_result
+
+        # 第二步：访问结果页面（如果还没访问过）
+        visited = []
+        for url in search_result.urls[:num_results]:
+            if url not in self._visited_urls:
+                visit_result = await self.visit(url)
+                if visit_result.success:
+                    visited.append({
+                        "url": url,
+                        "title": visit_result.data.get("title") if visit_result.data else "",
+                        "content_preview": visit_result.content[:500],
+                    })
+
+        return AgentResponse(
+            success=True,
+            content=f"搜索完成，找到 {len(search_result.urls)} 个结果，获取了 {len(visited)} 个页面内容\n\n" + search_result.content,
+            data={
+                **search_result.data,
+                "visited_pages": visited,
+            },
+            urls=search_result.urls,
+        )
+
+    async def research_topic(
+        self,
+        topic: str,
+        max_searches: int = 3,
+        max_pages: int = 10,
+    ) -> AgentResponse:
+        """
+        深度研究主题 - 多次搜索 + 深度爬取
+
+        Args:
+            topic: 研究主题
+            max_searches: 最大搜索次数
+            max_pages: 最大爬取页面数
+
+        Returns:
+            AgentResponse: 研究结果
+        """
+        # 生成多个搜索查询
+        queries = self._generate_queries(topic, max_searches)
+
+        all_results = []
+        for query in queries:
+            result = await self.search_internet(query, num_results=5)
+            if result.success:
+                all_results.extend(result.data.get("results", []))
+
+        # 去重
+        seen_urls = set()
+        unique_urls = []
+        for r in all_results:
+            if r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                unique_urls.append(r["url"])
+
+        # 爬取结果
+        crawl_result = await self.crawl(
+            unique_urls[0] if unique_urls else topic,
+            max_pages=max_pages,
+            max_depth=2,
+        )
+
+        # 整合知识
+        knowledge = self.get_knowledge_base()
+
+        return AgentResponse(
+            success=True,
+            content=f"完成主题研究：{topic}\n\n" +
+                    f"执行了 {len(queries)} 次搜索\n" +
+                    f"爬取了 {len(knowledge)} 个页面\n\n" +
+                    self._format_knowledge_summary(knowledge),
+            data={
+                "topic": topic,
+                "queries": queries,
+                "search_results": all_results,
+                "knowledge": knowledge,
+            },
+            urls=unique_urls[:max_pages],
+        )
+
+    # ==================== 学术模式搜索方法 ====================
+
+    async def search_academic(
+        self,
+        query: str,
+        sources: Optional[List[AcademicSource]] = None,
+        num_results: int = 10,
+        fetch_abstracts: bool = True,
+        include_code: bool = False,
+    ) -> AgentResponse:
+        """
+        学术模式搜索 - 仅在论文/学术网站搜索
+
+        Args:
+            query: 搜索关键词
+            sources: 学术来源列表，None 则自动选择
+            num_results: 结果数量
+            fetch_abstracts: 是否获取论文摘要
+            include_code: 是否包含代码项目（GitHub/Gitee）
+
+        Returns:
+            AgentResponse: 学术搜索结果
+        """
+        # 确保学术引擎初始化
+        if self._academic_engine is None:
+            self._academic_engine = AcademicSearchEngine()
+
+        # 自动选择来源
+        if sources is None:
+            sources = self._select_academic_sources(query, include_code)
+
+        # 搜索论文
+        papers = []
+        if not include_code:
+            papers = await self._academic_engine.search_papers(
+                query, sources, num_results, fetch_abstracts
+            )
+
+        # 搜索代码项目
+        code_projects = []
+        if include_code:
+            code_sources = [s for s in sources if s in [AcademicSource.GITHUB, AcademicSource.GITEE]]
+            if code_sources:
+                code_projects = await self._academic_engine.search_code(query, code_sources, num_results)
+
+        # 缓存结果
+        self._academic_cache[query] = papers
+
+        # 构建响应
+        content = self._format_academic_results(papers, code_projects)
+
+        return AgentResponse(
+            success=True,
+            content=content,
+            data={
+                "papers": [p.to_dict() for p in papers],
+                "code_projects": [c.to_dict() for c in code_projects],
+                "sources": [s.value for s in sources],
+            },
+            urls=[p.url for p in papers] + [c.url for c in code_projects],
+            metadata={
+                "query": query,
+                "paper_count": len(papers),
+                "code_count": len(code_projects),
+            },
+        )
+
+    async def search_with_form(
+        self,
+        url: str,
+        query: str,
+        form_data: Optional[Dict[str, str]] = None,
+        use_browser: bool = True,
+        wait_for: Optional[str] = None,
+    ) -> AgentResponse:
+        """
+        填表搜索 - 在网站内部搜索框提交查询
+
+        Args:
+            url: 网站 URL 或搜索页面 URL
+            query: 搜索关键词
+            form_data: 自定义表单数据，None 则自动检测
+            use_browser: 是否使用浏览器
+            wait_for: 提交后等待的选择器
+
+        Returns:
+            AgentResponse: 填表搜索结果
+        """
+        # 确保表单填写器初始化
+        if self._form_filler is None:
+            self._form_filler = FormFiller()
+
+        # 自动检测并填写表单
+        if form_data is None:
+            result = await auto_search(url, query, use_browser=use_browser)
+        else:
+            result = await self._form_filler.fill_and_submit(
+                url, form_data, use_browser=use_browser, wait_for=wait_for
+            )
+
+        # 解析搜索结果
+        if result.success:
+            # 访问结果页面获取内容
+            visit_result = await self.visit(result.submitted_url)
+
+            content = f"搜索完成，找到 {result.result_count} 个结果\n\n"
+            if result.extracted_results:
+                content += "搜索结果:\n"
+                for i, r in enumerate(result.extracted_results[:10], 1):
+                    content += f"[{i}] {r.get('title', 'N/A')}\n"
+                    content += f"    {r.get('description', 'N/A')[:150]}...\n"
+                    content += f"    URL: {r.get('url', 'N/A')}\n\n"
+
+            return AgentResponse(
+                success=True,
+                content=content,
+                data=result.to_dict(),
+                urls=[r.get("url") for r in result.extracted_results if r.get("url")],
+                metadata={
+                    "query": query,
+                    "submitted_url": result.submitted_url,
+                    "result_count": result.result_count,
+                },
+            )
+        else:
+            return AgentResponse(
+                success=False,
+                content=f"搜索失败：{result.error}",
+                error=result.error,
+            )
+
+    # ==================== 内部辅助方法 ====================
+
+    def _select_academic_sources(
+        self,
+        query: str,
+        include_code: bool = False,
+    ) -> List[AcademicSource]:
+        """根据查询选择学术来源"""
+        sources = []
+
+        # 默认包含 arXiv 和 Google Scholar
+        sources.extend([AcademicSource.ARXIV, AcademicSource.GOOGLE_SCHOLAR])
+
+        # 中文查询添加 CNKI
+        if re.search(r"[\u4e00-\u9fff]", query):
+            sources.append(AcademicSource.CNKI)
+
+        # 生物医学相关添加 PubMed
+        if any(kw in query.lower() for kw in ["medical", "biology", "clinical", "医学", "生物"]):
+            sources.append(AcademicSource.PUBMED)
+
+        # 工程/电子相关添加 IEEE
+        if any(kw in query.lower() for kw in ["engineering", "electronic", "IEEE", "工程", "电子"]):
+            sources.append(AcademicSource.IEEE)
+
+        # 代码相关
+        if include_code or any(kw in query.lower() for kw in ["code", "github", "开源", "项目", "实现"]):
+            sources.extend([AcademicSource.GITHUB, AcademicSource.GITEE])
+            sources.append(AcademicSource.PAPER_WITH_CODE)
+
+        return sources
+
+    def _format_knowledge_summary(self, knowledge: List[Dict]) -> str:
+        """格式化知识摘要"""
+        lines = ["已获取的知识:\n"]
+        for k in knowledge[:10]:
+            lines.append(f"- {k['title']} ({k['url'][:50]}...)")
+        return "\n".join(lines)
+
+    def _select_search_engines(self, query: str) -> List[SearchEngine]:
+        """根据查询选择搜索引擎"""
+        engines = [SearchEngine.BING]  # Bing 默认
+
+        # 中文优先百度
+        if re.search(r"[\u4e00-\u9fff]", query):
+            engines.append(SearchEngine.BAIDU)
+
+        # 学术相关
+        if any(kw in query.lower() for kw in ["paper", "research", "论文", "研究", "学术", "journal"]):
+            engines.append(SearchEngine.GOOGLE_SCHOLAR)
+
+        return engines
+
+    def _format_academic_results(
+        self,
+        papers: List[PaperResult],
+        code_projects: List[CodeProjectResult],
+    ) -> str:
+        """格式化学术搜索结果"""
+        lines = []
+
+        if papers:
+            lines.append(f"=== 找到 {len(papers)} 篇论文 ===\n")
+            for i, p in enumerate(papers[:10], 1):
+                lines.append(f"[{i}] {p.title}")
+                lines.append(f"    作者：{', '.join(p.authors[:3]) if p.authors else 'N/A'}")
+                lines.append(f"    来源：{p.source}")
+                if p.publish_date:
+                    lines.append(f"    日期：{p.publish_date}")
+                if p.citations:
+                    lines.append(f"    引用：{p.citations}")
+                if p.abstract:
+                    lines.append(f"    摘要：{p.abstract[:200]}...")
+                if p.pdf_url:
+                    lines.append(f"    PDF: {p.pdf_url}")
+                lines.append("")
+
+        if code_projects:
+            lines.append(f"\n=== 找到 {len(code_projects)} 个代码项目 ===\n")
+            for i, c in enumerate(code_projects[:10], 1):
+                lines.append(f"[{i}] {c.name} ({c.source})")
+                lines.append(f"    语言：{c.language}")
+                lines.append(f"    Stars: {c.stars}, Forks: {c.forks}")
+                lines.append(f"    {c.description[:150]}...")
+                lines.append(f"    URL: {c.url}")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_queries(self, topic: str, count: int) -> List[str]:
+        """生成多个相关查询"""
+        queries = [topic]
+
+        prefixes = [
+            "什么是",
+            "如何",
+            "为什么",
+            "最新",
+            "最佳实践",
+        ]
+
+        for i, prefix in enumerate(prefixes[:count-1]):
+            queries.append(f"{prefix} {topic}")
+
+        return queries[:count]
+
+    async def _crawl_search_results(
+        self,
+        results: List[SearchResult],
+    ) -> List[Dict[str, Any]]:
+        """爬取搜索结果页面"""
+        crawled = []
+        for result in results:
+            try:
+                page_result = await self._crawler.fetch_with_retry(result.url)
+                if page_result.success:
+                    parser = Parser().parse(page_result.html, result.url)
+                    extracted = parser.extract()
+                    crawled.append({
+                        "url": result.url,
+                        "title": extracted.title,
+                        "content": extracted.text[:1500],
+                        "snippet": result.snippet,
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to crawl {result.url}: {e}")
+        return crawled
+
+    def _format_search_results(
+        self,
+        results: List[SearchResult],
+        crawled_content: List[Dict[str, Any]],
+    ) -> str:
+        """格式化搜索结果"""
+        lines = [f"找到 {len(results)} 个结果:\n"]
+
+        for i, r in enumerate(results[:10], 1):
+            lines.append(f"[{i}] {r.title}")
+            lines.append(f"    URL: {r.url}")
+            lines.append(f"    来源：{r.engine}")
+            lines.append(f"    摘要：{r.snippet[:150]}...")
+            lines.append("")
+
+        if crawled_content:
+            lines.append("\n=== 页面内容摘要 ===\n")
+            for page in crawled_content:
+                lines.append(f"[{page['title']}]")
+                lines.append(f"{page['content'][:500]}...")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _format_knowledge_summary(self, knowledge: List[Dict]) -> str:
+        """格式化知识摘要"""
+        lines = ["已获取的知识:\n"]
+        for k in knowledge[:10]:
+            lines.append(f"- {k['title']} ({k['url'][:50]}...)")
+        return "\n".join(lines)
+
+    # ==================== 内部方法 ====================
+
+    async def _crawler_fetch(self, url: str) -> CrawlResult:
+        """使用爬虫获取"""
+        return await self._crawler.fetch_with_retry(url)
+
+    async def _browser_fetch(self, url: str) -> BrowserResult:
+        """使用浏览器获取"""
+        await self._ensure_browser()
+        return await self._browser.fetch(url)
+
+    def _find_relevant_snippets(
+        self,
+        content: str,
+        query: str,
+        num_snippets: int = 3,
+        snippet_size: int = 200,
+    ) -> List[str]:
+        """找到相关片段"""
+        snippets = []
+        lines = content.split("\n")
+
+        for i, line in enumerate(lines):
+            if query.lower() in line.lower():
+                # 获取上下文
+                start = max(0, i - 2)
+                end = min(len(lines), i + 3)
+                snippet = "\n".join(lines[start:end])
+                if len(snippet) <= snippet_size:
+                    snippets.append(snippet.strip())
+                else:
+                    snippets.append(snippet[:snippet_size] + "...")
+
+        return snippets[:num_snippets]
+
+    def _format_search_results(self, results: List[Dict]) -> str:
+        """格式化搜索结果"""
+        output = []
+        for r in results:
+            output.append(f"[INFO] {r['title']} ({r['url']})")
+            for i, snippet in enumerate(r["snippets"], 1):
+                output.append(f"  [{i}] {snippet}")
+            output.append("")
+        return "\n".join(output)
+
+    def _intelligent_extract(self, knowledge: PageKnowledge, target: str) -> str:
+        """智能提取信息"""
+        content = knowledge.content
+        target_lower = target.lower()
+
+        # 关键词匹配
+        keywords = self._extract_keywords(target)
+        relevant_lines = []
+
+        for line in content.split("\n"):
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in keywords):
+                relevant_lines.append(line.strip())
+
+        if relevant_lines:
+            return "\n".join(relevant_lines[:20])
+
+        # 返回相关内容
+        return content[:1000]
+
+    def _extract_keywords(self, text: str) -> List[str]:
+        """提取关键词"""
+        # 简单分词
+        words = re.findall(r"[\w]+", text.lower())
+        # 过滤停用词
+        stopwords = {"the", "a", "an", "is", "are", "was", "were", "be", "been", "being"}
+        return [w for w in words if w not in stopwords and len(w) > 2]
+
+    def get_visited_urls(self) -> List[str]:
+        """获取已访问的 URL"""
+        return list(self._visited_urls)
+
+    def get_knowledge_base(self) -> List[Dict[str, Any]]:
+        """获取知识库"""
+        return [
+            {
+                "url": k.url,
+                "title": k.title,
+                "content_preview": k.content[:500],
+                "links_count": len(k.links),
+            }
+            for k in self._knowledge_base
+        ]
+
+    async def fetch_all(self, urls: List[str]) -> AgentResponse:
+        """批量获取多个页面"""
+        results = []
+        success_count = 0
+
+        for url in urls:
+            result = await self.visit(url)
+            if result.success:
+                success_count += 1
+            results.append({
+                "url": url,
+                "success": result.success,
+                "title": result.data.get("title") if result.data else None,
+            })
+
+        return AgentResponse(
+            success=True,
+            content=f"批量获取完成：{success_count}/{len(urls)} 成功",
+            data={"results": results},
+        )

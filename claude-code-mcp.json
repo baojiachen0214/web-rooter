@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "web-rooter": {
+      "command": "python",
+      "args": ["main.py", "--mcp"],
+      "cwd": "C:\\Users\\rukel\\Desktop\\Web-Rooter",
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

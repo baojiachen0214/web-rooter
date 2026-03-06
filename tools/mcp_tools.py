@@ -1,0 +1,567 @@
+"""
+MCP 工具定义 - 让 AI 可以调用网页爬取功能
+"""
+import asyncio
+import json
+from typing import Optional, Dict, Any, List
+import logging
+
+from agents.web_agent import WebAgent, AgentResponse
+from core.crawler import Crawler
+from core.parser import Parser
+from core.browser import BrowserManager
+from core.search_engine import SearchEngine
+from core.academic_search import AcademicSource, is_academic_query
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class WebTools:
+    """
+    Web 工具集 - 可被 AI 调用的工具
+
+    这些工具设计为可以被 AI agent 直接调用
+    """
+
+    def __init__(self):
+        self._agent: Optional[WebAgent] = None
+        self._initialized = False
+
+    async def initialize(self):
+        """初始化工具"""
+        if not self._initialized:
+            self._agent = WebAgent()
+            await self._agent._init()
+            self._initialized = True
+            logger.info("WebTools initialized")
+
+    async def close(self):
+        """关闭工具"""
+        if self._agent:
+            await self._agent.close()
+            self._initialized = False
+
+    # ==================== 工具方法 ====================
+
+    async def fetch(self, url: str) -> Dict[str, Any]:
+        """
+        获取网页内容
+
+        Args:
+            url: 要访问的 URL
+
+        Returns:
+            包含页面标题、内容和链接的字典
+        """
+        await self._ensure_initialized()
+        result = await self._agent.visit(url)
+        return result.to_dict()
+
+    async def fetch_js(self, url: str, wait_for: Optional[str] = None) -> Dict[str, Any]:
+        """
+        使用浏览器获取网页（支持 JavaScript）
+
+        Args:
+            url: 要访问的 URL
+            wait_for: 可选的 CSS 选择器，等待该元素出现
+
+        Returns:
+            包含渲染后内容的字典
+        """
+        await self._ensure_initialized()
+        result = await self._agent._browser.fetch(url, wait_for=wait_for)
+        return {
+            "success": result.error is None,
+            "url": result.url,
+            "title": result.title,
+            "html": result.html[:50000],  # 限制大小
+            "error": result.error,
+        }
+
+    async def search(self, query: str, url: Optional[str] = None) -> Dict[str, Any]:
+        """
+        在网页中搜索信息
+
+        Args:
+            query: 搜索关键词
+            url: 可选的目标 URL
+
+        Returns:
+            搜索结果
+        """
+        await self._ensure_initialized()
+        result = await self._agent.search(query, url)
+        return result.to_dict()
+
+    async def extract(self, url: str, target: str) -> Dict[str, Any]:
+        """
+        从网页提取特定信息
+
+        Args:
+            url: 目标 URL
+            target: 要提取的信息描述
+
+        Returns:
+            提取的信息
+        """
+        await self._ensure_initialized()
+        result = await self._agent.extract(url, target)
+        return result.to_dict()
+
+    async def crawl(
+        self,
+        start_url: str,
+        max_pages: int = 10,
+        max_depth: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        爬取网站
+
+        Args:
+            start_url: 起始 URL
+            max_pages: 最大页面数
+            max_depth: 最大深度
+
+        Returns:
+            爬取结果
+        """
+        await self._ensure_initialized()
+        result = await self._agent.crawl(start_url, max_pages, max_depth)
+        return result.to_dict()
+
+    async def parse_html(self, html: str, url: str = "") -> Dict[str, Any]:
+        """
+        解析 HTML 内容
+
+        Args:
+            html: HTML 字符串
+            url: 源 URL（用于解析相对链接）
+
+        Returns:
+            解析后的结构化数据
+        """
+        parser = Parser().parse(html, url)
+        extracted = parser.extract()
+        return extracted.to_dict()
+
+    async def get_links(self, url: str, internal_only: bool = True) -> Dict[str, Any]:
+        """
+        获取页面所有链接
+
+        Args:
+            url: 目标 URL
+            internal_only: 是否仅返回内部链接
+
+        Returns:
+            链接列表
+        """
+        await self._ensure_initialized()
+        result = await self._agent.visit(url)
+        if result.success and result.data:
+            links = result.data.get("links", [])
+            if internal_only:
+                from urllib.parse import urlparse
+                base_domain = urlparse(url).netloc
+                links = [l for l in links if base_domain in urlparse(l["href"]).netloc]
+            return {"success": True, "links": links, "count": len(links)}
+        return {"success": False, "error": result.error}
+
+    async def get_knowledge_base(self) -> Dict[str, Any]:
+        """获取已访问页面的知识库"""
+        await self._ensure_initialized()
+        return {
+            "success": True,
+            "knowledge": self._agent.get_knowledge_base(),
+            "visited_urls": self._agent.get_visited_urls(),
+        }
+
+    async def web_search(self, query: str, num_results: int = 10) -> Dict[str, Any]:
+        """
+        互联网搜索（多引擎）
+
+        Args:
+            query: 搜索关键词
+            num_results: 结果数量
+
+        Returns:
+            搜索结果
+        """
+        await self._ensure_initialized()
+        result = await self._agent.search_internet(query, num_results=num_results)
+        return result.to_dict()
+
+    async def web_search_combined(
+        self,
+        query: str,
+        num_results: int = 20,
+        crawl_top: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        互联网搜索并爬取内容
+
+        Args:
+            query: 搜索关键词
+            num_results: 搜索结果数量
+            crawl_top: 爬取前 N 个结果
+
+        Returns:
+            搜索结果和爬取内容
+        """
+        await self._ensure_initialized()
+        result = await self._agent.search_internet(
+            query,
+            num_results=num_results,
+            auto_crawl=True,
+            crawl_pages=crawl_top,
+        )
+        return result.to_dict()
+
+    async def web_research(self, topic: str, max_pages: int = 10) -> Dict[str, Any]:
+        """
+        深度研究主题
+
+        Args:
+            topic: 研究主题
+            max_pages: 最大爬取页面数
+
+        Returns:
+            研究结果
+        """
+        await self._ensure_initialized()
+        result = await self._agent.research_topic(topic, max_pages=max_pages)
+        return result.to_dict()
+
+    async def web_search_academic(
+        self,
+        query: str,
+        num_results: int = 10,
+        include_code: bool = True,
+        fetch_abstracts: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        学术搜索 - 论文和代码项目
+
+        Args:
+            query: 搜索关键词
+            num_results: 结果数量
+            include_code: 是否包含代码项目
+            fetch_abstracts: 是否获取论文摘要
+
+        Returns:
+            学术搜索结果
+        """
+        await self._ensure_initialized()
+        result = await self._agent.search_academic(
+            query,
+            num_results=num_results,
+            include_code=include_code,
+            fetch_abstracts=fetch_abstracts,
+        )
+        return result.to_dict()
+
+    async def web_search_site(
+        self,
+        url: str,
+        query: str,
+        use_browser: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        站内搜索 - 在网站内部搜索框提交查询
+
+        Args:
+            url: 网站 URL
+            query: 搜索关键词
+            use_browser: 是否使用浏览器
+
+        Returns:
+            搜索结果
+        """
+        await self._ensure_initialized()
+        result = await self._agent.search_with_form(
+            url, query, use_browser=use_browser
+        )
+        return result.to_dict()
+
+    async def _ensure_initialized(self):
+        """确保已初始化"""
+        if not self._initialized:
+            await self.initialize()
+
+
+# ==================== MCP 服务器设置 ====================
+
+async def setup_mcp_server():
+    """
+    设置 MCP 服务器
+
+    这将注册所有可用的工具
+    """
+    from mcp.server import Server
+    from mcp.server.stdio import stdio_server
+    from mcp.types import Tool, TextContent
+
+    web_tools = WebTools()
+    await web_tools.initialize()
+
+    server = Server("web-rooter")
+
+    @server.list_tools()
+    async def list_tools() -> list[Tool]:
+        return [
+            Tool(
+                name="web_fetch",
+                description="Fetch content from a URL",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to fetch"}
+                    },
+                    "required": ["url"],
+                },
+            ),
+            Tool(
+                name="web_fetch_js",
+                description="Fetch content from a URL using a browser (for JavaScript-rendered pages)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to fetch"},
+                        "wait_for": {"type": "string", "description": "CSS selector to wait for"}
+                    },
+                    "required": ["url"],
+                },
+            ),
+            Tool(
+                name="web_search",
+                description="Search for information in fetched content (already visited pages)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "url": {"type": "string", "description": "Optional URL to search in"}
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_search_internet",
+                description="Search the internet across multiple search engines (Bing, Baidu, Google, etc.)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "num_results": {"type": "integer", "description": "Number of results", "default": 10}
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_search_combined",
+                description="Search internet and crawl top results for detailed content",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "num_results": {"type": "integer", "description": "Number of search results", "default": 20},
+                        "crawl_top": {"type": "integer", "description": "Number of top results to crawl", "default": 3}
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_research",
+                description="Deep research on a topic - multiple searches + crawling",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "topic": {"type": "string", "description": "Research topic"},
+                        "max_pages": {"type": "integer", "description": "Maximum pages to crawl", "default": 10}
+                    },
+                    "required": ["topic"],
+                },
+            ),
+            Tool(
+                name="web_search_academic",
+                description="Search academic papers and code projects (arXiv, Google Scholar, GitHub, etc.)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Academic search query"},
+                        "num_results": {"type": "integer", "description": "Number of results", "default": 10},
+                        "include_code": {"type": "boolean", "description": "Include code projects from GitHub/Gitee", "default": True},
+                        "fetch_abstracts": {"type": "boolean", "description": "Fetch paper abstracts", "default": True}
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_search_site",
+                description="Search within a specific website using its internal search form",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Website URL to search in"},
+                        "query": {"type": "string", "description": "Search query"},
+                        "use_browser": {"type": "boolean", "description": "Use browser for JavaScript forms", "default": True}
+                    },
+                    "required": ["url", "query"],
+                },
+            ),
+            Tool(
+                name="web_extract",
+                description="Extract specific information from a webpage",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to extract from"},
+                        "target": {"type": "string", "description": "Description of information to extract"}
+                    },
+                    "required": ["url", "target"],
+                },
+            ),
+            Tool(
+                name="web_crawl",
+                description="Crawl a website starting from a URL",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "start_url": {"type": "string", "description": "Starting URL"},
+                        "max_pages": {"type": "integer", "description": "Maximum pages to crawl", "default": 10},
+                        "max_depth": {"type": "integer", "description": "Maximum depth to crawl", "default": 3}
+                    },
+                    "required": ["start_url"],
+                },
+            ),
+            Tool(
+                name="parse_html",
+                description="Parse HTML content and extract structured data",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "html": {"type": "string", "description": "HTML content to parse"},
+                        "url": {"type": "string", "description": "Source URL for resolving relative links"}
+                    },
+                    "required": ["html"],
+                },
+            ),
+            Tool(
+                name="get_links",
+                description="Get all links from a webpage",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to get links from"},
+                        "internal_only": {"type": "boolean", "description": "Only return internal links", "default": True}
+                    },
+                    "required": ["url"],
+                },
+            ),
+        ]
+
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        try:
+            result = None
+
+            if name == "web_fetch":
+                result = await web_tools.fetch(arguments["url"])
+            elif name == "web_fetch_js":
+                result = await web_tools.fetch_js(
+                    arguments["url"],
+                    wait_for=arguments.get("wait_for")
+                )
+            elif name == "web_search":
+                result = await web_tools.search(
+                    arguments["query"],
+                    url=arguments.get("url")
+                )
+            elif name == "web_extract":
+                result = await web_tools.extract(
+                    arguments["url"],
+                    arguments["target"]
+                )
+            elif name == "web_crawl":
+                result = await web_tools.crawl(
+                    arguments["start_url"],
+                    max_pages=arguments.get("max_pages", 10),
+                    max_depth=arguments.get("max_depth", 3)
+                )
+            elif name == "parse_html":
+                result = await web_tools.parse_html(
+                    arguments["html"],
+                    url=arguments.get("url", "")
+                )
+            elif name == "get_links":
+                result = await web_tools.get_links(
+                    arguments["url"],
+                    internal_only=arguments.get("internal_only", True)
+                )
+            elif name == "web_search_internet":
+                result = await web_tools.web_search(
+                    arguments["query"],
+                    num_results=arguments.get("num_results", 10)
+                )
+            elif name == "web_search_combined":
+                result = await web_tools.web_search_combined(
+                    arguments["query"],
+                    num_results=arguments.get("num_results", 20),
+                    crawl_top=arguments.get("crawl_top", 3)
+                )
+            elif name == "web_research":
+                result = await web_tools.web_research(
+                    arguments["topic"],
+                    max_pages=arguments.get("max_pages", 10)
+                )
+            elif name == "web_search_academic":
+                result = await web_tools.web_search_academic(
+                    arguments["query"],
+                    num_results=arguments.get("num_results", 10),
+                    include_code=arguments.get("include_code", True),
+                    fetch_abstracts=arguments.get("fetch_abstracts", True)
+                )
+            elif name == "web_search_site":
+                result = await web_tools.web_search_site(
+                    arguments["url"],
+                    arguments["query"],
+                    use_browser=arguments.get("use_browser", True)
+                )
+
+            if result:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(result, ensure_ascii=False, indent=2)
+                )]
+            else:
+                return [TextContent(type="text", text="No result")]
+
+        except Exception as e:
+            logger.exception(f"Error calling tool {name}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({"error": str(e)}, ensure_ascii=False)
+            )]
+
+    return server, web_tools
+
+
+async def run_mcp_server():
+    """运行 MCP 服务器"""
+    from mcp.server.stdio import stdio_server
+
+    server, web_tools = await setup_mcp_server()
+
+    print("Web-Rooter MCP Server starting...", flush=True)
+
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            server.create_initialization_options(),
+        )
+
+    await web_tools.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(run_mcp_server())
