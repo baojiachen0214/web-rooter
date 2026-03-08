@@ -146,7 +146,7 @@ Copy `claude-code-mcp.json` content to Claude Code config directory, or configur
     "web-rooter": {
       "command": "python",
       "args": ["main.py", "--mcp"],
-      "cwd": "C:\\Users\\rukel\\Desktop\\Web-Rooter"
+      "cwd": "/path/to/web-rooter"
     }
   }
 }

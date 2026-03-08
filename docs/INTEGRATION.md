@@ -23,7 +23,7 @@ Web-Rooter 是一个功能强大的 AI Web 爬虫 Agent，可以集成到 Claude
     "web-rooter": {
       "command": "python",
       "args": ["main.py", "--mcp"],
-      "cwd": "E:\\ApplicationProgram\\web-rooter",
+      "cwd": "/path/to/web-rooter",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }

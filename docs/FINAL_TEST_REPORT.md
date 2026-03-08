@@ -150,8 +150,8 @@ result = await agent.search('关键词', url='https://www.xiaohongshu.com')
   "mcpServers": {
     "web-rooter": {
       "command": "python",
-      "args": ["E:\\ApplicationProgram\\web-rooter\\main.py", "--mcp"],
-      "cwd": "E:\\ApplicationProgram\\web-rooter"
+      "args": ["main.py", "--mcp"],
+      "cwd": "/path/to/web-rooter"
     }
   },
   "toolPreferences": {

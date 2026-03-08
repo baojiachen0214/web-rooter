@@ -5,7 +5,7 @@
 ### 1. 安装依赖
 
 ```bash
-cd C:\Users\rukel\Desktop\Web-Rooter
+cd /path/to/web-rooter
 pip install -r requirements.txt
 ```
 
@@ -99,8 +99,8 @@ asyncio.run(main())
   "mcpServers": {
     "web-rooter": {
       "command": "python",
-      "args": ["C:\\Users\\rukel\\Desktop\\Web-Rooter\\main.py", "--mcp"],
-      "cwd": "C:\\Users\\rukel\\Desktop\\Web-Rooter"
+      "args": ["main.py", "--mcp"],
+      "cwd": "/path/to/web-rooter"
     }
   }
 }

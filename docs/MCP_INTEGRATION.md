@@ -31,8 +31,8 @@
   "mcpServers": {
     "web-rooter": {
       "command": "python",
-      "args": ["E:\\ApplicationProgram\\web-rooter\\main.py", "--mcp"],
-      "cwd": "E:\\ApplicationProgram\\web-rooter",
+      "args": ["main.py", "--mcp"],
+      "cwd": "/path/to/web-rooter",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
@@ -211,8 +211,8 @@ AI: 我将使用 web-rooter 的 web_research 工具进行深度研究。
   "mcpServers": {
     "web-rooter": {
       "command": "python",
-      "args": ["E:\\ApplicationProgram\\web-rooter\\main.py", "--mcp"],
-      "cwd": "E:\\ApplicationProgram\\web-rooter",
+      "args": ["main.py", "--mcp"],
+      "cwd": "/path/to/web-rooter",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
