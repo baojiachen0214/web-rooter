@@ -12,6 +12,7 @@ from core.parser import Parser
 from core.browser import BrowserManager
 from core.search_engine import SearchEngine
 from core.academic_search import AcademicSource, is_academic_query
+from core.advanced_search import DeepSearchEngine, search_social_media, search_tech
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -283,6 +284,69 @@ class WebTools:
         )
         return result.to_dict()
 
+    async def web_deep_search(
+        self,
+        query: str,
+        num_results: int = 20,
+        use_english: bool = True,
+        crawl_top: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        深度搜索 - 多引擎并行，支持中英文
+
+        Args:
+            query: 搜索关键词
+            num_results: 每个引擎的结果数量
+            use_english: 是否同时使用英文搜索
+            crawl_top: 爬取前 N 个结果
+
+        Returns:
+            深度搜索结果
+        """
+        deep_search = DeepSearchEngine()
+        return await deep_search.deep_search(
+            query,
+            num_results=num_results,
+            use_english=use_english,
+            crawl_top=crawl_top,
+        )
+
+    async def web_search_social(
+        self,
+        query: str,
+        platforms: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        社交媒体搜索
+
+        Args:
+            query: 搜索关键词
+            platforms: 指定平台（默认全部）
+                     支持：bilibili, zhihu, weibo, reddit, twitter
+
+        Returns:
+            社交媒体搜索结果
+        """
+        return await search_social_media(query, platforms)
+
+    async def web_search_tech(
+        self,
+        query: str,
+        sources: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        技术社区搜索
+
+        Args:
+            query: 搜索关键词
+            sources: 指定来源（默认全部）
+                    支持：github, stackoverflow, medium, hackernews
+
+        Returns:
+            技术社区搜索结果
+        """
+        return await search_tech(query, sources)
+
     async def _ensure_initialized(self):
         """确保已初始化"""
         if not self._initialized:
@@ -409,6 +473,52 @@ async def setup_mcp_server():
                 },
             ),
             Tool(
+                name="web_deep_search",
+                description="Deep search across multiple engines (Google, Bing, Baidu, DuckDuckGo) with parallel execution and multi-language support",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "num_results": {"type": "integer", "description": "Results per engine", "default": 20},
+                        "use_english": {"type": "boolean", "description": "Also search with English query", "default": True},
+                        "crawl_top": {"type": "integer", "description": "Crawl top N results", "default": 5}
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_search_social",
+                description="Search social media platforms (Bilibili, Zhihu, Weibo, Reddit, Twitter)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "platforms": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Platforms to search (bilibili, zhihu, weibo, reddit, twitter)"
+                        }
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_search_tech",
+                description="Search tech communities (GitHub, Stack Overflow, Medium, Hacker News)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "sources": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sources to search (github, stackoverflow, medium, hackernews)"
+                        }
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
                 name="web_extract",
                 description="Extract specific information from a webpage",
                 inputSchema={
@@ -525,6 +635,23 @@ async def setup_mcp_server():
                     arguments["url"],
                     arguments["query"],
                     use_browser=arguments.get("use_browser", True)
+                )
+            elif name == "web_deep_search":
+                result = await web_tools.web_deep_search(
+                    arguments["query"],
+                    num_results=arguments.get("num_results", 20),
+                    use_english=arguments.get("use_english", True),
+                    crawl_top=arguments.get("crawl_top", 5),
+                )
+            elif name == "web_search_social":
+                result = await web_tools.web_search_social(
+                    arguments["query"],
+                    platforms=arguments.get("platforms"),
+                )
+            elif name == "web_search_tech":
+                result = await web_tools.web_search_tech(
+                    arguments["query"],
+                    sources=arguments.get("sources"),
                 )
 
             if result:

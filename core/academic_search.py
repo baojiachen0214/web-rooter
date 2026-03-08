@@ -559,6 +559,8 @@ def is_academic_query(query: str) -> bool:
         "journal", "conference", "arxiv", "scholar",
         "GitHub", "开源", "open source", "代码",
         "project", "工程", "实现", "源码",
+        "transformer", "architecture", "model", "algorithm",
+        "machine learning", "deep learning", "neural",
     ]
     return any(kw.lower() in query.lower() for kw in academic_keywords)
 

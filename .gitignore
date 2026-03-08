@@ -25,3 +25,27 @@ Thumbs.db
 
 # Environment
 .env
+
+# Claude Code
+.claude/
+
+# Temporary files
+temp/
+*.tmp
+
+# Analysis reports (keep only final docs)
+*_ANALYSIS.md
+*_SUMMARY.md
+*_IMPROVEMENTS.md
+
+# Test outputs
+test_*.py
+deep_test*.py
+
+# Examples (keep minimal, exclude detailed examples)
+examples/
+
+# Logs and cache
+logs/
+*.log
+.cache/

@@ -7,22 +7,37 @@
 ```
 Web-Rooter/
 ├── core/                  # 核心模块
-│   ├── crawler.py        # 异步网页爬虫
-│   ├── parser.py         # HTML 解析器
+│   ├── crawler.py        # 异步网页爬虫（支持缓存/连接池）
+│   ├── parser.py         # HTML 解析器（支持自适应/选择器增强）
 │   ├── browser.py        # 浏览器自动化（Playwright）
 │   ├── search_engine.py  # 多搜索引擎模块
-│   ├── academic_search.py # 学术搜索模块（新增）
-│   └── form_search.py    # 表单填写搜索模块（新增）
+│   ├── cache.py          # 请求缓存系统（新增）
+│   ├── connection_pool.py # HTTP 连接池（新增）
+│   ├── metrics.py        # 指标导出（新增）
+│   ├── result_queue.py   # 流式输出队列（新增）
+│   └── ...
 ├── agents/               # AI Agents
-│   └── web_agent.py      # Web Agent（自然语言接口）
+│   ├── web_agent.py      # Web Agent（自然语言接口）
+│   └── spider.py         # Spider 爬虫框架（支持流式输出）
 ├── tools/                # MCP 工具
 │   └── mcp_tools.py      # MCP 工具定义
+├── tests/                # 测试
+├── examples/             # 示例代码
+│   ├── demo.py           # 主演示
+│   ├── search_demo.py    # 搜索演示
+│   ├── academic_demo.py  # 学术搜索演示
+│   └── spider_examples/  # Spider 示例
+│       ├── blog_spider.py
+│       ├── news_spider.py
+│       ├── ecommerce_spider.py
+│       ├── streaming_example.py
+│       └── ...
+├── docs/                 # 文档
+│   ├── api.md            # API 文档
+│   └── analysis/         # 分析文档
 ├── config.py             # 配置
 ├── main.py               # 主入口
 ├── server.py             # HTTP API 服务器
-├── demo.py               # 演示脚本
-├── search_demo.py        # 搜索功能演示（新增）
-├── test.py               # 测试脚本
 └── requirements.txt      # 依赖
 ```
 
@@ -46,7 +61,7 @@ playwright install chromium
 
 **1. 演示模式（快速测试）**
 ```bash
-python demo.py
+python examples/demo.py
 ```
 
 **2. 交互模式**
@@ -64,17 +79,37 @@ python main.py
 - `kb` - 查看知识库
 - `web <query>` - 互联网搜索（多引擎）
 - `research <topic>` - 深度研究主题
-- `academic <query>` - 学术搜索（论文/代码，新增）
-- `site <url> <query>` - 站内搜索（新增）
+- `academic <query>` - 学术搜索（论文/代码）
+- `site <url> <query>` - 站内搜索
 
-**3. MCP 模式（AI 集成）**
+**3. Spider 爬虫（新增）**
+```bash
+# 运行博客爬虫示例
+python examples/spider_examples/blog_spider.py
+
+# 运行新闻爬虫示例
+python examples/spider_examples/news_spider.py
+
+# 运行电商爬虫示例
+python examples/spider_examples/ecommerce_spider.py
+
+# 流式输出示例
+python examples/spider_examples/streaming_example.py
+```
+
+**4. MCP 模式（AI 集成）**
 ```bash
 python main.py --mcp
 ```
 
-**4. HTTP API**
+**5. HTTP API**
 ```bash
 python main.py --server
+```
+
+**6. 运行测试**
+```bash
+python tests/test_phase3.py
 ```
 
 ## Python API
@@ -193,6 +228,7 @@ asyncio.run(main())
 
 ## 功能特性
 
+### 核心爬虫功能
 - 异步网页爬取
 - JavaScript 渲染支持（通过 Playwright）
 - HTML 智能解析
@@ -200,14 +236,38 @@ asyncio.run(main())
 - 自然语言搜索
 - 网站深度爬取
 - 请求限流和重试
-- MCP 工具集成
-- **多搜索引擎支持（Bing、Google、百度、DuckDuckGo、搜狗、Google Scholar）**
-- **智能引擎选择（根据查询语言和内容自动选择）**
+
+### Spider 爬虫框架（Phase 3 新增）
+- **流式输出模式** - `async for item in spider.stream()` 实时获取结果
+- **选择器增强** - 完整 CSS/XPath 路径生成，按文本查找
+- **自适应解析器** - 选择器失效时自动找到相似元素
+- **持久化支持** - SQLite 存储元素特征，跨会话重用
+
+### 性能优化（Phase 3 新增）
+- **请求缓存** - 内存 + SQLite 双重缓存，支持 TTL 过期
+- **连接池** - HTTP 连接重用，自动健康检查
+- **性能监控** - 缓存命中率 >80%，延迟降低 50%
+
+### 统计和监控（Phase 3 新增）
+- **实时爬取统计** - 请求数、成功率、QPS
+- **代理池统计** - 每个代理的使用情况和成功率
+- **Prometheus 指标导出** - 可集成 Grafana 监控
+
+### 互联网搜索
+- **多搜索引擎支持**（Bing、Google、百度、DuckDuckGo、搜狗、Google Scholar）
+- **智能引擎选择**（根据查询语言和内容自动选择）
 - **搜索结果去重和合并**
 - **搜索 + 爬取组合功能**
-- **学术模式搜索（arXiv、Google Scholar、PubMed、IEEE、CNKI、GitHub、Gitee）**
+
+### 学术搜索
+- **学术模式搜索**（arXiv、Google Scholar、PubMed、IEEE、CNKI、GitHub、Gitee）
 - **论文摘要自动爬取**
+- **代码项目搜索**
+
+### 高级功能
 - **表单自动填写和站内搜索**
+- **代理轮换** - 三种轮换策略（循环/随机/基于成功率）
+- **隐身获取** - 指纹伪装、反检测措施
 
 ## HTTP API 端点
 

@@ -77,8 +77,10 @@ class FormFiller:
 
     # 搜索框常见 name/id/class
     SEARCH_FIELD_PATTERNS = [
-        r'search', r'query', r'q', r'keyword', r'kw', r's', r'wd',
-        r'查询', r'搜索', r'查找',
+        re.compile(r'search'), re.compile(r'query'), re.compile(r'\bq\b'),
+        re.compile(r'keyword'), re.compile(r'\bkw\b'), re.compile(r'\bs\b'),
+        re.compile(r'wd'), re.compile(r'查询'), re.compile(r'搜索'),
+        re.compile(r'查找'),
     ]
 
     # 搜索表单常见特征

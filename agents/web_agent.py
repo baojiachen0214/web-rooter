@@ -254,7 +254,7 @@ class WebAgent:
                 })
 
         if results:
-            content = self._format_search_results(results)
+            content = self._format_search_in_knowledge_results(results)
             return AgentResponse(
                 success=True,
                 content=content,
@@ -865,8 +865,8 @@ class WebAgent:
 
         return snippets[:num_snippets]
 
-    def _format_search_results(self, results: List[Dict]) -> str:
-        """格式化搜索结果"""
+    def _format_search_in_knowledge_results(self, results: List[Dict]) -> str:
+        """格式化知识库中的搜索结果"""
         output = []
         for r in results:
             output.append(f"[INFO] {r['title']} ({r['url']})")

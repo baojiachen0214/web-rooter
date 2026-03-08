@@ -518,6 +518,14 @@ class MultiSearchEngine:
             "combined_content": all_content[:10000],
         }
 
+    async def __aenter__(self) -> "MultiSearchEngine":
+        """异步上下文管理器入口"""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """异步上下文管理器出口"""
+        await self.close()
+
     async def close(self):
         """关闭"""
         await self._client.close()

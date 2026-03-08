@@ -6,6 +6,7 @@ import asyncio
 import argparse
 import json
 import sys
+import os
 from typing import Optional
 import logging
 
@@ -13,6 +14,7 @@ from agents.web_agent import WebAgent
 from tools.mcp_tools import WebTools, run_mcp_server
 from config import crawler_config, browser_config
 from core.academic_search import AcademicSource
+from core.advanced_search import DeepSearchEngine, search_all, search_social_media, search_tech
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,6 +121,77 @@ class WebRooterCLI:
             result = await self.agent.search_with_form(url, query)
             self._print_result(result)
 
+        elif command == "deep" or command == "deepsearch":
+            # 深度搜索命令 - 所有引擎并行
+            query = " ".join(args)
+            use_en = "--en" in args or "--english" in args
+            crawl = 0
+            for i, arg in enumerate(args):
+                if arg.isdigit():
+                    crawl = int(arg)
+                elif arg.startswith("--crawl="):
+                    crawl = int(arg.split("=")[1])
+
+            logger.info(f"执行深度搜索：{query}, 英文搜索：{use_en}, 爬取前{crawl}个结果")
+            deep_search = DeepSearchEngine()
+            result = await deep_search.deep_search(
+                query,
+                num_results=10,
+                use_english=use_en,
+                crawl_top=crawl,
+            )
+            self._print_result(result)
+
+        elif command == "social":
+            # 社交媒体搜索
+            query = " ".join(args)
+            platforms = []
+            for arg in args:
+                if arg.startswith("--platform="):
+                    platforms.append(arg.split("=")[1])
+                elif arg in ["bilibili", "zhihu", "weibo", "reddit", "twitter"]:
+                    platforms.append(arg)
+
+            logger.info(f"搜索社交媒体：{query}, 平台：{platforms or '全部'}")
+            result = await search_social_media(query, platforms or None)
+            self._print_result(result)
+
+        elif command == "tech":
+            # 技术社区搜索
+            query = " ".join(args)
+            sources = []
+            for arg in args:
+                if arg.startswith("--source="):
+                    sources.append(arg.split("=")[1])
+                elif arg in ["github", "stackoverflow", "medium", "hackernews"]:
+                    sources.append(arg)
+
+            logger.info(f"搜索技术内容：{query}, 来源：{sources or '全部'}")
+            result = await search_tech(query, sources or None)
+            self._print_result(result)
+
+        elif command == "export":
+            # 导出搜索结果到文件
+            if len(args) < 2:
+                print("用法：export <query> <output_file>")
+                print("示例：export 'AI 新闻' output.json")
+            else:
+                query = args[0]
+                output_file = args[1]
+
+                deep_search = DeepSearchEngine()
+                result = await deep_search.deep_search(
+                    query,
+                    num_results=20,
+                    use_english=True,
+                    crawl_top=5,
+                )
+
+                with open(output_file, "w", encoding="utf-8") as f:
+                    json.dump(result, f, ensure_ascii=False, indent=2)
+                print(f"结果已导出到：{output_file}")
+                print(f"共 {result['total_results']} 条结果")
+
         elif command == "help":
             self._print_help()
 
@@ -144,8 +217,9 @@ class WebRooterCLI:
     def _print_help(self):
         """打印帮助"""
         help_text = """
-Guide 可用命令:
+Web-Rooter 可用命令:
 
+【网页访问】
   visit <url> [--js]     - 访问网页 (--js 使用浏览器)
   search <query> [url]   - 在已访问页面中搜索
   extract <url> <target> - 提取特定信息
@@ -154,17 +228,38 @@ Guide 可用命令:
   kb / knowledge         - 查看知识库
   fetch <url>            - 获取页面
 
-互联网搜索命令:
+【互联网搜索】
   web <query>            - 互联网搜索（多引擎）
   web <query> --no-crawl - 仅搜索不爬取
+  deep <query> [N] [--en] [--crawl=N] - 深度搜索（所有引擎并行）
+                         --en: 同时使用英文搜索
+                         --crawl=N: 爬取前 N 个结果
   research <topic>       - 深度研究主题
 
-学术模式命令:
+【社交媒体搜索】
+  social <query> [--platform=xxx] - 搜索社交媒体
+                         平台：bilibili, zhihu, weibo, reddit, twitter
+  示例：social iPhone 17 --platform=bilibili --platform=zhihu
+
+【技术社区搜索】
+  tech <query> [--source=xxx] - 搜索技术内容
+                         来源：github, stackoverflow, medium, hackernews
+  示例：tech machine learning --source=github
+
+【学术搜索】
   academic <query>       - 学术搜索（论文/代码项目）
   academic <query> --papers-only - 仅搜索论文
 
-站内搜索命令:
+【站内搜索】
   site <url> <query>     - 在网站内搜索
+
+【导出功能】
+  export <query> <file>  - 导出搜索结果到 JSON 文件
+  示例：export 'AI 大模型' results.json
+
+【其他】
+  help                   - 帮助信息
+  quit / exit            - 退出
 
 示例:
   visit https://example.com
@@ -174,9 +269,13 @@ Guide 可用命令:
   crawl https://example.com 5 2
   links https://example.com --all
   web AI 大模型 2025 最新进展
+  deep "苹果发布会" 10 --en --crawl=5  # 深度搜索，中英文并行
+  social "iPhone 17" --platform=zhihu  # 搜索知乎评价
+  tech "transformer" --source=github   # GitHub 搜索
   research 机器学习入门
   academic Transformer 架构
   site https://github.com AI framework
+  export "AI 新闻" ai_news.json
 """
         print(help_text)
 
