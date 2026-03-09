@@ -2,6 +2,7 @@
 AI Web Agent - 自然语言网页访问接口
 """
 import asyncio
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable
@@ -527,6 +528,15 @@ class WebAgent:
         success = [r for r in responses if r.error is None]
 
         if not success:
+            fallback_response = await self._search_internet_with_deep_fallback(
+                query=query,
+                num_results=num_results,
+                auto_crawl=auto_crawl,
+                crawl_pages=crawl_pages,
+            )
+            if fallback_response is not None:
+                return fallback_response
+
             return AgentResponse(
                 success=False,
                 content=f"搜索失败：{', '.join(f.error for f in failed)}",
@@ -544,6 +554,16 @@ class WebAgent:
             if result.url not in seen_urls:
                 seen_urls.add(result.url)
                 unique_results.append(result)
+
+        if not unique_results:
+            fallback_response = await self._search_internet_with_deep_fallback(
+                query=query,
+                num_results=num_results,
+                auto_crawl=auto_crawl,
+                crawl_pages=crawl_pages,
+            )
+            if fallback_response is not None:
+                return fallback_response
 
         result_dicts = [r.to_dict() for r in unique_results]
         citations = build_web_citations(result_dicts, query=query, prefix="W")
@@ -574,6 +594,125 @@ class WebAgent:
                 "query": query,
                 "total_results": len(unique_results),
                 "engines": [r.engine for r in unique_results],
+            },
+        )
+
+    async def _search_internet_with_deep_fallback(
+        self,
+        query: str,
+        num_results: int,
+        auto_crawl: bool,
+        crawl_pages: int,
+    ) -> Optional[AgentResponse]:
+        """当基础搜索链路失败或空结果时，使用深搜引擎兜底。"""
+        try:
+            from core.search.advanced import DeepSearchEngine
+        except Exception as exc:
+            logger.warning("Deep search fallback import failed: %s", exc)
+            return None
+
+        requested_crawl_top = max(0, crawl_pages) if auto_crawl else 0
+        crawl_attempts = [requested_crawl_top]
+        if requested_crawl_top > 0:
+            crawl_attempts.append(0)
+
+        deep_result: Dict[str, Any] = {}
+        raw_results: List[Dict[str, Any]] = []
+
+        deep_search = DeepSearchEngine()
+        try:
+            for crawl_top in crawl_attempts:
+                try:
+                    candidate = await deep_search.deep_search(
+                        query,
+                        num_results=max(8, num_results),
+                        use_english=not bool(re.search(r"[\u4e00-\u9fff]", query)),
+                        crawl_top=crawl_top,
+                        query_variants=1,
+                    )
+                except Exception as exc:
+                    logger.warning("Deep search fallback failed (crawl_top=%s): %s", crawl_top, exc)
+                    continue
+
+                if not isinstance(candidate, dict) or not candidate.get("success"):
+                    continue
+
+                candidate_results = candidate.get("results", [])
+                if isinstance(candidate_results, list) and candidate_results:
+                    deep_result = candidate
+                    raw_results = candidate_results
+                    break
+        finally:
+            await deep_search.close()
+
+        if not raw_results:
+            return None
+
+        converted_results: List[SearchResult] = []
+        for idx, item in enumerate(raw_results, 1):
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            rank_val = item.get("rank", idx)
+            try:
+                rank = int(rank_val)
+            except (TypeError, ValueError):
+                rank = idx
+            converted_results.append(
+                SearchResult(
+                    title=str(item.get("title", "")),
+                    url=str(item.get("url", "")),
+                    snippet=str(item.get("snippet", "")),
+                    engine=str(item.get("engine", "deep_fallback")),
+                    rank=rank,
+                    metadata=metadata,
+                )
+            )
+
+        if not converted_results:
+            return None
+
+        crawled_content = deep_result.get("crawled_content", [])
+        if not isinstance(crawled_content, list):
+            crawled_content = []
+
+        citations = deep_result.get("citations", [])
+        if not isinstance(citations, list):
+            citations = build_web_citations(
+                [r.to_dict() for r in converted_results],
+                query=query,
+                prefix="W",
+            )
+
+        references_text = deep_result.get("references_text")
+        if not isinstance(references_text, str) or not references_text.strip():
+            references_text = format_reference_block(citations, max_items=20)
+
+        comparison = deep_result.get("comparison")
+        if not isinstance(comparison, dict):
+            comparison = build_comparison_summary([r.to_dict() for r in converted_results])
+
+        content = self._format_search_results(converted_results, crawled_content, citations)
+
+        return AgentResponse(
+            success=True,
+            content=content,
+            data={
+                "results": [r.to_dict() for r in converted_results],
+                "crawled_content": crawled_content,
+                "engines_used": sorted({r.engine for r in converted_results}),
+                "citations": citations,
+                "references_text": references_text,
+                "comparison": comparison,
+                "fallback_mode": "deep_search",
+            },
+            urls=[r.url for r in converted_results],
+            metadata={
+                "query": query,
+                "total_results": len(converted_results),
+                "fallback_mode": "deep_search",
             },
         )
 
@@ -880,16 +1019,31 @@ class WebAgent:
         Returns:
             AgentResponse: 填表搜索结果
         """
+        timeout_sec = max(5, int(os.getenv("WEB_ROOTER_FORM_TIMEOUT_SEC", "75")))
+
         # 确保表单填写器初始化
         if self._form_filler is None:
             self._form_filler = FormFiller()
 
         # 自动检测并填写表单
-        if form_data is None:
-            result = await auto_search(url, query, use_browser=use_browser)
-        else:
-            result = await self._form_filler.fill_and_submit(
-                url, form_data, use_browser=use_browser, wait_for=wait_for
+        try:
+            if form_data is None:
+                result = await asyncio.wait_for(
+                    auto_search(url, query, use_browser=use_browser),
+                    timeout=timeout_sec,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    self._form_filler.fill_and_submit(
+                        url, form_data, use_browser=use_browser, wait_for=wait_for
+                    ),
+                    timeout=timeout_sec,
+                )
+        except asyncio.TimeoutError:
+            return AgentResponse(
+                success=False,
+                content=f"站内搜索超时（>{timeout_sec}s）：{url}",
+                error=f"site_search_timeout>{timeout_sec}s",
             )
 
         # 解析搜索结果

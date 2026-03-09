@@ -11,6 +11,7 @@
 """
 import asyncio
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
@@ -767,8 +768,10 @@ class DeepSearchEngine:
         "mall": "commerce",
     }
 
-    _MAX_CHANNEL_DOMAINS_PER_PROFILE = 8
-    _MAX_CHANNEL_EXPANDED_QUERIES = 64
+    _MAX_CHANNEL_DOMAINS_PER_PROFILE = 5
+    _MAX_CHANNEL_EXPANDED_QUERIES = 40
+    _MAX_CONCURRENT_SEARCH_TASKS = 12
+    _SEARCH_TASK_TIMEOUT_SEC = 18
     _BROWSER_FIRST_DOMAINS = {
         "xiaohongshu.com",
         "xhslink.com",
@@ -813,6 +816,35 @@ class DeepSearchEngine:
                 self._browser = BrowserManager()
                 await self._browser.start()
 
+    async def _run_search_task(
+        self,
+        semaphore: asyncio.Semaphore,
+        engine: AdvancedSearchEngine,
+        query: str,
+        num_results: int,
+        language: str,
+        timeout_sec: int,
+    ) -> SearchResponse:
+        """执行单个搜索任务（并发受控 + 超时保护）。"""
+        async with semaphore:
+            try:
+                return await asyncio.wait_for(
+                    self._client.search(engine, query, num_results, language=language),
+                    timeout=max(5, timeout_sec),
+                )
+            except asyncio.TimeoutError:
+                return SearchResponse(
+                    query=query,
+                    engine=engine.value,
+                    error=f"search timeout>{max(5, timeout_sec)}s",
+                )
+            except Exception as exc:
+                return SearchResponse(
+                    query=query,
+                    engine=engine.value,
+                    error=str(exc),
+                )
+
     async def deep_search(
         self,
         query: str,
@@ -850,6 +882,16 @@ class DeepSearchEngine:
             ]
         query_variants = max(1, min(query_variants, 8))
 
+        timeout_sec = max(
+            5,
+            int(os.getenv("WEB_ROOTER_SEARCH_TIMEOUT_SEC", str(self._SEARCH_TASK_TIMEOUT_SEC))),
+        )
+        max_parallel = max(
+            1,
+            int(os.getenv("WEB_ROOTER_MAX_PARALLEL_SEARCHES", str(self._MAX_CONCURRENT_SEARCH_TASKS))),
+        )
+        semaphore = asyncio.Semaphore(max_parallel)
+
         tasks = []
         decomposed_queries = self._decompose_query(query, query_variants)
         normalized_profiles = self._normalize_channel_profiles(channel_profiles)
@@ -861,13 +903,35 @@ class DeepSearchEngine:
         # MindSearch 风格：主查询 + 子查询并行
         for q in expanded_queries:
             for engine in engines:
-                tasks.append(self._client.search(engine, q, num_results, language="zh"))
+                tasks.append(
+                    asyncio.create_task(
+                        self._run_search_task(
+                            semaphore=semaphore,
+                            engine=engine,
+                            query=q,
+                            num_results=num_results,
+                            language="zh",
+                            timeout_sec=timeout_sec,
+                        )
+                    )
+                )
 
             if use_english:
                 english_query = self._translate_query(q)
                 for engine in engines:
                     if engine in [AdvancedSearchEngine.GOOGLE, AdvancedSearchEngine.BING, AdvancedSearchEngine.YANDEX]:
-                        tasks.append(self._client.search(engine, english_query, num_results, language="en"))
+                        tasks.append(
+                            asyncio.create_task(
+                                self._run_search_task(
+                                    semaphore=semaphore,
+                                    engine=engine,
+                                    query=english_query,
+                                    num_results=num_results,
+                                    language="en",
+                                    timeout_sec=timeout_sec,
+                                )
+                            )
+                        )
 
         # 并行执行所有搜索
         responses = await asyncio.gather(*tasks, return_exceptions=True)

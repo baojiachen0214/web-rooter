@@ -1151,8 +1151,16 @@ class BrowserManager(BaseBrowserManager):
             # 设置超时
             page.set_default_timeout(self.config.TIMEOUT)
 
-            # 导航到页面
-            await page.goto(url, wait_until="networkidle" if self.config.WAIT_FOR_NETWORK else "domcontentloaded")
+            # 导航到页面。部分站点永远达不到 networkidle，超时后降级到 domcontentloaded。
+            wait_until = "networkidle" if self.config.WAIT_FOR_NETWORK else "domcontentloaded"
+            try:
+                await page.goto(url, wait_until=wait_until)
+            except PlaywrightTimeoutError:
+                if wait_until == "networkidle":
+                    logger.warning("Navigation timeout with networkidle for %s, retry with domcontentloaded", url)
+                    await page.goto(url, wait_until="domcontentloaded")
+                else:
+                    raise
 
             # 执行反检测措施
             if perform_anti_bot:
