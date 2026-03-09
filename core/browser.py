@@ -803,7 +803,21 @@ class BrowserManager(BaseBrowserManager):
                 return await self._start_with_real_chrome(engine_id)
 
             # 普通 Chromium 启动
-            return await self._start_standard(engine_id, engine_state)
+            try:
+                return await self._start_standard(engine_id, engine_state)
+            except Exception as exc:
+                message = str(exc).lower()
+                missing_browser = (
+                    "executable doesn't exist" in message
+                    or "playwright was just installed" in message
+                )
+                if missing_browser:
+                    logger.warning(
+                        "Playwright bundled browser missing, fallback to real Chrome: %s",
+                        exc,
+                    )
+                    return await self._start_with_real_chrome(engine_id)
+                raise
 
     async def _start_with_cdp(self, engine_id: str):
         """通过 CDP 端点连接浏览器"""
@@ -811,6 +825,7 @@ class BrowserManager(BaseBrowserManager):
             raise ValueError("CDP URL is required")
 
         logger.info(f"Connecting to CDP endpoint: {self.cdp_url}")
+        engine_state = self.load_engine_state(engine_id)
 
         # 生成随机 User-Agent
         user_agent = UserAgentGenerator.generate() if self.stealth_config.RANDOM_USER_AGENT else None
@@ -884,7 +899,6 @@ class BrowserManager(BaseBrowserManager):
             "--disable-dev-shm-usage",
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
-            f"--user-data-dir={user_data}",
         ]
 
         # 添加额外参数

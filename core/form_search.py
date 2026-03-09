@@ -8,10 +8,12 @@
 - 处理搜索结果
 """
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
+from urllib.parse import quote_plus, urlparse, urljoin
 import logging
 
 from core.crawler import Crawler, CrawlResult
@@ -87,6 +89,21 @@ class FormFiller:
     SEARCH_FORM_PATTERNS = [
         r'search.*form', r'form.*search', r'search-box', r'searchbox',
     ]
+    KNOWN_SEARCH_URL_TEMPLATES: Dict[str, str] = {
+        "github.com": "https://github.com/search?q={query}&type=repositories",
+        "stackoverflow.com": "https://stackoverflow.com/search?q={query}",
+        "zhihu.com": "https://www.zhihu.com/search?type=content&q={query}",
+        "bilibili.com": "https://search.bilibili.com/all?keyword={query}",
+        "tieba.baidu.com": "https://tieba.baidu.com/f/search/res?ie=utf-8&qw={query}",
+        "taobao.com": "https://s.taobao.com/search?q={query}",
+        "jd.com": "https://search.jd.com/Search?keyword={query}&enc=utf-8",
+    }
+    GITHUB_RESERVED_OWNER_PREFIXES = {
+        "about", "apps", "blog", "codespaces", "collections", "contact", "customer-stories",
+        "enterprise", "events", "explore", "features", "issues", "login", "marketplace",
+        "new", "notifications", "orgs", "pricing", "readme", "resources", "search",
+        "security", "settings", "site", "sponsors", "signup", "solutions", "topics", "users",
+    }
 
     def __init__(self, browser: Optional[BrowserManager] = None):
         self._browser = browser
@@ -167,26 +184,61 @@ class FormFiller:
             # 导航到页面
             await page.goto(url, wait_until="domcontentloaded")
 
-            # 等待表单加载
-            await page.wait_for_load_state("networkidle")
+            # 尝试等待资源稳定（不阻塞主流程）
+            try:
+                await page.wait_for_load_state("networkidle", timeout=6000)
+            except Exception:
+                pass
 
             # 填写表单
+            filled_selector = None
             for name, value in form_data.items():
-                try:
-                    # 尝试多种选择器
-                    selectors = [
-                        f"[name='{name}']",
-                        f"[id='{name}']",
-                        f"[class*='{name}']",
-                    ]
-                    for selector in selectors:
-                        try:
-                            await page.fill(selector, value, timeout=1000)
-                            break
-                        except:
+                selectors = [
+                    f"input[name='{name}']",
+                    f"textarea[name='{name}']",
+                    f"[name='{name}']",
+                    f"input[id='{name}']",
+                    f"[id='{name}']",
+                    f"input[class*='{name}']",
+                    f"[class*='{name}']",
+                ]
+                for selector in selectors:
+                    try:
+                        locator = page.locator(selector).first
+                        if await locator.count() <= 0:
                             continue
-                except Exception as e:
-                    logger.warning(f"Could not fill field {name}: {e}")
+                        await locator.fill(value, timeout=1500)
+                        filled_selector = selector
+                        break
+                    except Exception:
+                        continue
+                if filled_selector:
+                    break
+
+            # 通用搜索框兜底
+            if not filled_selector:
+                fallback_selectors = [
+                    "input[name='q']",
+                    "input[id='query-builder-test']",
+                    "input[name='query']",
+                    "input[name='search']",
+                    "input[type='search']",
+                    "input[placeholder*='Search' i]",
+                    "input[placeholder*='搜索']",
+                    "input[aria-label*='Search' i]",
+                    "input[aria-label*='搜索']",
+                ]
+                query_value = list(form_data.values())[0] if form_data else ""
+                for selector in fallback_selectors:
+                    try:
+                        locator = page.locator(selector).first
+                        if await locator.count() <= 0:
+                            continue
+                        await locator.fill(query_value, timeout=1500)
+                        filled_selector = selector
+                        break
+                    except Exception:
+                        continue
 
             # 提交表单
             query = list(form_data.values())[0] if form_data else ""
@@ -195,37 +247,87 @@ class FormFiller:
             submit_selectors = [
                 "button[type='submit']",
                 "input[type='submit']",
+                "button[aria-label='Search' i]",
                 "[class*='search-btn']",
                 "[class*='submit']",
                 "form button",
             ]
+            submitted = False
             for selector in submit_selectors:
                 try:
                     await page.click(selector, timeout=1000)
+                    submitted = True
                     break
-                except:
+                except Exception:
                     continue
-            else:
-                # 如果没有找到提交按钮，模拟回车提交
-                await page.press("input[type='search']", "Enter")
+
+            # 如果没有找到提交按钮，模拟回车提交
+            if not submitted:
+                enter_targets = []
+                if filled_selector:
+                    enter_targets.append(filled_selector)
+                enter_targets.extend([
+                    "input[name='q']",
+                    "input[name='query']",
+                    "input[name='search']",
+                    "input[type='search']",
+                    "input",
+                ])
+                for target in enter_targets:
+                    try:
+                        await page.press(target, "Enter", timeout=1200)
+                        submitted = True
+                        break
+                    except Exception:
+                        continue
+
+            # 最后兜底：构造搜索 URL 直达（对 GitHub 等站点更可靠）
+            if not submitted:
+                direct_url = self._build_known_site_search_url(page.url or url, query)
+                if direct_url:
+                    await page.goto(direct_url, wait_until="domcontentloaded")
+                    submitted = True
 
             # 等待结果
             if wait_for:
                 try:
                     await page.wait_for_selector(wait_for, timeout=5000)
-                except:
+                except Exception:
                     pass
             else:
-                await page.wait_for_load_state("networkidle")
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
 
             # 获取结果
             result_html = await page.content()
             result_url = page.url
 
-            await page.close()
-
             # 解析结果
             extracted = self._parse_search_results(result_html, result_url, query)
+
+            # 结果质量不足时，强制直达标准搜索 URL 再解析。
+            if not self._is_acceptable_site_result(result_url or url, extracted):
+                direct_url = self._build_known_site_search_url(result_url or url, query)
+                if direct_url and direct_url != (result_url or url):
+                    await page.goto(direct_url, wait_until="domcontentloaded")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=6000)
+                    except Exception:
+                        pass
+                    result_html = await page.content()
+                    result_url = page.url
+                    extracted = self._parse_search_results(result_html, result_url, query)
+
+            # GitHub 专项兜底：挑战页导致解析不到仓库时切 API。
+            if not self._is_acceptable_site_result(result_url or url, extracted) and self._is_github_host(result_url or url):
+                api_result = await self._search_github_api(query)
+                if api_result.success and api_result.result_count > 0:
+                    await page.close()
+                    return api_result
+
+            await page.close()
 
             return SearchFormResult(
                 success=True,
@@ -345,6 +447,16 @@ class FormFiller:
             "/papers/search",
         ]
 
+        # 平台直达策略（GitHub/StackOverflow 等）
+        direct_url = self._build_known_site_search_url(base_url, query)
+        if direct_url:
+            try:
+                direct_result = await self._fetch_search_url(direct_url, query, use_browser=use_browser)
+                if direct_result.success and self._is_acceptable_site_result(base_url, direct_result.extracted_results):
+                    return direct_result
+            except Exception as e:
+                logger.warning(f"Direct site search at {direct_url} failed: {e}")
+
         for path in search_paths:
             if path is None:
                 continue
@@ -355,7 +467,7 @@ class FormFiller:
                     {"q": query, "query": query, "search": query},
                     use_browser=use_browser,
                 )
-                if result.success and result.result_count > 0:
+                if result.success and self._is_acceptable_site_result(base_url, result.extracted_results):
                     return result
             except Exception as e:
                 logger.warning(f"Search at {search_url} failed: {e}")
@@ -363,16 +475,165 @@ class FormFiller:
         # 如果直接访问搜索路径失败，尝试先检测表单
         forms = await self.detect_search_forms(base_url)
         if forms:
-            return await self.fill_and_submit(
+            form_result = await self.fill_and_submit(
                 base_url,
                 {"q": query},
                 use_browser=use_browser,
             )
+            if form_result.success and self._is_acceptable_site_result(base_url, form_result.extracted_results):
+                return form_result
+
+        if self._is_github_host(base_url):
+            api_result = await self._search_github_api(query)
+            if api_result.success:
+                return api_result
 
         return SearchFormResult(
             success=False, query=query, submitted_url=base_url,
             result_html="", extracted_results=[], result_count=0,
             error="Could not find search form"
+        )
+
+    async def _fetch_search_url(
+        self,
+        search_url: str,
+        query: str,
+        use_browser: bool = True,
+    ) -> SearchFormResult:
+        """直接打开搜索 URL 并解析结果。"""
+        if use_browser:
+            await self._ensure_browser()
+            browser_result = await self._browser.fetch(search_url)
+            if browser_result.error is None and browser_result.html:
+                extracted = self._parse_search_results(browser_result.html, browser_result.url, query)
+                return SearchFormResult(
+                    success=True,
+                    query=query,
+                    submitted_url=browser_result.url,
+                    result_html=browser_result.html[:10000],
+                    extracted_results=extracted,
+                    result_count=len(extracted),
+                )
+            return SearchFormResult(
+                success=False,
+                query=query,
+                submitted_url=search_url,
+                result_html="",
+                extracted_results=[],
+                result_count=0,
+                error=browser_result.error or "browser_fetch_failed",
+            )
+
+        crawl_result = await self._crawler.fetch(search_url)
+        if not crawl_result.success:
+            return SearchFormResult(
+                success=False,
+                query=query,
+                submitted_url=search_url,
+                result_html="",
+                extracted_results=[],
+                result_count=0,
+                error=crawl_result.error or f"http_{crawl_result.status_code}",
+            )
+
+        extracted = self._parse_search_results(crawl_result.html, crawl_result.url, query)
+        return SearchFormResult(
+            success=True,
+            query=query,
+            submitted_url=crawl_result.url,
+            result_html=crawl_result.html[:10000],
+            extracted_results=extracted,
+            result_count=len(extracted),
+        )
+
+    def _build_known_site_search_url(self, base_url: str, query: str) -> Optional[str]:
+        """根据站点域名构造标准搜索 URL。"""
+        host = (urlparse(base_url).hostname or "").lower()
+        if not host:
+            return None
+
+        for domain, template in self.KNOWN_SEARCH_URL_TEMPLATES.items():
+            if host == domain or host.endswith("." + domain):
+                return template.format(query=quote_plus(query))
+        return None
+
+    @staticmethod
+    def _is_github_host(url_or_host: str) -> bool:
+        host = (urlparse(url_or_host).hostname or url_or_host or "").lower()
+        return host == "github.com" or host.endswith(".github.com")
+
+    @staticmethod
+    def _is_github_repo_url(url: str) -> bool:
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        if "github.com" not in host:
+            return False
+        match = re.match(r"^/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/?$", parsed.path or "")
+        if not match:
+            return False
+        owner = (match.group(1) or "").lower()
+        return owner not in FormFiller.GITHUB_RESERVED_OWNER_PREFIXES
+
+    def _is_acceptable_site_result(self, site_url: str, results: List[Dict[str, Any]]) -> bool:
+        if not results:
+            return False
+        if self._is_github_host(site_url):
+            return any(self._is_github_repo_url(item.get("url", "")) for item in results if isinstance(item, dict))
+        return True
+
+    async def _search_github_api(self, query: str) -> SearchFormResult:
+        api_url = (
+            "https://api.github.com/search/repositories"
+            f"?q={quote_plus(query)}&sort=stars&order=desc&per_page=20"
+        )
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        result = await self._crawler.fetch(api_url, headers=headers, use_cache=False)
+        if not result.success:
+            return SearchFormResult(
+                success=False,
+                query=query,
+                submitted_url=api_url,
+                result_html="",
+                extracted_results=[],
+                result_count=0,
+                error=result.error or f"http_{result.status_code}",
+            )
+
+        try:
+            payload = json.loads(result.html or "{}")
+        except json.JSONDecodeError as exc:
+            return SearchFormResult(
+                success=False,
+                query=query,
+                submitted_url=api_url,
+                result_html=(result.html or "")[:2000],
+                extracted_results=[],
+                result_count=0,
+                error=f"github_api_json_decode_error: {exc}",
+            )
+
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        extracted: List[Dict[str, Any]] = []
+        for item in items[:20]:
+            if not isinstance(item, dict):
+                continue
+            extracted.append({
+                "title": item.get("full_name") or item.get("name") or "",
+                "url": item.get("html_url") or "",
+                "description": (item.get("description") or "")[:300],
+            })
+
+        return SearchFormResult(
+            success=len(extracted) > 0,
+            query=query,
+            submitted_url=api_url,
+            result_html=(result.html or "")[:10000],
+            extracted_results=extracted,
+            result_count=len(extracted),
+            error=None if extracted else "github_api_no_results",
         )
 
     def _parse_forms(self, html: str, base_url: str) -> List[SearchForm]:
@@ -446,6 +707,47 @@ class FormFiller:
         """解析搜索结果"""
         parser = Parser().parse(html, url)
         results = []
+        parsed_current = urlparse(url or "")
+        host = (parsed_current.hostname or "").lower()
+        path = parsed_current.path or "/"
+
+        # GitHub 搜索结果页专用解析：优先提取仓库链接，避免被星标数等次级链接干扰。
+        if "github.com" in host and path.startswith("/search"):
+            seen_repo_urls = set()
+            for a_tag in parser.soup.select("a[href]"):
+                href = (a_tag.get("href") or "").strip()
+                if not href:
+                    continue
+                full_url = href
+                if href.startswith("/"):
+                    full_url = f"https://github.com{href}"
+                elif href.startswith("http://") or href.startswith("https://"):
+                    full_url = href
+                else:
+                    continue
+
+                parsed_repo = urlparse(full_url)
+                if "github.com" not in (parsed_repo.hostname or "").lower():
+                    continue
+                if not self._is_github_repo_url(full_url):
+                    continue
+                if full_url in seen_repo_urls:
+                    continue
+                seen_repo_urls.add(full_url)
+
+                title = a_tag.get_text(" ", strip=True) or parsed_repo.path.strip("/")
+                container = a_tag.find_parent(["li", "article", "div"])
+                description = container.get_text(" ", strip=True)[:300] if container else ""
+                results.append({
+                    "title": title[:200],
+                    "url": full_url,
+                    "description": description,
+                })
+                if len(results) >= 20:
+                    break
+
+            if results:
+                return results
 
         # 常见搜索结果容器选择器
         result_selectors = [
@@ -460,6 +762,10 @@ class FormFiller:
             "[data-layout='result']",
             ".media-item",
             ".repo-list-item",
+            "[data-testid='results-list'] li",
+            "[data-testid='result-list'] li",
+            "div[data-hpc] li",
+            "main ul li",
         ]
 
         for selector in result_selectors:
@@ -476,11 +782,57 @@ class FormFiller:
 
                         results.append({
                             "title": title,
-                            "url": link if link.startswith("http") else f"{url}{link}",
+                            "url": link if link.startswith("http") else urljoin(url, link),
                             "description": desc_tag.get_text(strip=True)[:300] if desc_tag else "",
                         })
 
                 if results:
+                    break
+
+        if results and "github.com" in host:
+            repo_url_pattern = re.compile(r"^/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$")
+            filtered: List[Dict[str, Any]] = []
+            for item in results:
+                item_url = item.get("url", "")
+                parsed_item = urlparse(item_url)
+                if (parsed_item.hostname or "").lower().endswith("github.com") and repo_url_pattern.match(parsed_item.path or ""):
+                    filtered.append(item)
+
+            # 仅在非搜索页强制过滤，避免主页导航链接被误判为搜索结果。
+            if not path.startswith("/search"):
+                results = filtered
+
+        # GitHub 仓库链接兜底提取
+        if not results:
+            seen = set()
+            for a_tag in parser.soup.select("a[href]"):
+                href = (a_tag.get("href") or "").strip()
+                full_url = href
+                if href.startswith("/"):
+                    full_url = f"https://github.com{href}"
+                elif href.startswith("http://") or href.startswith("https://"):
+                    full_url = href
+                else:
+                    continue
+
+                parsed = urlparse(full_url)
+                host = (parsed.hostname or "").lower()
+                if "github.com" not in host:
+                    continue
+                if not self._is_github_repo_url(full_url):
+                    continue
+                if full_url in seen:
+                    continue
+                seen.add(full_url)
+
+                title = a_tag.get_text(strip=True) or parsed.path.strip("/")
+                parent_text = a_tag.parent.get_text(" ", strip=True) if a_tag.parent else ""
+                results.append({
+                    "title": title[:200],
+                    "url": full_url,
+                    "description": parent_text[:300],
+                })
+                if len(results) >= 20:
                     break
 
         return results
@@ -504,22 +856,7 @@ async def auto_search(
     """
     filler = FormFiller()
     try:
-        # 先尝试检测表单
-        forms = await filler.detect_search_forms(url)
-        if forms:
-            # 找到搜索字段
-            search_fields = {}
-            for form in forms:
-                for field in form.fields:
-                    if filler._is_search_field(field):
-                        search_fields[field.name] = query
-                        break
-                if search_fields:
-                    return await filler.fill_and_submit(
-                        url, search_fields, use_browser=use_browser
-                    )
-
-        # 如果没有检测到表单，尝试常见搜索路径
+        # 优先走站点策略（已内置平台直达、常见搜索路径、表单检测回退）。
         return await filler.site_search(url, query, use_browser=use_browser)
     finally:
         await filler.close()

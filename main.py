@@ -9,6 +9,7 @@ import sys
 import shlex
 import shutil
 import os
+import subprocess
 import importlib.util
 from pathlib import Path
 from typing import Optional, List
@@ -593,6 +594,24 @@ class WebRooterCLI:
             )
 
         playwright_cli = shutil.which("playwright")
+        if playwright_cli is None:
+            for bin_name in ("playwright.exe", "playwright.cmd", "playwright"):
+                candidate = Path(sys.executable).with_name(bin_name)
+                if candidate.exists():
+                    playwright_cli = str(candidate)
+                    break
+        if playwright_cli is None:
+            try:
+                probe = subprocess.run(
+                    [sys.executable, "-m", "playwright", "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+                if probe.returncode == 0:
+                    playwright_cli = f"{sys.executable} -m playwright"
+            except Exception:
+                playwright_cli = None
         add_check(
             "Playwright CLI",
             playwright_cli is not None,

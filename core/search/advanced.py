@@ -12,6 +12,7 @@
 import asyncio
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
@@ -771,7 +772,7 @@ class DeepSearchEngine:
     _MAX_CHANNEL_DOMAINS_PER_PROFILE = 5
     _MAX_CHANNEL_EXPANDED_QUERIES = 40
     _MAX_CONCURRENT_SEARCH_TASKS = 12
-    _SEARCH_TASK_TIMEOUT_SEC = 18
+    _SEARCH_TASK_TIMEOUT_SEC = 45
     _BROWSER_FIRST_DOMAINS = {
         "xiaohongshu.com",
         "xhslink.com",
@@ -1311,6 +1312,195 @@ async def search_all(
         await deep_search.close()
 
 
+def _dedupe_result_dicts(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        canonical_url = DeepSearchEngine._canonicalize_url(item.get("url", ""))
+        if not canonical_url:
+            continue
+        normalized = dict(item)
+        normalized["url"] = canonical_url
+
+        existing = deduped.get(canonical_url)
+        if not existing:
+            deduped[canonical_url] = normalized
+            continue
+
+        if len(str(normalized.get("snippet", ""))) > len(str(existing.get("snippet", ""))):
+            existing["snippet"] = normalized.get("snippet", "")
+        try:
+            if int(normalized.get("rank", 9999)) < int(existing.get("rank", 9999)):
+                existing["rank"] = normalized.get("rank", existing.get("rank"))
+                existing["engine"] = normalized.get("engine", existing.get("engine"))
+        except Exception:
+            pass
+
+    return list(deduped.values())
+
+
+def _extract_query_tokens(query: str) -> List[str]:
+    tokens = re.split(r"[\s,，;；/|]+", str(query or "").strip().lower())
+    return [token for token in tokens if len(token) >= 2]
+
+
+def _is_low_signal_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    path = (parsed.path or "").lower()
+    if path in {"", "/"}:
+        return True
+
+    low_signal_keywords = (
+        "login", "signup", "register", "privacy", "agreement", "terms", "help", "about",
+        "account", "my", "cart", "coupon", "customer", "service", "download",
+        "protocol", "policy", "setting", "settings", "user/self",
+    )
+    return any(keyword in path for keyword in low_signal_keywords)
+
+
+def _count_high_signal_results(
+    results: List[Dict[str, Any]],
+    query: str,
+    target_domains: Optional[List[str]] = None,
+) -> int:
+    if not isinstance(results, list) or not results:
+        return 0
+
+    domains = [d.lower() for d in (target_domains or []) if d]
+    tokens = _extract_query_tokens(query)
+    count = 0
+
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if domains and host and not any(host == d or host.endswith("." + d) for d in domains):
+            continue
+        if _is_low_signal_url(url):
+            continue
+
+        text = " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("snippet") or ""),
+                str(item.get("description") or ""),
+                url,
+            ]
+        ).lower()
+        if tokens and not any(token in text for token in tokens):
+            continue
+        count += 1
+
+    return count
+
+
+def _merge_search_payload(
+    primary: Dict[str, Any],
+    backup: Dict[str, Any],
+    query: str,
+) -> Dict[str, Any]:
+    merged = dict(primary)
+    primary_results = primary.get("results", []) if isinstance(primary.get("results"), list) else []
+    backup_results = backup.get("results", []) if isinstance(backup.get("results"), list) else []
+    merged_results = _dedupe_result_dicts(primary_results + backup_results)
+
+    primary_errors = primary.get("errors", []) if isinstance(primary.get("errors"), list) else []
+    backup_errors = backup.get("errors", []) if isinstance(backup.get("errors"), list) else []
+    merged_errors = list(primary_errors)
+    for err in backup_errors:
+        if err not in merged_errors:
+            merged_errors.append(err)
+
+    merged["success"] = len(merged_results) > 0
+    merged["results"] = merged_results
+    merged["total_results"] = len(merged_results)
+    merged["errors"] = merged_errors
+    merged["citations"] = build_web_citations(merged_results, query=query, prefix="W")
+    merged["comparison"] = build_comparison_summary(merged_results)
+    merged["references_text"] = format_reference_block(merged["citations"], max_items=40)
+    merged["search_summary"] = (
+        f"平台级策略合并结果，共 {len(merged_results)} 条；"
+        f"主链路 {len(primary_results)} 条，备份链路 {len(backup_results)} 条"
+    )
+    return merged
+
+
+async def _run_platform_backup_search(
+    query: str,
+    target_domains: List[str],
+    profile: Optional[str],
+    use_english: bool = False,
+) -> Dict[str, Any]:
+    """平台站点直连结果不足时，使用通用搜索引擎 + site:domain 兜底。"""
+    if not target_domains:
+        return {"success": False, "results": [], "errors": ["no_target_domains"]}
+
+    backup_engines = [
+        AdvancedSearchEngine.GOOGLE,
+        AdvancedSearchEngine.BING,
+        AdvancedSearchEngine.BAIDU,
+        AdvancedSearchEngine.DUCKDUCKGO,
+    ]
+    max_domains = max(2, int(os.getenv("WEB_ROOTER_PLATFORM_BACKUP_DOMAINS", "4")))
+    task_timeout = max(25, int(os.getenv("WEB_ROOTER_PLATFORM_BACKUP_TIMEOUT_SEC", "80")))
+
+    deep_search = DeepSearchEngine()
+    merged_results: List[Dict[str, Any]] = []
+    merged_errors: List[str] = []
+    used_queries: List[str] = []
+
+    try:
+        for domain in target_domains[:max_domains]:
+            domain_query = f"{query} site:{domain}"
+            used_queries.append(domain_query)
+            try:
+                response = await asyncio.wait_for(
+                    deep_search.deep_search(
+                        domain_query,
+                        num_results=8,
+                        use_english=use_english,
+                        engines=backup_engines,
+                        crawl_top=0,
+                        query_variants=1,
+                        channel_profiles=[profile] if profile else None,
+                    ),
+                    timeout=task_timeout,
+                )
+            except asyncio.TimeoutError:
+                merged_errors.append(f"platform backup timeout for {domain}")
+                continue
+            except Exception as exc:
+                merged_errors.append(str(exc))
+                continue
+
+            if isinstance(response, dict):
+                if isinstance(response.get("results"), list):
+                    merged_results.extend(response["results"])
+                if isinstance(response.get("errors"), list):
+                    for err in response["errors"]:
+                        if err not in merged_errors:
+                            merged_errors.append(err)
+    finally:
+        await deep_search.close()
+
+    deduped = _dedupe_result_dicts(merged_results)
+    citations = build_web_citations(deduped, query=query, prefix="W")
+    return {
+        "success": len(deduped) > 0,
+        "query": query,
+        "queries_used": used_queries,
+        "total_results": len(deduped),
+        "results": deduped,
+        "errors": merged_errors,
+        "citations": citations,
+        "comparison": build_comparison_summary(deduped),
+        "references_text": format_reference_block(citations, max_items=40),
+    }
+
+
 async def search_social_media(
     query: str,
     platforms: Optional[List[str]] = None,
@@ -1343,6 +1533,21 @@ async def search_social_media(
         "x": AdvancedSearchEngine.TWITTER,
         "hackernews": AdvancedSearchEngine.HACKERNEWS,
     }
+    platform_domains = {
+        "xiaohongshu": ["xiaohongshu.com", "xhslink.com"],
+        "xhs": ["xiaohongshu.com", "xhslink.com"],
+        "zhihu": ["zhihu.com"],
+        "tieba": ["tieba.baidu.com"],
+        "douyin": ["douyin.com", "iesdouyin.com"],
+        "bilibili": ["bilibili.com"],
+        "bili": ["bilibili.com"],
+        "weibo": ["weibo.com", "weibo.cn"],
+        "reddit": ["reddit.com"],
+        "twitter": ["x.com", "twitter.com"],
+        "x": ["x.com", "twitter.com"],
+        "hackernews": ["news.ycombinator.com"],
+    }
+    selected_domains: List[str] = []
 
     for platform in platforms:
         normalized = str(platform or "").strip().lower()
@@ -1350,6 +1555,9 @@ async def search_social_media(
             engine = platform_map[normalized]
             if engine not in engines:
                 engines.append(engine)
+        for domain in platform_domains.get(normalized, []):
+            if domain not in selected_domains:
+                selected_domains.append(domain)
 
     if not engines:
         engines = [
@@ -1360,10 +1568,18 @@ async def search_social_media(
             AdvancedSearchEngine.BILIBILI,
             AdvancedSearchEngine.WEIBO,
         ]
+        selected_domains = [
+            "xiaohongshu.com",
+            "zhihu.com",
+            "tieba.baidu.com",
+            "douyin.com",
+            "bilibili.com",
+            "weibo.com",
+        ]
 
     deep_search = DeepSearchEngine()
     try:
-        return await deep_search.deep_search(
+        primary = await deep_search.deep_search(
             query,
             num_results=10,
             use_english=False,
@@ -1371,6 +1587,30 @@ async def search_social_media(
         )
     finally:
         await deep_search.close()
+
+    primary_results = int(primary.get("total_results", 0) or 0)
+    min_expected = max(2, min(len(engines), 4))
+    primary_high_signal = _count_high_signal_results(
+        primary.get("results", []) if isinstance(primary.get("results"), list) else [],
+        query=query,
+        target_domains=selected_domains,
+    )
+    force_low_signal_backup = str(os.getenv("WEB_ROOTER_FORCE_PLATFORM_BACKUP_ON_LOW_SIGNAL", "0")).lower() in {
+        "1", "true", "yes", "on"
+    }
+    if primary_results >= min_expected and (
+        not force_low_signal_backup or primary_high_signal >= max(1, min_expected - 1)
+    ):
+        primary["success"] = True
+        return primary
+
+    backup = await _run_platform_backup_search(
+        query=query,
+        target_domains=selected_domains,
+        profile="platforms",
+        use_english=False,
+    )
+    return _merge_search_payload(primary, backup, query=query)
 
 
 async def search_commerce(
@@ -1401,6 +1641,17 @@ async def search_commerce(
         "meituan": AdvancedSearchEngine.MEITUAN,
         "dianping": AdvancedSearchEngine.MEITUAN,
     }
+    platform_domains = {
+        "taobao": ["taobao.com", "tmall.com"],
+        "tmall": ["tmall.com", "taobao.com"],
+        "jd": ["jd.com"],
+        "jingdong": ["jd.com"],
+        "pinduoduo": ["pinduoduo.com", "yangkeduo.com"],
+        "pdd": ["pinduoduo.com", "yangkeduo.com"],
+        "meituan": ["meituan.com", "dianping.com"],
+        "dianping": ["dianping.com", "meituan.com"],
+    }
+    selected_domains: List[str] = []
 
     for platform in platforms:
         normalized = str(platform or "").strip().lower()
@@ -1408,6 +1659,9 @@ async def search_commerce(
             engine = platform_map[normalized]
             if engine not in engines:
                 engines.append(engine)
+        for domain in platform_domains.get(normalized, []):
+            if domain not in selected_domains:
+                selected_domains.append(domain)
 
     if not engines:
         engines = [
@@ -1416,10 +1670,19 @@ async def search_commerce(
             AdvancedSearchEngine.PINDUODUO,
             AdvancedSearchEngine.MEITUAN,
         ]
+        selected_domains = [
+            "taobao.com",
+            "tmall.com",
+            "jd.com",
+            "pinduoduo.com",
+            "yangkeduo.com",
+            "meituan.com",
+            "dianping.com",
+        ]
 
     deep_search = DeepSearchEngine()
     try:
-        return await deep_search.deep_search(
+        primary = await deep_search.deep_search(
             query,
             num_results=12,
             use_english=False,
@@ -1428,6 +1691,30 @@ async def search_commerce(
         )
     finally:
         await deep_search.close()
+
+    primary_results = int(primary.get("total_results", 0) or 0)
+    min_expected = max(2, min(len(engines), 4))
+    primary_high_signal = _count_high_signal_results(
+        primary.get("results", []) if isinstance(primary.get("results"), list) else [],
+        query=query,
+        target_domains=selected_domains,
+    )
+    force_low_signal_backup = str(os.getenv("WEB_ROOTER_FORCE_PLATFORM_BACKUP_ON_LOW_SIGNAL", "0")).lower() in {
+        "1", "true", "yes", "on"
+    }
+    if primary_results >= min_expected and (
+        not force_low_signal_backup or primary_high_signal >= max(1, min_expected - 1)
+    ):
+        primary["success"] = True
+        return primary
+
+    backup = await _run_platform_backup_search(
+        query=query,
+        target_domains=selected_domains,
+        profile="commerce",
+        use_english=False,
+    )
+    return _merge_search_payload(primary, backup, query=query)
 
 
 async def search_tech(

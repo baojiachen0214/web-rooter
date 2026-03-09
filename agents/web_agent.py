@@ -1048,8 +1048,20 @@ class WebAgent:
 
         # 解析搜索结果
         if result.success:
-            # 访问结果页面获取内容
-            visit_result = await self.visit(result.submitted_url)
+            # 尝试访问结果页获取额外上下文；失败不影响站内搜索主结果。
+            submitted_url = result.submitted_url or ""
+            should_visit_result = (
+                submitted_url.startswith(("http://", "https://"))
+                and "api.github.com/" not in submitted_url
+            )
+            if should_visit_result:
+                try:
+                    await asyncio.wait_for(
+                        self.visit(submitted_url),
+                        timeout=min(timeout_sec, 20),
+                    )
+                except Exception:
+                    pass
 
             content = f"搜索完成，找到 {result.result_count} 个结果\n\n"
             if result.extracted_results:
