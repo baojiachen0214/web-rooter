@@ -28,6 +28,9 @@ Thumbs.db
 
 # Claude Code
 .claude/
+CLAUDE.md
+claude-code-mcp.json
+.mcp.json
 
 # Temporary files
 temp/
@@ -43,7 +46,9 @@ test_*.py
 deep_test*.py
 
 # Examples (keep minimal, exclude detailed examples)
-examples/
+examples/*
+!examples/claude/
+!examples/claude/claude-code-mcp.example.json
 
 # Logs and cache
 logs/

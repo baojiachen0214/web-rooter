@@ -1,0 +1,30 @@
+{
+  "_comment": "DuckDuckGo 搜索引擎配置",
+  "id": "duckduckgo",
+  "name": "DuckDuckGo",
+  "baseUrl": "https://duckduckgo.com",
+  "searchPath": "/?q=",
+  "selectors": {
+    "resultContainer": "div.result",
+    "title": "a.result__a",
+    "link": "a.result__url",
+    "snippet": "a.result__snippet"
+  },
+  "headers": {
+    "Accept-Language": "en-US,en;q=0.9"
+  },
+  "antiBot": {
+    "enabled": false,
+    "detectors": [],
+    "errorMessage": "DuckDuckGo 需要验证。"
+  },
+  "customDelay": {
+    "min": 500,
+    "max": 1500
+  },
+  "fallbackSelector": "div:has(a[href*='http'])",
+  "linkValidation": ["http"],
+  "maxResultsPerPage": 10,
+  "timezoneList": ["America/New_York", "Europe/London"],
+  "localeList": ["en-US", "en-GB"]
+}

@@ -5,16 +5,23 @@
 import asyncio
 import aiohttp
 import hashlib
+import ipaddress
 import random
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 import logging
+from urllib.parse import urlparse
 
 from config import crawler_config, CrawlerConfig, ProxyConfig, ProxyRotationStrategy
 from core.cache import RequestCache
 from core.connection_pool import ConnectionPool, PooledSession
+
+try:
+    from curl_cffi import requests as curl_requests
+except Exception:  # pragma: no cover
+    curl_requests = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -219,6 +226,36 @@ class ProxyRotator:
 class Crawler:
     """异步网页爬虫（支持代理轮换、缓存和连接池）"""
 
+    _USER_AGENT_POOL = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    ]
+
+    _ACCEPT_LANGUAGE_POOL = [
+        "zh-CN,zh;q=0.9,en;q=0.8",
+        "en-US,en;q=0.9,zh;q=0.7",
+        "en-GB,en;q=0.9",
+        "ja-JP,ja;q=0.9,en;q=0.7",
+    ]
+
+    _BLOCKED_STATUS = {401, 403, 406, 409, 418, 425, 426, 429, 451, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525}
+    _BLOCKED_KEYWORDS = [
+        "cloudflare",
+        "cf-challenge",
+        "captcha",
+        "access denied",
+        "forbidden",
+        "bot detection",
+        "robot check",
+        "please verify you are human",
+    ]
+    _TLS_IMPERSONATION_ENGINES = {"google.com", "duckduckgo.com", "bing.com"}
+    _TLS_IMPERSONATION_BROWSERS = ("chrome", "edge", "safari")
+    _TLS_IMPERSONATION_ATTEMPTS = 3
+
     def __init__(
         self,
         config: Optional[CrawlerConfig] = None,
@@ -233,12 +270,15 @@ class Crawler:
         self._session: Optional[aiohttp.ClientSession] = None
         self._request_delay = self.config.REQUEST_DELAY
         self._last_request_time = 0.0
+        self._base_user_agent = self.config.USER_AGENT
 
         # 代理轮换器
         self._use_proxy_rotation = use_proxy_rotation
         self._proxy_rotator: Optional[ProxyRotator] = None
-        if proxy_config or (use_proxy_rotation and proxy_config.PROXIES):
+        if proxy_config and proxy_config.PROXIES:
             self._proxy_rotator = ProxyRotator(proxy_config)
+        elif use_proxy_rotation:
+            logger.warning("Proxy rotation is enabled but no proxies are configured")
 
         # 请求缓存
         self._use_cache = use_cache
@@ -282,7 +322,7 @@ class Crawler:
         if self._session is None:
             timeout = aiohttp.ClientTimeout(total=self.config.TIMEOUT)
             self._session = aiohttp.ClientSession(
-                headers={"User-Agent": self.config.USER_AGENT},
+                headers={"User-Agent": self._base_user_agent},
                 timeout=timeout,
                 cookie_jar=aiohttp.CookieJar()
             )
@@ -351,14 +391,15 @@ class Crawler:
 
         # 获取代理
         proxy = None
+        proxy_url = None
         if use_proxy and self._proxy_rotator:
             proxy = await self._proxy_rotator.get_proxy()
+            proxy_url = self._select_proxy_url(proxy, url)
 
         start_time = asyncio.get_event_loop().time()
+        merged_headers = self._build_request_headers(url, headers=headers)
 
         try:
-            merged_headers = {**self._default_headers, **(headers or {})}
-
             # 构建请求参数
             request_kwargs = {
                 "method": method,
@@ -369,11 +410,11 @@ class Crawler:
             }
 
             # 添加代理
-            if proxy:
-                request_kwargs["proxy"] = proxy
+            if proxy_url:
+                request_kwargs["proxy"] = proxy_url
 
             # 使用连接池或默认 session
-            if self._connection_pool and not proxy:
+            if self._connection_pool and not proxy_url:
                 async with PooledSession(self._connection_pool, url) as session:
                     async with session.request(**request_kwargs) as response:
                         result = await self._process_response(response, url, start_time)
@@ -382,6 +423,28 @@ class Crawler:
                 async with self._session.request(**request_kwargs) as response:
                     result = await self._process_response(response, url, start_time)
                     self._pool_misses += 1
+
+            blocked = self._looks_like_blocked_response(result.status_code, result.html)
+            if blocked:
+                result.error = result.error or "Detected anti-bot challenge page"
+                result.metadata["anti_bot_detected"] = True
+                if self._should_try_tls_impersonation(url, result.error):
+                    tls_result = await self._fetch_with_tls_impersonation(
+                        url=url,
+                        method=method,
+                        data=data,
+                        headers=merged_headers,
+                        follow_redirects=follow_redirects,
+                        proxy_url=proxy_url,
+                    )
+                    if tls_result and tls_result.success and not self._looks_like_blocked_response(
+                        tls_result.status_code,
+                        tls_result.html,
+                    ):
+                        result = tls_result
+
+            if result.cookies:
+                await self._store_cookie_map(result.url or url, result.cookies)
 
             # 缓存结果
             if use_cache and self._cache and result.success:
@@ -400,6 +463,18 @@ class Crawler:
             if proxy and self._proxy_rotator:
                 await self._proxy_rotator.record_failure(proxy)
 
+            if self._should_try_tls_impersonation(url, "timeout"):
+                tls_result = await self._fetch_with_tls_impersonation(
+                    url=url,
+                    method=method,
+                    data=data,
+                    headers=merged_headers,
+                    follow_redirects=follow_redirects,
+                    proxy_url=proxy_url,
+                )
+                if tls_result:
+                    return tls_result
+
             return CrawlResult(
                 url=url,
                 status_code=0,
@@ -417,6 +492,18 @@ class Crawler:
             if is_proxy_error and proxy and self._proxy_rotator:
                 await self._proxy_rotator.record_failure(proxy)
                 logger.warning(f"Proxy error, rotating: {error_str}")
+
+            if self._should_try_tls_impersonation(url, error_str):
+                tls_result = await self._fetch_with_tls_impersonation(
+                    url=url,
+                    method=method,
+                    data=data,
+                    headers=merged_headers,
+                    follow_redirects=follow_redirects,
+                    proxy_url=proxy_url,
+                )
+                if tls_result:
+                    return tls_result
 
             return CrawlResult(
                 url=url,
@@ -462,21 +549,40 @@ class Crawler:
         retries: Optional[int] = None,
         use_proxy: bool = True,
     ) -> CrawlResult:
-        """带重试的 fetch（支持代理轮换）"""
+        """带重试的 fetch（支持代理轮换 + 反爬规避头轮换）。"""
         retries = retries if retries is not None else self.config.MAX_RETRIES
 
         last_result = None
         for attempt in range(retries + 1):
-            # 每次重试使用不同的代理
-            result = await self.fetch(url, use_proxy=use_proxy)
+            # 每次重试轮换请求指纹；重试时默认绕过缓存，避免命中挑战页
+            rotated_headers = self._build_request_headers(url, attempt=attempt)
+            result = await self.fetch(
+                url,
+                use_proxy=use_proxy,
+                use_cache=(attempt == 0),
+                headers=rotated_headers,
+            )
 
-            if result.success:
+            blocked = self._looks_like_blocked_response(result.status_code, result.html)
+            if blocked and not result.error:
+                result.error = "Detected anti-bot challenge page"
+                result.metadata["anti_bot_detected"] = True
+
+            if result.success and not blocked:
                 return result
 
             last_result = result
             if attempt < retries:
-                wait_time = self.config.RETRY_DELAY * (2 ** attempt)
-                logger.warning(f"Retry {attempt + 1}/{retries} for {url} after {wait_time}s")
+                wait_time = self.config.RETRY_DELAY * (2 ** attempt) + random.uniform(0, 0.35)
+                fail_reason = result.error or f"status={result.status_code}"
+                logger.warning(
+                    "Retry %s/%s for %s after %.2fs (%s)",
+                    attempt + 1,
+                    retries,
+                    url,
+                    wait_time,
+                    fail_reason,
+                )
                 await asyncio.sleep(wait_time)
 
                 # 如果有代理轮换器，重置失败记录以尝试所有代理
@@ -497,10 +603,250 @@ class Crawler:
     def _default_headers(self) -> Dict[str, str]:
         return {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Language": random.choice(self._ACCEPT_LANGUAGE_POOL),
             "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         }
+
+    def _build_request_headers(
+        self,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        attempt: int = 0,
+    ) -> Dict[str, str]:
+        """
+        构建更接近真实浏览器的请求头。
+        参考 Scrapling 指纹思路：动态 UA、语言、Referer 与 Client Hints。
+        """
+        headers = headers or {}
+        final_headers = dict(self._default_headers)
+
+        user_agents = [self._base_user_agent] + self._USER_AGENT_POOL
+        ua = user_agents[attempt % len(user_agents)]
+        final_headers["User-Agent"] = ua
+        final_headers["Accept-Language"] = self._ACCEPT_LANGUAGE_POOL[attempt % len(self._ACCEPT_LANGUAGE_POOL)]
+        final_headers["Sec-Fetch-Site"] = "none" if attempt == 0 else "same-origin"
+        final_headers["Sec-Fetch-Mode"] = "navigate"
+        final_headers["Sec-Fetch-Dest"] = "document"
+        final_headers["Sec-Fetch-User"] = "?1"
+
+        # 近似浏览器的 client hints（非严格版本）
+        if "Chrome" in ua:
+            final_headers["sec-ch-ua"] = '"Chromium";v="126", "Google Chrome";v="126", "Not.A/Brand";v="24"'
+            final_headers["sec-ch-ua-mobile"] = "?0"
+            final_headers["sec-ch-ua-platform"] = '"Windows"' if "Windows" in ua else '"macOS"' if "Macintosh" in ua else '"Linux"'
+
+        if "Referer" not in headers and "referer" not in headers:
+            referer = self._build_convincing_referer(url)
+            if referer:
+                final_headers["Referer"] = referer
+
+        # 外部 headers 最后覆盖，保留调用方优先级
+        final_headers.update(headers)
+        return final_headers
+
+    def _build_convincing_referer(self, url: str) -> Optional[str]:
+        """构建类似搜索引擎来源的 Referer。"""
+        try:
+            host = (urlparse(url).hostname or "").lower()
+            if not host or host in {"localhost", "127.0.0.1"}:
+                return None
+
+            parts = [p for p in host.split(".") if p]
+            if len(parts) >= 2:
+                keyword = parts[-2]
+            else:
+                keyword = host
+            if not keyword:
+                return None
+            return f"https://www.google.com/search?q={keyword}"
+        except Exception:
+            return None
+
+    def _looks_like_blocked_response(self, status_code: int, body: str) -> bool:
+        if status_code in self._BLOCKED_STATUS:
+            return True
+
+        lowered = (body or "").lower()
+        if not lowered:
+            return False
+        return any(keyword in lowered for keyword in self._BLOCKED_KEYWORDS)
+
+    def _should_try_tls_impersonation(self, url: str, error_text: str) -> bool:
+        """
+        是否启用 curl_cffi TLS 指纹兜底。
+        参考 Scrapling 的 impersonate 思路，在 TLS/连接失败或挑战页时触发。
+        """
+        if curl_requests is None:
+            return False
+
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if not host or self._is_private_or_local_host(host):
+            return False
+
+        text = (error_text or "").lower()
+        anti_bot_markers = [
+            "anti-bot",
+            "challenge",
+            "captcha",
+            "verify you are human",
+            "cloudflare",
+            "forbidden",
+            "blocked",
+            "access denied",
+            "unusual traffic",
+            "status=403",
+            "status=429",
+            "status=503",
+        ]
+        tls_markers = [
+            "ssl",
+            "eof",
+            "handshake",
+            "connect",
+            "connection",
+            "timeout",
+            "reset",
+            "specified network name is no longer available",
+            "远程主机强迫关闭了一个现有的连接",
+            "指定的网络名不再可用",
+        ]
+        if any(marker in text for marker in anti_bot_markers):
+            return True
+        if any(marker in text for marker in tls_markers):
+            return True
+
+        # 搜索引擎域名默认优先尝试一次指纹兜底
+        return any(engine in host for engine in self._TLS_IMPERSONATION_ENGINES)
+
+    @staticmethod
+    def _is_private_or_local_host(host: str) -> bool:
+        lowered = (host or "").strip().lower()
+        if lowered in {"localhost", "::1"}:
+            return True
+        if lowered.endswith(".local"):
+            return True
+
+        try:
+            ip = ipaddress.ip_address(lowered.strip("[]"))
+            return (
+                ip.is_loopback
+                or ip.is_private
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+            )
+        except ValueError:
+            return False
+
+    async def _fetch_with_tls_impersonation(
+        self,
+        url: str,
+        method: str,
+        data: Optional[Dict],
+        headers: Optional[Dict[str, str]],
+        follow_redirects: bool,
+        proxy_url: Optional[str] = None,
+    ) -> Optional[CrawlResult]:
+        """
+        使用 curl_cffi 的浏览器指纹请求进行兜底抓取。
+        """
+        if curl_requests is None:
+            return None
+
+        method_upper = (method or "GET").upper()
+        if method_upper not in {"GET", "POST"}:
+            return None
+
+        last_exception: Optional[Exception] = None
+        blocked_result: Optional[CrawlResult] = None
+
+        for attempt in range(self._TLS_IMPERSONATION_ATTEMPTS):
+            start = asyncio.get_event_loop().time()
+            impersonate = self._TLS_IMPERSONATION_BROWSERS[attempt % len(self._TLS_IMPERSONATION_BROWSERS)]
+            request_headers = self._build_request_headers(url, headers=headers, attempt=attempt + 1)
+
+            def _do_request():
+                kwargs = {
+                    "url": url,
+                    "headers": request_headers,
+                    "timeout": max(10, int(self.config.TIMEOUT)),
+                    "allow_redirects": follow_redirects,
+                    "impersonate": impersonate,
+                }
+                if proxy_url:
+                    kwargs["proxy"] = proxy_url
+                if method_upper == "POST" and data is not None:
+                    kwargs["data"] = data
+                return curl_requests.request(method_upper, **kwargs)
+
+            try:
+                response = await asyncio.to_thread(_do_request)
+                elapsed = asyncio.get_event_loop().time() - start
+                response_cookies: Dict[str, str] = {}
+                raw_cookies = getattr(response, "cookies", None)
+                if raw_cookies is not None:
+                    try:
+                        if hasattr(raw_cookies, "get_dict"):
+                            response_cookies = {
+                                str(k): str(v)
+                                for k, v in raw_cookies.get_dict().items()
+                                if k
+                            }
+                        else:
+                            response_cookies = {
+                                str(cookie.name): str(cookie.value)
+                                for cookie in raw_cookies
+                                if getattr(cookie, "name", None)
+                            }
+                    except Exception:
+                        response_cookies = {}
+
+                candidate = CrawlResult(
+                    url=str(getattr(response, "url", url)),
+                    status_code=int(getattr(response, "status_code", 0)),
+                    html=getattr(response, "text", "") or "",
+                    headers=dict(getattr(response, "headers", {}) or {}),
+                    cookies=response_cookies,
+                    response_time=elapsed,
+                    metadata={
+                        "from_cache": False,
+                        "connection_pool_used": False,
+                        "transport": "curl_cffi_impersonation",
+                        "impersonate": impersonate,
+                        "attempt": attempt + 1,
+                    },
+                )
+
+                if self._looks_like_blocked_response(candidate.status_code, candidate.html):
+                    candidate.error = "Detected anti-bot challenge page"
+                    candidate.metadata["anti_bot_detected"] = True
+                    blocked_result = candidate
+                    if attempt < self._TLS_IMPERSONATION_ATTEMPTS - 1:
+                        await asyncio.sleep(0.25 + attempt * 0.25 + random.uniform(0.05, 0.3))
+                        continue
+
+                return candidate
+            except Exception as exc:
+                last_exception = exc
+                if attempt < self._TLS_IMPERSONATION_ATTEMPTS - 1:
+                    await asyncio.sleep(0.25 + attempt * 0.25 + random.uniform(0.05, 0.3))
+
+        if blocked_result:
+            return blocked_result
+        if last_exception:
+            logger.debug("curl_cffi TLS 指纹兜底失败 %s: %s", url, last_exception)
+        return None
+
+    def _select_proxy_url(self, proxy: Optional[Dict[str, str]], url: str) -> Optional[str]:
+        # aiohttp expects proxy as a URL string, not a dict.
+        if not proxy:
+            return None
+        if url.startswith('https://') and proxy.get('https'):
+            return proxy['https']
+        return proxy.get('http') or proxy.get('https')
 
     async def fetch_multiple(
         self,
@@ -537,6 +883,46 @@ class Crawler:
             stats["connection_pool"] = self._connection_pool.get_stats()
 
         return stats
+
+    async def _store_cookie_map(self, url: str, cookies: Dict[str, str]) -> None:
+        """将 cookie 字典写入 aiohttp 会话，用于后续请求复用。"""
+        if not cookies:
+            return
+        await self._init_session()
+        if self._session is None:
+            return
+
+        cleaned = {
+            str(k).strip(): str(v)
+            for k, v in (cookies or {}).items()
+            if str(k).strip()
+        }
+        if not cleaned:
+            return
+
+        try:
+            from yarl import URL
+
+            self._session.cookie_jar.update_cookies(cleaned, response_url=URL(url))
+        except Exception as exc:
+            logger.debug("写入 cookie 失败（忽略） %s: %s", url, exc)
+
+    async def seed_cookies(self, url: str, cookies: Dict[str, str]) -> int:
+        """
+        主动注入 cookies（例如浏览器通过挑战页后回灌到 HTTP 抓取链路）。
+        返回实际注入数量。
+        """
+        if not cookies:
+            return 0
+        cleaned = {
+            str(k).strip(): str(v)
+            for k, v in cookies.items()
+            if str(k).strip()
+        }
+        if not cleaned:
+            return 0
+        await self._store_cookie_map(url, cleaned)
+        return len(cleaned)
 
     async def clear_cache(self, url: Optional[str] = None):
         """

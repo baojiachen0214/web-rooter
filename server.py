@@ -12,7 +12,7 @@ import asyncio
 from agents.web_agent import WebAgent
 from tools.mcp_tools import WebTools
 from config import server_config
-from core.search_engine import SearchEngine
+from core.search.engine import SearchEngine
 from core.academic_search import AcademicSource
 
 app = FastAPI(title="Web-Rooter API", version="1.0.0")

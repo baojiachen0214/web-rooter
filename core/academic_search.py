@@ -1,39 +1,40 @@
 """
-学术搜索引擎 - 专门用于论文、代码项目搜索
+Academic search engine with robust parsing and citation-oriented metadata.
 """
+from __future__ import annotations
+
 import asyncio
-import re
 import json
+import logging
+import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
-import logging
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus, urljoin, urlparse
 
-from core.crawler import Crawler, CrawlResult
-from core.parser import Parser, ExtractedData
+from core.crawler import Crawler
+from core.parser import Parser
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class AcademicSource(Enum):
-    """学术资源来源"""
-    ARXIV = "arxiv"           # 预印本论文
-    GOOGLE_SCHOLAR = "google_scholar"  # Google 学术
-    SEMANTIC_SCHOLAR = "semantic_scholar"  # Semantic Scholar
-    PUBMED = "pubmed"         # 生物医学论文
-    IEEE = "ieee"             # IEEE 论文
-    CNKI = "cnki"             # 中国知网
-    WANFANG = "wanfang"       # 万方数据
-    GITHUB = "github"         # GitHub 代码
-    GITEE = "gitee"           # Gitee 代码
-    PAPER_WITH_CODE = "paper_with_code"  # Papers With Code
+    ARXIV = "arxiv"
+    GOOGLE_SCHOLAR = "google_scholar"
+    SEMANTIC_SCHOLAR = "semantic_scholar"
+    PUBMED = "pubmed"
+    IEEE = "ieee"
+    CNKI = "cnki"
+    WANFANG = "wanfang"
+    GITHUB = "github"
+    GITEE = "gitee"
+    PAPER_WITH_CODE = "paper_with_code"
 
 
 @dataclass
 class PaperResult:
-    """论文结果"""
     title: str
     url: str
     abstract: str
@@ -62,7 +63,6 @@ class PaperResult:
 
 @dataclass
 class CodeProjectResult:
-    """代码项目结果"""
     name: str
     url: str
     description: str
@@ -90,27 +90,49 @@ class CodeProjectResult:
 
 
 class AcademicSearchEngine:
-    """
-    学术搜索引擎
+    PAPER_SOURCES = {
+        AcademicSource.ARXIV,
+        AcademicSource.GOOGLE_SCHOLAR,
+        AcademicSource.SEMANTIC_SCHOLAR,
+        AcademicSource.PUBMED,
+        AcademicSource.IEEE,
+        AcademicSource.CNKI,
+        AcademicSource.WANFANG,
+        AcademicSource.PAPER_WITH_CODE,
+    }
+    CODE_SOURCES = {AcademicSource.GITHUB, AcademicSource.GITEE}
 
-    支持：
-    - 论文搜索（arXiv、Google Scholar、Semantic Scholar、PubMed、IEEE、CNKI、万方）
-    - 代码项目搜索（GitHub、Gitee）
-    - 论文摘要自动爬取
-    """
-
-    # 学术搜索 URL
     SEARCH_URLS = {
-        AcademicSource.ARXIV: "https://arxiv.org/search/?query={query}&searchtype=all&start=0",
+        AcademicSource.ARXIV: (
+            "http://export.arxiv.org/api/query?"
+            "search_query=all:{query}&start=0&max_results={count}&sortBy=relevance&sortOrder=descending"
+        ),
         AcademicSource.GOOGLE_SCHOLAR: "https://scholar.google.com/scholar?q={query}&hl=zh-CN&num={count}",
-        AcademicSource.SEMANTIC_SCHOLAR: "https://www.semanticscholar.org/search?q={query}&sort=relevance",
+        AcademicSource.SEMANTIC_SCHOLAR: (
+            "https://api.semanticscholar.org/graph/v1/paper/search?"
+            "query={query}&limit={count}&fields=title,abstract,year,authors,url,citationCount,venue,externalIds,openAccessPdf"
+        ),
         AcademicSource.PUBMED: "https://pubmed.ncbi.nlm.nih.gov/?term={query}&size={count}",
-        AcademicSource.IEEE: "https://ieeexplore.ieee.org/search/searchresult.jsp?newsearch=true&queryText={query}&rows={count}",
+        AcademicSource.IEEE: "https://ieeexplore.ieee.org/search/searchresult.jsp?newsearch=true&queryText={query}",
         AcademicSource.CNKI: "https://kns.cnki.net/kns8s/defaultresult/index?kwd={query}",
-        AcademicSource.WANFANG: "https://c.wanfangdata.com.cn.cnki.net.kcisrc.com.cn/search/list?searchword={query}&clustertype=all&pagesize=20",
-        AcademicSource.GITHUB: "https://github.com/search?q={query}&type=repositories",
+        AcademicSource.WANFANG: "https://s.wanfangdata.com.cn/paper?q={query}",
+        AcademicSource.GITHUB: (
+            "https://api.github.com/search/repositories?"
+            "q={query}&sort=stars&order=desc&per_page={count}"
+        ),
         AcademicSource.GITEE: "https://search.gitee.com/?skin=rec&type=repository&q={query}",
         AcademicSource.PAPER_WITH_CODE: "https://paperswithcode.com/search?q={query}&page=1",
+    }
+
+    SOURCE_PRIORITY = {
+        AcademicSource.ARXIV.value: 1,
+        AcademicSource.SEMANTIC_SCHOLAR.value: 2,
+        AcademicSource.PUBMED.value: 3,
+        AcademicSource.GOOGLE_SCHOLAR.value: 4,
+        AcademicSource.PAPER_WITH_CODE.value: 5,
+        AcademicSource.IEEE.value: 6,
+        AcademicSource.CNKI.value: 7,
+        AcademicSource.WANFANG.value: 8,
     }
 
     def __init__(self):
@@ -118,7 +140,10 @@ class AcademicSearchEngine:
         self._headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
         }
 
     async def search_papers(
@@ -128,38 +153,35 @@ class AcademicSearchEngine:
         num_results: int = 10,
         fetch_abstract: bool = True,
     ) -> List[PaperResult]:
-        """
-        搜索论文
-
-        Args:
-            query: 搜索关键词
-            sources: 学术来源列表
-            num_results: 结果数量
-            fetch_abstract: 是否获取摘要
-
-        Returns:
-            论文结果列表
-        """
         if sources is None:
-            sources = [AcademicSource.ARXIV, AcademicSource.GOOGLE_SCHOLAR]
+            sources = [
+                AcademicSource.ARXIV,
+                AcademicSource.SEMANTIC_SCHOLAR,
+                AcademicSource.GOOGLE_SCHOLAR,
+                AcademicSource.PUBMED,
+                AcademicSource.PAPER_WITH_CODE,
+            ]
 
-        all_results = []
-        for source in sources:
-            try:
-                results = await self._search_source(source, query, num_results // len(sources) + 1)
-                all_results.extend(results)
-            except Exception as e:
-                logger.warning(f"Error searching {source.value}: {e}")
+        paper_sources = [s for s in sources if s in self.PAPER_SOURCES]
+        if not paper_sources:
+            paper_sources = [AcademicSource.ARXIV, AcademicSource.SEMANTIC_SCHOLAR]
 
-        # 去重（按标题）
-        seen = set()
-        unique = []
-        for r in all_results:
-            if r.title.lower() not in seen:
-                seen.add(r.title.lower())
-                unique.append(r)
+        per_source = max(2, min(25, num_results // max(1, len(paper_sources)) + 2))
+        tasks = [self._search_source(source, query, per_source) for source in paper_sources]
+        source_chunks = await asyncio.gather(*tasks, return_exceptions=True)
 
-        return unique[:num_results]
+        all_results: List[PaperResult] = []
+        for item in source_chunks:
+            if isinstance(item, Exception):
+                logger.warning("Academic source failed: %s", item)
+                continue
+            all_results.extend(item)
+
+        merged = self._deduplicate_papers(all_results)
+        if fetch_abstract:
+            await self._enrich_abstracts(merged, limit=min(8, len(merged)))
+        merged.sort(key=self._paper_sort_key)
+        return merged[:num_results]
 
     async def search_code(
         self,
@@ -167,28 +189,23 @@ class AcademicSearchEngine:
         sources: Optional[List[AcademicSource]] = None,
         num_results: int = 10,
     ) -> List[CodeProjectResult]:
-        """
-        搜索代码项目
-
-        Args:
-            query: 搜索关键词
-            sources: 代码平台列表
-            num_results: 结果数量
-
-        Returns:
-            代码项目结果列表
-        """
         if sources is None:
             sources = [AcademicSource.GITHUB, AcademicSource.GITEE]
 
-        all_results = []
-        for source in sources:
-            try:
-                results = await self._search_code_source(source, query, num_results // len(sources) + 1)
-                all_results.extend(results)
-            except Exception as e:
-                logger.warning(f"Error searching {source.value}: {e}")
+        code_sources = [s for s in sources if s in self.CODE_SOURCES]
+        if not code_sources:
+            code_sources = [AcademicSource.GITHUB]
 
+        per_source = max(2, min(25, num_results // max(1, len(code_sources)) + 2))
+        tasks = [self._search_code_source(source, query, per_source) for source in code_sources]
+        source_chunks = await asyncio.gather(*tasks, return_exceptions=True)
+
+        all_results: List[CodeProjectResult] = []
+        for item in source_chunks:
+            if isinstance(item, Exception):
+                logger.warning("Code source failed: %s", item)
+                continue
+            all_results.extend(item)
         return all_results[:num_results]
 
     async def _search_source(
@@ -197,28 +214,26 @@ class AcademicSearchEngine:
         query: str,
         num_results: int,
     ) -> List[PaperResult]:
-        """搜索特定学术来源"""
-        url = self.SEARCH_URLS[source].format(
-            query=self._encode_query(query),
-            count=num_results,
-        )
+        if source == AcademicSource.ARXIV:
+            return await self._search_arxiv_api(query, num_results)
+        if source == AcademicSource.SEMANTIC_SCHOLAR:
+            return await self._search_semantic_api(query, num_results)
+        if source == AcademicSource.PUBMED:
+            return await self._search_pubmed_api(query, num_results)
 
-        result = await self._crawler.fetch(url)
+        url = self.SEARCH_URLS[source].format(query=self._encode_query(query), count=num_results)
+        result = await self._crawler.fetch_with_retry(url, retries=2, use_proxy=False)
         if not result.success:
             return []
 
-        if source == AcademicSource.ARXIV:
-            return self._parse_arxiv(result.html, num_results)
-        elif source == AcademicSource.GOOGLE_SCHOLAR:
-            return self._parse_scholar(result.html, num_results)
-        elif source == AcademicSource.SEMANTIC_SCHOLAR:
-            return self._parse_semantic(result.html, num_results)
-        elif source == AcademicSource.PUBMED:
-            return self._parse_pubmed(result.html, num_results)
-        elif source == AcademicSource.PAPER_WITH_CODE:
-            return self._parse_paperwithcode(result.html, num_results)
-        else:
-            return []
+        html = result.html or ""
+        if source == AcademicSource.GOOGLE_SCHOLAR:
+            return self._parse_scholar(html, num_results)
+        if source == AcademicSource.PAPER_WITH_CODE:
+            return self._parse_paperwithcode(html, num_results)
+        if source in {AcademicSource.IEEE, AcademicSource.CNKI, AcademicSource.WANFANG}:
+            return self._parse_generic_papers(html, num_results, source, url)
+        return []
 
     async def _search_code_source(
         self,
@@ -226,343 +241,607 @@ class AcademicSearchEngine:
         query: str,
         num_results: int,
     ) -> List[CodeProjectResult]:
-        """搜索代码项目"""
-        url = self.SEARCH_URLS[source].format(
-            query=self._encode_query(query),
-        )
+        if source == AcademicSource.GITHUB:
+            api_results = await self._search_github_api(query, num_results)
+            if api_results:
+                return api_results
 
-        result = await self._crawler.fetch(url)
+        url = self.SEARCH_URLS[source].format(query=self._encode_query(query), count=num_results)
+        result = await self._crawler.fetch_with_retry(url, retries=2, use_proxy=False)
         if not result.success:
             return []
 
         if source == AcademicSource.GITHUB:
             return self._parse_github(result.html, num_results)
-        elif source == AcademicSource.GITEE:
+        if source == AcademicSource.GITEE:
             return self._parse_gitee(result.html, num_results)
-        else:
+        return []
+
+    async def _search_arxiv_api(self, query: str, num_results: int) -> List[PaperResult]:
+        url = self.SEARCH_URLS[AcademicSource.ARXIV].format(query=self._encode_query(query), count=num_results)
+        result = await self._crawler.fetch_with_retry(url, retries=2, use_proxy=False)
+        if not result.success:
             return []
 
-    async def fetch_abstract(self, url: str) -> Optional[str]:
-        """
-        爬取论文摘要
-
-        Args:
-            url: 论文 URL
-
-        Returns:
-            摘要内容
-        """
         try:
-            result = await self._crawler.fetch_with_retry(url)
+            root = ET.fromstring(result.html)
+        except ET.ParseError:
+            return []
+
+        ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+        papers: List[PaperResult] = []
+        for entry in root.findall("atom:entry", ns):
+            title = self._norm_space(entry.findtext("atom:title", default="", namespaces=ns))
+            if not title:
+                continue
+            abstract = self._norm_space(entry.findtext("atom:summary", default="", namespaces=ns))
+            paper_url = self._norm_space(entry.findtext("atom:id", default="", namespaces=ns))
+            published = self._norm_space(entry.findtext("atom:published", default="", namespaces=ns))
+            authors = [
+                self._norm_space(author.findtext("atom:name", default="", namespaces=ns))
+                for author in entry.findall("atom:author", ns)
+            ]
+            pdf_url = None
+            for link in entry.findall("atom:link", ns):
+                if link.attrib.get("type") == "application/pdf":
+                    pdf_url = link.attrib.get("href")
+            doi_node = entry.find("arxiv:doi", ns)
+            doi = doi_node.text.strip() if doi_node is not None and doi_node.text else None
+
+            papers.append(
+                PaperResult(
+                    title=title,
+                    url=paper_url,
+                    abstract=abstract[:4000],
+                    authors=[a for a in authors if a][:10],
+                    source=AcademicSource.ARXIV.value,
+                    publish_date=published[:10] if published else None,
+                    citations=None,
+                    pdf_url=pdf_url,
+                    code_url=None,
+                    metadata={
+                        "doi": doi,
+                        "venue": "arXiv",
+                        "citation_count": None,
+                        "source_priority": self.SOURCE_PRIORITY[AcademicSource.ARXIV.value],
+                    },
+                )
+            )
+            if len(papers) >= num_results:
+                break
+        return papers
+
+    async def _search_semantic_api(self, query: str, num_results: int) -> List[PaperResult]:
+        url = self.SEARCH_URLS[AcademicSource.SEMANTIC_SCHOLAR].format(
+            query=self._encode_query(query),
+            count=min(50, max(1, num_results)),
+        )
+        result = await self._crawler.fetch_with_retry(url, retries=2, use_proxy=False)
+        if not result.success:
+            return []
+
+        payload = self._safe_json(result.html)
+        papers = payload.get("data", []) if isinstance(payload, dict) else []
+        output: List[PaperResult] = []
+        for item in papers:
+            title = self._norm_space(item.get("title", ""))
+            if not title:
+                continue
+            authors = [self._norm_space(a.get("name", "")) for a in (item.get("authors") or [])]
+            year = item.get("year")
+            citation_count = item.get("citationCount")
+            external_ids = item.get("externalIds") or {}
+            doi = external_ids.get("DOI")
+            open_access_pdf = item.get("openAccessPdf") or {}
+
+            output.append(
+                PaperResult(
+                    title=title,
+                    url=item.get("url") or "",
+                    abstract=self._norm_space(item.get("abstract", ""))[:4000],
+                    authors=[a for a in authors if a][:10],
+                    source=AcademicSource.SEMANTIC_SCHOLAR.value,
+                    publish_date=str(year) if year else None,
+                    citations=f"Cited by {citation_count}" if isinstance(citation_count, int) else None,
+                    pdf_url=open_access_pdf.get("url"),
+                    code_url=None,
+                    metadata={
+                        "doi": doi,
+                        "venue": self._norm_space(item.get("venue", "")) or None,
+                        "citation_count": citation_count,
+                        "source_priority": self.SOURCE_PRIORITY[AcademicSource.SEMANTIC_SCHOLAR.value],
+                    },
+                )
+            )
+            if len(output) >= num_results:
+                break
+        return output
+
+    async def _search_pubmed_api(self, query: str, num_results: int) -> List[PaperResult]:
+        search_url = (
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+            f"esearch.fcgi?db=pubmed&retmode=json&retmax={num_results}&term={self._encode_query(query)}"
+        )
+        search_result = await self._crawler.fetch_with_retry(search_url, retries=2, use_proxy=False)
+        if not search_result.success:
+            return []
+
+        search_payload = self._safe_json(search_result.html)
+        id_list = (((search_payload or {}).get("esearchresult") or {}).get("idlist") or [])
+        if not id_list:
+            return []
+
+        summary_url = (
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+            f"esummary.fcgi?db=pubmed&retmode=json&id={','.join(id_list)}"
+        )
+        summary_result = await self._crawler.fetch_with_retry(summary_url, retries=2, use_proxy=False)
+        if not summary_result.success:
+            return []
+
+        summary_payload = self._safe_json(summary_result.html)
+        entities = (summary_payload or {}).get("result") or {}
+        output: List[PaperResult] = []
+        for pid in id_list:
+            item = entities.get(pid) or {}
+            title = self._norm_space(item.get("title", ""))
+            if not title:
+                continue
+            authors = [self._norm_space(a.get("name", "")) for a in (item.get("authors") or [])]
+            pubdate = self._norm_space(item.get("pubdate", ""))
+            article_ids = item.get("articleids") or []
+            doi = None
+            for aid in article_ids:
+                if (aid.get("idtype") or "").lower() == "doi":
+                    doi = aid.get("value")
+                    break
+
+            output.append(
+                PaperResult(
+                    title=title,
+                    url=f"https://pubmed.ncbi.nlm.nih.gov/{pid}/",
+                    abstract="",
+                    authors=[a for a in authors if a][:10],
+                    source=AcademicSource.PUBMED.value,
+                    publish_date=pubdate or None,
+                    citations=None,
+                    pdf_url=None,
+                    code_url=None,
+                    metadata={
+                        "doi": doi,
+                        "venue": self._norm_space(item.get("source", "")) or None,
+                        "citation_count": None,
+                        "source_priority": self.SOURCE_PRIORITY[AcademicSource.PUBMED.value],
+                        "pubmed_id": pid,
+                    },
+                )
+            )
+            if len(output) >= num_results:
+                break
+        return output
+
+    async def _search_github_api(self, query: str, num_results: int) -> List[CodeProjectResult]:
+        url = self.SEARCH_URLS[AcademicSource.GITHUB].format(
+            query=self._encode_query(query),
+            count=min(50, max(1, num_results)),
+        )
+        result = await self._crawler.fetch(
+            url,
+            headers={
+                **self._headers,
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            use_proxy=False,
+            use_cache=False,
+        )
+        if not result.success:
+            return []
+
+        payload = self._safe_json(result.html)
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        output: List[CodeProjectResult] = []
+        for item in items:
+            output.append(
+                CodeProjectResult(
+                    name=item.get("full_name") or item.get("name") or "",
+                    url=item.get("html_url") or "",
+                    description=self._norm_space(item.get("description", ""))[:500],
+                    language=item.get("language") or "",
+                    stars=str(item.get("stargazers_count", 0)),
+                    forks=str(item.get("forks_count", 0)),
+                    source=AcademicSource.GITHUB.value,
+                    topics=(item.get("topics") or [])[:8],
+                    last_updated=item.get("updated_at"),
+                    metadata={
+                        "watchers": item.get("watchers_count"),
+                        "open_issues": item.get("open_issues_count"),
+                    },
+                )
+            )
+            if len(output) >= num_results:
+                break
+        return output
+
+    async def fetch_abstract(self, url: str) -> Optional[str]:
+        try:
+            result = await self._crawler.fetch_with_retry(url, retries=2, use_proxy=False)
             if not result.success:
                 return None
 
             parser = Parser().parse(result.html, url)
-
-            # 尝试多种选择器获取摘要
             abstract_selectors = [
                 "meta[name='description']",
                 "meta[property='og:description']",
+                "meta[name='citation_abstract']",
+                "blockquote.abstract",
                 ".abstract",
                 "#abstract",
                 "[class*='abstract']",
-                "section.abstract",
             ]
-
             for selector in abstract_selectors:
                 element = parser.soup.select_one(selector)
-                if element:
-                    content = element.get("content") or element.get_text(strip=True)
-                    if content and len(content) > 50:
-                        return self._clean_abstract(content)
-
+                if not element:
+                    continue
+                value = element.get("content") if element.has_attr("content") else element.get_text(" ", strip=True)
+                cleaned = self._clean_abstract(value)
+                if cleaned and len(cleaned) >= 60:
+                    return cleaned
             return None
-        except Exception as e:
-            logger.warning(f"Error fetching abstract from {url}: {e}")
+        except Exception as exc:
+            logger.warning("Error fetching abstract from %s: %s", url, exc)
             return None
 
-    def _encode_query(self, query: str) -> str:
-        """编码查询"""
-        import urllib.parse
-        return urllib.parse.quote(query)
+    async def _enrich_abstracts(self, papers: List[PaperResult], limit: int = 8) -> None:
+        candidates = [paper for paper in papers if paper.url and len((paper.abstract or "").strip()) < 80]
+        if not candidates:
+            return
+        sem = asyncio.Semaphore(4)
 
-    def _clean_abstract(self, text: str) -> str:
-        """清理摘要文本"""
-        # 移除多余空白
-        text = re.sub(r'\s+', ' ', text)
-        # 移除常见后缀
-        text = re.sub(r'^(Abstract|摘要)[:：]?\s*', '', text, flags=re.IGNORECASE)
-        return text.strip()
+        async def _run(paper: PaperResult) -> None:
+            async with sem:
+                abstract = await self.fetch_abstract(paper.url)
+                if abstract:
+                    paper.abstract = abstract[:4000]
 
-    # ========== 解析器 ==========
+        await asyncio.gather(*[_run(paper) for paper in candidates[:limit]], return_exceptions=True)
 
-    def _parse_arxiv(self, html: str, num_results: int) -> List[PaperResult]:
-        """解析 arXiv 结果"""
-        parser = Parser().parse(html)
-        results = []
+    def _deduplicate_papers(self, papers: List[PaperResult]) -> List[PaperResult]:
+        grouped: Dict[str, PaperResult] = {}
+        for paper in papers:
+            key = self._paper_key(paper)
+            if not key:
+                continue
+            existing = grouped.get(key)
+            if existing is None:
+                grouped[key] = paper
+                continue
+            grouped[key] = self._merge_paper(existing, paper)
+        return list(grouped.values())
 
-        for item in parser.soup.select("li.arxiv-result"):
-            title_tag = item.find("p", class_="title")
-            abstract_tag = item.find("p", class_="abstract")
-            authors_tag = item.find("p", class_="authors")
+    def _paper_key(self, paper: PaperResult) -> str:
+        doi = str((paper.metadata or {}).get("doi") or "").strip().lower()
+        if doi:
+            return f"doi:{doi}"
+        url = self._normalize_url(paper.url)
+        if url:
+            return f"url:{url}"
+        title = self._normalize_title(paper.title)
+        return f"title:{title}" if title else ""
 
-            if title_tag:
-                title = title_tag.get_text(strip=True)
-                # 移除 "Title:" 前缀
-                title = re.sub(r'^Title:\s*', '', title)
+    def _merge_paper(self, base: PaperResult, candidate: PaperResult) -> PaperResult:
+        if len(candidate.abstract or "") > len(base.abstract or ""):
+            base.abstract = candidate.abstract
+        if not base.publish_date and candidate.publish_date:
+            base.publish_date = candidate.publish_date
+        if not base.pdf_url and candidate.pdf_url:
+            base.pdf_url = candidate.pdf_url
+        if not base.code_url and candidate.code_url:
+            base.code_url = candidate.code_url
+        if not base.citations and candidate.citations:
+            base.citations = candidate.citations
+        if len(candidate.authors) > len(base.authors):
+            base.authors = candidate.authors
 
-                abstract = ""
-                if abstract_tag:
-                    abstract_text = abstract_tag.get_text(strip=True)
-                    abstract = re.sub(r'^Abstract:\s*', '', abstract_text)
+        base_meta = base.metadata or {}
+        cand_meta = candidate.metadata or {}
+        if not base_meta.get("doi") and cand_meta.get("doi"):
+            base_meta["doi"] = cand_meta["doi"]
+        if not base_meta.get("venue") and cand_meta.get("venue"):
+            base_meta["venue"] = cand_meta["venue"]
 
-                authors = []
-                if authors_tag:
-                    authors = [a.get_text(strip=True) for a in authors_tag.find_all("a")]
+        base_cc = self._safe_int(base_meta.get("citation_count"))
+        cand_cc = self._safe_int(cand_meta.get("citation_count"))
+        if cand_cc is not None and (base_cc is None or cand_cc > base_cc):
+            base_meta["citation_count"] = cand_cc
+            base.citations = candidate.citations or f"Cited by {cand_cc}"
 
-                # 获取 PDF URL
-                pdf_tag = item.find("a", title="Download PDF")
-                pdf_url = pdf_tag["href"] if pdf_tag else None
+        base.metadata = base_meta
+        return base
 
-                results.append(PaperResult(
-                    title=title,
-                    url=title_tag.find("a", href=True)["href"] if title_tag.find("a", href=True) else "",
-                    abstract=abstract[:2000],
-                    authors=authors[:10],
-                    source="arxiv",
-                    publish_date=None,
-                    citations=None,
-                    pdf_url=pdf_url,
-                    code_url=None,
-                ))
-
-                if len(results) >= num_results:
-                    break
-
-        return results
+    def _paper_sort_key(self, paper: PaperResult) -> tuple:
+        meta = paper.metadata or {}
+        citation_count = self._safe_int(meta.get("citation_count")) or 0
+        source_priority = int(meta.get("source_priority") or self.SOURCE_PRIORITY.get(paper.source, 99))
+        year = self._extract_year(paper.publish_date or "") or 0
+        title_len = len(paper.title or "")
+        return (-citation_count, source_priority, -year, -title_len)
 
     def _parse_scholar(self, html: str, num_results: int) -> List[PaperResult]:
-        """解析 Google Scholar 结果"""
-        parser = Parser().parse(html)
-        results = []
-
+        parser = Parser().parse(html, "https://scholar.google.com")
+        results: List[PaperResult] = []
         for item in parser.soup.select("div.gs_ri"):
-            title_tag = item.find("h3")
-            if not title_tag:
+            title_anchor = item.select_one("h3.gs_rt a") or item.select_one("h3 a")
+            if not title_anchor:
                 continue
+            title = self._norm_space(title_anchor.get_text(" ", strip=True))
+            url = self._abs_url("https://scholar.google.com", title_anchor.get("href", ""))
+            snippet_node = item.select_one("div.gs_rs") or item.select_one("div.gs_abs")
+            snippet = self._norm_space(snippet_node.get_text(" ", strip=True) if snippet_node else "")
+            author_line_node = item.select_one("div.gs_a")
+            author_line = self._norm_space(author_line_node.get_text(" ", strip=True) if author_line_node else "")
+            citation_count = self._extract_cited_by(item.get_text(" ", strip=True))
+            publish_year = self._extract_year(author_line)
 
-            url_tag = title_tag.find("a", href=True)
-            if not url_tag:
-                continue
-
-            snippet_tag = item.find("div", class_="gs_rs")
-            authors_tag = item.find("div", class_="gs_a")
-            cite_tag = item.find("a", class_=re.compile(r"gs_cit"))
-
-            title = url_tag.get_text(strip=True)
-            abstract = snippet_tag.get_text(strip=True) if snippet_tag else ""
-
-            authors = []
-            if authors_tag:
-                authors_text = authors_tag.get_text(strip=True)
-                authors = authors_text.split("-")[0].split(",")[:5] if "-" in authors_text else []
-
-            citations = None
-            if cite_tag:
-                cite_text = cite_tag.get_text(strip=True)
-                if "被引用" in cite_text or "Cited by" in cite_text:
-                    citations = cite_text
-
-            results.append(PaperResult(
-                title=title,
-                url=url_tag["href"],
-                abstract=abstract[:2000],
-                authors=authors,
-                source="google_scholar",
-                publish_date=None,
-                citations=citations,
-                pdf_url=None,
-                code_url=None,
-            ))
-
+            results.append(
+                PaperResult(
+                    title=title,
+                    url=url,
+                    abstract=snippet[:4000],
+                    authors=self._parse_scholar_authors(author_line),
+                    source=AcademicSource.GOOGLE_SCHOLAR.value,
+                    publish_date=str(publish_year) if publish_year else None,
+                    citations=f"Cited by {citation_count}" if citation_count else None,
+                    pdf_url=None,
+                    code_url=None,
+                    metadata={
+                        "doi": self._extract_doi(snippet + " " + author_line),
+                        "venue": None,
+                        "citation_count": citation_count,
+                        "source_priority": self.SOURCE_PRIORITY[AcademicSource.GOOGLE_SCHOLAR.value],
+                    },
+                )
+            )
             if len(results) >= num_results:
                 break
-
-        return results
-
-    def _parse_semantic(self, html: str, num_results: int) -> List[PaperResult]:
-        """解析 Semantic Scholar 结果"""
-        parser = Parser().parse(html)
-        results = []
-
-        for item in parser.soup.select("[data-layout='result']"):
-            title_tag = item.find("[data-slot='title']")
-            abstract_tag = item.find("[data-slot='abstract']")
-            authors_tag = item.find("[data-slot='authors']")
-
-            if title_tag:
-                results.append(PaperResult(
-                    title=title_tag.get_text(strip=True),
-                    url=title_tag.find("a", href=True)["href"] if title_tag.find("a", href=True) else "",
-                    abstract=abstract_tag.get_text(strip=True)[:2000] if abstract_tag else "",
-                    authors=[a.get_text(strip=True) for a in (authors_tag.find_all("a") if authors_tag else [])][:10],
-                    source="semantic_scholar",
-                    publish_date=None,
-                    citations=None,
-                    pdf_url=None,
-                    code_url=None,
-                ))
-
-                if len(results) >= num_results:
-                    break
-
-        return results
-
-    def _parse_pubmed(self, html: str, num_results: int) -> List[PaperResult]:
-        """解析 PubMed 结果"""
-        parser = Parser().parse(html)
-        results = []
-
-        for item in parser.soup.select(".docsum-content"):
-            title_tag = item.find(".docsum-title")
-            snippet_tag = item.find(".docsum-text")
-
-            if title_tag:
-                results.append(PaperResult(
-                    title=title_tag.get_text(strip=True),
-                    url=title_tag.find("a", href=True)["href"] if title_tag.find("a", href=True) else "",
-                    abstract=snippet_tag.get_text(strip=True)[:2000] if snippet_tag else "",
-                    authors=[],
-                    source="pubmed",
-                    publish_date=None,
-                    citations=None,
-                    pdf_url=None,
-                    code_url=None,
-                ))
-
-                if len(results) >= num_results:
-                    break
-
         return results
 
     def _parse_paperwithcode(self, html: str, num_results: int) -> List[PaperResult]:
-        """解析 Papers With Code 结果"""
-        parser = Parser().parse(html)
-        results = []
-
-        for item in parser.soup.select(".media-item"):
-            title_tag = item.find("h3")
-            abstract_tag = item.find(".abstract")
-            code_link = item.find("a", string=re.compile(r"View Code", re.I))
-
-            if title_tag:
-                results.append(PaperResult(
-                    title=title_tag.get_text(strip=True),
-                    url=title_tag.find("a", href=True)["href"] if title_tag.find("a", href=True) else "",
-                    abstract=abstract_tag.get_text(strip=True)[:2000] if abstract_tag else "",
+        parser = Parser().parse(html, "https://paperswithcode.com")
+        results: List[PaperResult] = []
+        for item in parser.soup.select(".infinite-container .row.infinite-item, .paper-card, .media-item"):
+            title_anchor = item.select_one("h1 a, h2 a, h3 a")
+            if not title_anchor:
+                continue
+            title = self._norm_space(title_anchor.get_text(" ", strip=True))
+            paper_url = self._abs_url("https://paperswithcode.com", title_anchor.get("href", ""))
+            abstract_node = item.select_one(".item-strip-abstract, .abstract, p")
+            abstract = self._norm_space(abstract_node.get_text(" ", strip=True) if abstract_node else "")
+            code_anchor = item.select_one("a[href*='github.com'], a[href*='gitlab.com'], a[href*='bitbucket.org']")
+            results.append(
+                PaperResult(
+                    title=title,
+                    url=paper_url,
+                    abstract=abstract[:4000],
                     authors=[],
-                    source="paper_with_code",
+                    source=AcademicSource.PAPER_WITH_CODE.value,
                     publish_date=None,
                     citations=None,
                     pdf_url=None,
-                    code_url=code_link["href"] if code_link else None,
-                ))
+                    code_url=self._abs_url("https://paperswithcode.com", code_anchor.get("href", "")) if code_anchor else None,
+                    metadata={
+                        "doi": self._extract_doi(abstract),
+                        "venue": "Papers With Code",
+                        "citation_count": None,
+                        "source_priority": self.SOURCE_PRIORITY[AcademicSource.PAPER_WITH_CODE.value],
+                    },
+                )
+            )
+            if len(results) >= num_results:
+                break
+        return results
 
-                if len(results) >= num_results:
-                    break
-
+    def _parse_generic_papers(
+        self,
+        html: str,
+        num_results: int,
+        source: AcademicSource,
+        base_url: str,
+    ) -> List[PaperResult]:
+        parser = Parser().parse(html, base_url)
+        results: List[PaperResult] = []
+        for item in parser.soup.select("article, .result-item, .search-result, .item, li")[: max(50, num_results * 8)]:
+            title_anchor = item.select_one("h1 a, h2 a, h3 a, a[title]")
+            if not title_anchor:
+                continue
+            title = self._norm_space(title_anchor.get_text(" ", strip=True))
+            if len(title) < 8:
+                continue
+            snippet_node = item.select_one("p, .abstract, .summary, .desc")
+            snippet = self._norm_space(snippet_node.get_text(" ", strip=True) if snippet_node else "")
+            results.append(
+                PaperResult(
+                    title=title,
+                    url=self._abs_url(base_url, title_anchor.get("href", "")),
+                    abstract=snippet[:4000],
+                    authors=[],
+                    source=source.value,
+                    publish_date=None,
+                    citations=None,
+                    pdf_url=None,
+                    code_url=None,
+                    metadata={
+                        "doi": self._extract_doi(snippet),
+                        "venue": source.value,
+                        "citation_count": self._extract_cited_by(snippet),
+                        "source_priority": self.SOURCE_PRIORITY.get(source.value, 99),
+                    },
+                )
+            )
+            if len(results) >= num_results:
+                break
         return results
 
     def _parse_github(self, html: str, num_results: int) -> List[CodeProjectResult]:
-        """解析 GitHub 搜索结果"""
-        parser = Parser().parse(html)
-        results = []
-
-        for item in parser.soup.select("ul.repo-list > li"):
-            title_tag = item.find("h3 a")
-            desc_tag = item.find("p.description")
-            meta_tags = item.find_all("span", class_="Counter")
-            lang_tag = item.find("span", itemprop="programmingLanguage")
-
-            if title_tag:
-                # 提取 star 和 fork 数
-                stars = forks = "0"
-                if len(meta_tags) >= 1:
-                    stars = meta_tags[0].get_text(strip=True)
-                if len(meta_tags) >= 2:
-                    forks = meta_tags[1].get_text(strip=True)
-
-                topics = [t.get_text(strip=True) for t in item.find_all("a", class_="topic-tag-link")][:5]
-
-                results.append(CodeProjectResult(
-                    name=title_tag.get_text(strip=True),
-                    url=f"https://github.com{title_tag['href']}",
-                    description=desc_tag.get_text(strip=True)[:500] if desc_tag else "",
-                    language=lang_tag.get_text(strip=True) if lang_tag else "",
-                    stars=stars,
-                    forks=forks,
-                    source="github",
-                    topics=topics,
+        parser = Parser().parse(html, "https://github.com")
+        results: List[CodeProjectResult] = []
+        for item in parser.soup.select("ul.repo-list li, div.search-results-container li"):
+            title_anchor = item.select_one("a.v-align-middle, h3 a")
+            if not title_anchor:
+                continue
+            desc_node = item.select_one("p, .mb-1")
+            lang_node = item.select_one("[itemprop='programmingLanguage']")
+            results.append(
+                CodeProjectResult(
+                    name=self._norm_space(title_anchor.get_text(" ", strip=True)),
+                    url=self._abs_url("https://github.com", title_anchor.get("href", "")),
+                    description=self._norm_space(desc_node.get_text(" ", strip=True) if desc_node else "")[:500],
+                    language=self._norm_space(lang_node.get_text(" ", strip=True) if lang_node else ""),
+                    stars="0",
+                    forks="0",
+                    source=AcademicSource.GITHUB.value,
+                    topics=[],
                     last_updated=None,
-                ))
-
-                if len(results) >= num_results:
-                    break
-
+                )
+            )
+            if len(results) >= num_results:
+                break
         return results
 
     def _parse_gitee(self, html: str, num_results: int) -> List[CodeProjectResult]:
-        """解析 Gitee 搜索结果"""
-        parser = Parser().parse(html)
-        results = []
-
-        for item in parser.soup.select(".items .item"):
-            title_tag = item.find(".title a")
-            desc_tag = item.find(".description")
-            meta_tag = item.find(".meta")
-
-            if title_tag:
-                # 提取语言
-                language = ""
-                if meta_tag:
-                    meta_text = meta_tag.get_text(strip=True)
-                    lang_match = re.search(r'(\w+)\s', meta_text)
-                    if lang_match:
-                        language = lang_match.group(1)
-
-                results.append(CodeProjectResult(
-                    name=title_tag.get_text(strip=True),
-                    url=title_tag["href"],
-                    description=desc_tag.get_text(strip=True)[:500] if desc_tag else "",
-                    language=language,
+        parser = Parser().parse(html, "https://gitee.com")
+        results: List[CodeProjectResult] = []
+        for item in parser.soup.select(".items .item, .search-result-item, li"):
+            title_anchor = item.select_one(".title a, h3 a, a[href*='/']")
+            if not title_anchor:
+                continue
+            desc_node = item.select_one(".description, p, .desc")
+            lang_node = item.select_one(".language, .lang")
+            results.append(
+                CodeProjectResult(
+                    name=self._norm_space(title_anchor.get_text(" ", strip=True)),
+                    url=self._abs_url("https://gitee.com", title_anchor.get("href", "")),
+                    description=self._norm_space(desc_node.get_text(" ", strip=True) if desc_node else "")[:500],
+                    language=self._norm_space(lang_node.get_text(" ", strip=True) if lang_node else ""),
                     stars="0",
                     forks="0",
-                    source="gitee",
+                    source=AcademicSource.GITEE.value,
                     topics=[],
                     last_updated=None,
-                ))
-
-                if len(results) >= num_results:
-                    break
-
+                )
+            )
+            if len(results) >= num_results:
+                break
         return results
 
+    def _encode_query(self, query: str) -> str:
+        return quote_plus(query or "")
+
+    def _clean_abstract(self, text: str) -> str:
+        text = self._norm_space(text)
+        return re.sub(r"^(Abstract|摘要)[:：]?\s*", "", text, flags=re.IGNORECASE)
+
+    @staticmethod
+    def _norm_space(text: str) -> str:
+        return re.sub(r"\s+", " ", text or "").strip()
+
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        return re.sub(r"\s+", " ", (title or "").lower()).strip()
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        parsed = urlparse(url or "")
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return ""
+        normalized = parsed._replace(fragment="", query=parsed.query or "")
+        value = normalized.geturl()
+        return value[:-1] if value.endswith("/") else value
+
+    @staticmethod
+    def _safe_json(raw: str) -> Dict[str, Any]:
+        try:
+            data = json.loads(raw or "{}")
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            if value in {None, ""}:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _extract_year(text: str) -> Optional[int]:
+        m = re.search(r"(19|20)\d{2}", text or "")
+        if not m:
+            return None
+        year = int(m.group(0))
+        if 1900 <= year <= datetime.now().year + 1:
+            return year
+        return None
+
+    @staticmethod
+    def _extract_doi(text: str) -> Optional[str]:
+        m = re.search(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+\b", text or "")
+        return m.group(0) if m else None
+
+    @staticmethod
+    def _extract_cited_by(text: str) -> Optional[int]:
+        if not text:
+            return None
+        patterns = [r"Cited by\s+(\d+)", r"被引用[:：]?\s*(\d+)", r"引用[:：]?\s*(\d+)"]
+        for pattern in patterns:
+            m = re.search(pattern, text, flags=re.IGNORECASE)
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    continue
+        return None
+
+    @staticmethod
+    def _parse_scholar_authors(author_line: str) -> List[str]:
+        if not author_line:
+            return []
+        lead = author_line.split("-")[0]
+        return [item.strip() for item in lead.split(",") if item.strip()][:8]
+
+    @staticmethod
+    def _abs_url(base_url: str, href: str) -> str:
+        if not href:
+            return ""
+        return urljoin(base_url, href)
+
     async def close(self):
-        """关闭"""
         await self._crawler.close()
 
 
 def is_academic_query(query: str) -> bool:
-    """判断是否为学术查询"""
-    academic_keywords = [
-        "论文", "research", "paper", "学术", "study",
-        "journal", "conference", "arxiv", "scholar",
-        "GitHub", "开源", "open source", "代码",
-        "project", "工程", "实现", "源码",
-        "transformer", "architecture", "model", "algorithm",
-        "machine learning", "deep learning", "neural",
+    keywords = [
+        "论文",
+        "research",
+        "paper",
+        "学术",
+        "study",
+        "journal",
+        "conference",
+        "arxiv",
+        "scholar",
+        "pubmed",
+        "doi",
+        "开源",
+        "github",
+        "模型",
+        "algorithm",
+        "benchmark",
     ]
-    return any(kw.lower() in query.lower() for kw in academic_keywords)
+    q = (query or "").lower()
+    return any(word.lower() in q for word in keywords)
 
 
 async def academic_search(
@@ -571,11 +850,11 @@ async def academic_search(
     num_results: int = 10,
     fetch_abstract: bool = True,
 ) -> List[PaperResult]:
-    """便捷学术搜索函数"""
     engine = AcademicSearchEngine()
-    results = await engine.search_papers(query, sources, num_results, fetch_abstract)
-    await engine.close()
-    return results
+    try:
+        return await engine.search_papers(query, sources, num_results, fetch_abstract)
+    finally:
+        await engine.close()
 
 
 async def code_search(
@@ -583,8 +862,8 @@ async def code_search(
     sources: Optional[List[AcademicSource]] = None,
     num_results: int = 10,
 ) -> List[CodeProjectResult]:
-    """便捷代码搜索函数"""
     engine = AcademicSearchEngine()
-    results = await engine.search_code(query, sources, num_results)
-    await engine.close()
-    return results
+    try:
+        return await engine.search_code(query, sources, num_results)
+    finally:
+        await engine.close()

@@ -1,0 +1,32 @@
+{
+  "_comment": "Bing 搜索引擎配置",
+  "id": "bing",
+  "name": "Bing",
+  "baseUrl": "https://www.bing.com",
+  "searchPath": "/search?q=",
+  "selectors": {
+    "resultContainer": "li.b_algo, .b_algo",
+    "title": "h2 a, h2 .tit",
+    "link": "h2 a",
+    "snippet": ".b_caption, .b_desc"
+  },
+  "headers": {
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+  },
+  "antiBot": {
+    "enabled": true,
+    "detectors": [
+      "iframe#challenge-frame"
+    ],
+    "errorMessage": "Bing 检测到验证，需要手动完成验证后重试。"
+  },
+  "customDelay": {
+    "min": 1000,
+    "max": 2500
+  },
+  "fallbackSelector": "div:has(a[href*='http'])",
+  "linkValidation": ["http", "www"],
+  "maxResultsPerPage": 10,
+  "timezoneList": ["America/New_York", "America/Los_Angeles", "Europe/London", "Asia/Shanghai"],
+  "localeList": ["en-US", "zh-CN", "zh-HK"]
+}

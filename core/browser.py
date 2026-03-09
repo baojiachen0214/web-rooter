@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 import logging
 
-from playwright.async_api import async_playwright, Browser, Page, BrowserContext
+from playwright.async_api import async_playwright, Browser, Page, BrowserContext, TimeoutError as PlaywrightTimeoutError
 from config import browser_config, BrowserConfig, StealthConfig
 
 logging.basicConfig(level=logging.INFO)
@@ -301,11 +301,14 @@ class BrowserResult:
     title: str
     screenshot: Optional[bytes] = None
     console_logs: List[str] = None
+    cookies: Dict[str, str] = None
     error: Optional[str] = None
 
     def __post_init__(self):
         if self.console_logs is None:
             self.console_logs = []
+        if self.cookies is None:
+            self.cookies = {}
 
 
 @dataclass
@@ -530,6 +533,18 @@ class AntiBotActions:
 
     def __init__(self, page: Page):
         self.page = page
+        self._challenge_keywords = [
+            "captcha",
+            "recaptcha",
+            "hcaptcha",
+            "cloudflare",
+            "challenge",
+            "verify you are human",
+            "unusual traffic",
+            "access denied",
+            "人机验证",
+            "访问受限",
+        ]
 
     async def random_mouse_move(self) -> None:
         """随机鼠标移动"""
@@ -581,11 +596,151 @@ class AntiBotActions:
                 logger.debug(f"检查选择器 {selector} 失败：{e}")
         return False
 
-    async def handle_captcha(self, error_message: str) -> None:
-        """处理验证码（暂停等待用户手动处理）"""
+    async def detect_challenge_markers(self) -> bool:
+        """通过标题/URL/页面文本检测挑战页。"""
+        try:
+            title = (await self.page.title()).lower()
+        except Exception:
+            title = ""
+
+        current_url = (self.page.url or "").lower()
+
+        try:
+            body_text = await self.page.evaluate(
+                "() => (document.body && document.body.innerText ? document.body.innerText.slice(0, 5000) : '')"
+            )
+            body_text = (body_text or "").lower()
+        except Exception:
+            body_text = ""
+
+        merged = f"{title} {current_url} {body_text}"
+        return any(keyword in merged for keyword in self._challenge_keywords)
+
+    async def attempt_challenge_bypass(
+        self,
+        detectors: Optional[List[str]] = None,
+        max_attempts: int = 3,
+    ) -> bool:
+        """
+        尝试自动绕过挑战页：
+        - 点击页面中可见的验证按钮/checkbox
+        - 尝试点击 challenge iframe
+        - 尝试操作 reCAPTCHA/hCaptcha frame 内控件
+        """
+        detectors = list(detectors or [])
+
+        for attempt in range(max(1, max_attempts)):
+            await self._click_challenge_controls()
+            await self.random_delay(900, 1700)
+
+            still_challenged = (
+                await self.check_for_captcha(detectors, timeout=600)
+                if detectors
+                else await self.detect_challenge_markers()
+            )
+            if not still_challenged:
+                return True
+
+            if attempt < max_attempts - 1:
+                await self.random_mouse_move()
+                await self.random_scroll()
+                await self.random_delay(700, 1400)
+
+        return False
+
+    async def _click_challenge_controls(self) -> None:
+        """点击常见挑战控件（best-effort）。"""
+        click_selectors = [
+            "input[type='checkbox'][name*='captcha' i]",
+            "input[type='checkbox'][id*='captcha' i]",
+            "input[type='checkbox'][name*='cf' i]",
+            "input[type='checkbox'][id*='cf' i]",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')",
+            "button:has-text('I am human')",
+            "button:has-text('I'm human')",
+            "button:has-text('Not a robot')",
+            "button:has-text('继续')",
+            "button:has-text('验证')",
+            "button:has-text('确认')",
+            "button:has-text('我是人类')",
+            "[role='button']:has-text('Verify')",
+            "[role='button']:has-text('Continue')",
+            "[role='button']:has-text('继续')",
+        ]
+
+        for selector in click_selectors:
+            try:
+                locator = self.page.locator(selector).first
+                if await locator.count() > 0 and await locator.is_visible(timeout=400):
+                    await locator.click(timeout=1200, force=True)
+                    await asyncio.sleep(random.uniform(0.25, 0.8))
+            except Exception:
+                continue
+
+        # Cloudflare challenge iframe 常见路径：点击 iframe 中心位置
+        try:
+            iframe = self.page.locator("iframe[src*='challenges.cloudflare.com']").first
+            if await iframe.count() > 0 and await iframe.is_visible(timeout=600):
+                box = await iframe.bounding_box()
+                if box:
+                    await self.page.mouse.click(
+                        box["x"] + box["width"] / 2,
+                        box["y"] + box["height"] / 2,
+                    )
+                    await asyncio.sleep(random.uniform(0.3, 0.9))
+        except Exception:
+            pass
+
+        # 尝试在 frame 内点击验证码控件（reCAPTCHA/hCaptcha/Cloudflare Turnstile）
+        for frame in self.page.frames:
+            frame_url = (frame.url or "").lower()
+            if not any(
+                token in frame_url
+                for token in ("captcha", "recaptcha", "hcaptcha", "challenge", "cloudflare")
+            ):
+                continue
+            for frame_selector in (
+                "#recaptcha-anchor",
+                "input[type='checkbox']",
+                "div[role='checkbox']",
+                "button",
+            ):
+                try:
+                    node = frame.locator(frame_selector).first
+                    if await node.count() > 0 and await node.is_visible(timeout=500):
+                        await node.click(timeout=1200, force=True)
+                        await asyncio.sleep(random.uniform(0.3, 0.9))
+                        break
+                except Exception:
+                    continue
+
+    async def handle_captcha(
+        self,
+        error_message: str,
+        detectors: Optional[List[str]] = None,
+        wait_seconds: int = 12,
+    ) -> bool:
+        """处理验证码/挑战页，优先自动尝试，失败后短等待。"""
         logger.warning(error_message)
-        # 暂停等待用户手动处理
-        await asyncio.sleep(120)  # 等待 2 分钟
+        resolved = await self.attempt_challenge_bypass(detectors=detectors, max_attempts=3)
+        if resolved:
+            logger.info("自动挑战页交互成功，继续后续流程")
+            return True
+
+        # 最后短等待，给页面自动跳转留时间
+        for _ in range(max(1, wait_seconds // 2)):
+            await asyncio.sleep(2)
+            still_challenged = (
+                await self.check_for_captcha(detectors, timeout=600)
+                if detectors
+                else await self.detect_challenge_markers()
+            )
+            if not still_challenged:
+                return True
+
+        logger.warning("自动挑战页交互未完全解除，继续执行后续兜底流程")
+        return False
 
 
 class BrowserManager(BaseBrowserManager):
@@ -622,24 +777,33 @@ class BrowserManager(BaseBrowserManager):
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._use_stealth = self.stealth_config.ENABLE_STEALTH
+        self._start_lock = asyncio.Lock()
 
     async def start(self, engine_id: str = "default"):
         """启动浏览器（支持普通启动、CDP 连接、真实 Chrome）"""
-        self._playwright = await async_playwright().start()
+        if self._browser and self._context and self._playwright:
+            return
 
-        # 加载引擎状态
-        engine_state = self.load_engine_state(engine_id)
+        async with self._start_lock:
+            if self._browser and self._context and self._playwright:
+                return
 
-        # CDP 连接优先
-        if self.cdp_url:
-            return await self._start_with_cdp(engine_id)
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
 
-        # 真实 Chrome 模式
-        if self.use_real_chrome:
-            return await self._start_with_real_chrome(engine_id)
+            # 加载引擎状态
+            engine_state = self.load_engine_state(engine_id)
 
-        # 普通 Chromium 启动
-        return await self._start_standard(engine_id, engine_state)
+            # CDP 连接优先
+            if self.cdp_url:
+                return await self._start_with_cdp(engine_id)
+
+            # 真实 Chrome 模式
+            if self.use_real_chrome:
+                return await self._start_with_real_chrome(engine_id)
+
+            # 普通 Chromium 启动
+            return await self._start_standard(engine_id, engine_state)
 
     async def _start_with_cdp(self, engine_id: str):
         """通过 CDP 端点连接浏览器"""
@@ -918,10 +1082,21 @@ class BrowserManager(BaseBrowserManager):
 
     async def close(self):
         """关闭浏览器"""
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+        async with self._start_lock:
+            if self._browser:
+                try:
+                    await self._browser.close()
+                except Exception as exc:
+                    logger.debug(f"关闭 browser 失败: {exc}")
+            self._browser = None
+            self._context = None
+
+            if self._playwright:
+                try:
+                    await self._playwright.stop()
+                except Exception as exc:
+                    logger.debug(f"关闭 playwright 失败: {exc}")
+            self._playwright = None
         logger.info("Browser closed")
 
     async def __aenter__(self) -> "BrowserManager":
@@ -964,9 +1139,11 @@ class BrowserManager(BaseBrowserManager):
             await self.start(engine_id or "default")
 
         console_logs = []
+        page: Optional[Page] = None
 
         try:
             page = await self._context.new_page()
+            anti_bot = AntiBotActions(page)
 
             # 收集控制台日志
             page.on("console", lambda msg: console_logs.append(msg.text))
@@ -979,18 +1156,33 @@ class BrowserManager(BaseBrowserManager):
 
             # 执行反检测措施
             if perform_anti_bot:
-                anti_bot = AntiBotActions(page)
-                await anti_bot.perform_anti_detection()
+                try:
+                    await anti_bot.perform_anti_detection()
+                except Exception as anti_bot_error:
+                    # 反检测动作不应让抓取整体失败（例如页面重定向时 execution context 重建）
+                    logger.warning(f"Anti-bot step failed for {url}: {anti_bot_error}")
 
             # 处理 Cloudflare Turnstile
             if handle_cloudflare and self.stealth_config.AUTO_CLOUDFLARE:
                 await self._handle_cloudflare(page, wait_for_timeout)
 
+            # 页面仍像挑战页时，尝试自动交互绕过
+            if handle_cloudflare:
+                try:
+                    if await anti_bot.detect_challenge_markers():
+                        await anti_bot.handle_captcha(
+                            "检测到挑战页，尝试自动交互绕过",
+                            detectors=[],
+                            wait_seconds=8,
+                        )
+                except Exception as challenge_exc:
+                    logger.debug(f"Challenge bypass step failed for {url}: {challenge_exc}")
+
             # 等待特定元素
             if wait_for:
                 try:
                     await page.wait_for_selector(wait_for, timeout=wait_for_timeout)
-                except asyncio.TimeoutError:
+                except PlaywrightTimeoutError:
                     logger.warning(f"Timeout waiting for {wait_for}")
 
             # 执行自定义 JavaScript
@@ -1009,15 +1201,20 @@ class BrowserManager(BaseBrowserManager):
             # 获取内容
             html = await page.content()
             title = await page.title()
-
-            await page.close()
+            cookie_items = await page.context.cookies([page.url])
+            cookie_map = {
+                str(item.get("name", "")): str(item.get("value", ""))
+                for item in cookie_items
+                if item.get("name")
+            }
 
             return BrowserResult(
-                url=url,
+                url=page.url,
                 html=html,
                 title=title,
                 screenshot=screenshot,
                 console_logs=console_logs,
+                cookies=cookie_map,
             )
 
         except Exception as e:
@@ -1028,6 +1225,12 @@ class BrowserManager(BaseBrowserManager):
                 title="",
                 error=str(e),
             )
+        finally:
+            if page and not page.is_closed():
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
     async def search(
         self,
@@ -1048,7 +1251,7 @@ class BrowserManager(BaseBrowserManager):
         Returns:
             SearchResult: 搜索结果
         """
-        from core.engine_config import get_engine_config, EngineConfig
+        from core.search.engine_config import get_engine_config, EngineConfig
 
         if engine_config is None:
             engine_config = get_engine_config(engine_id)
@@ -1106,7 +1309,7 @@ class BrowserManager(BaseBrowserManager):
                 logger.info("Waiting for Cloudflare challenge to resolve...")
                 await asyncio.sleep(3)
 
-        except asyncio.TimeoutError:
+        except PlaywrightTimeoutError:
             # 没有 Cloudflare 挑战，继续
             pass
         except Exception as e:

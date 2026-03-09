@@ -8,9 +8,10 @@ echo.
 :: 获取当前脚本所在目录的绝对路径
 set SCRIPT_DIR=%~dp0
 set SCRIPT_DIR=%SCRIPT_DIR:~0,-1%
+for %%I in ("%SCRIPT_DIR%\..\..") do set REPO_ROOT=%%~fI
 
 echo 检测到 web-rooter 安装路径:
-echo %SCRIPT_DIR%
+echo %REPO_ROOT%
 echo.
 
 :: Claude Code 全局配置目录
@@ -38,8 +39,8 @@ if (-not $config.mcpServers) { $config | Add-Member -NotePropertyName 'mcpServer
 ^
 $config.mcpServers | Add-Member -NotePropertyName 'web-rooter' -NotePropertyValue ([PSCustomObject]@{ ^
     command = 'python' ^
-    args = @('%SCRIPT_DIR%\main.py', '--mcp') ^
-    cwd = '%SCRIPT_DIR%' ^
+    args = @('%REPO_ROOT%\main.py', '--mcp') ^
+    cwd = '%REPO_ROOT%' ^
     env = [PSCustomObject]@{ PYTHONIOENCODING = 'utf-8' } ^
 }) -Force; ^
 ^
@@ -60,6 +61,6 @@ echo 下一步:
 echo 1. 重启所有 Claude Code 窗口
 echo 2. 输入 /tools 验证 web-rooter 工具已加载
 echo.
-echo 如需卸载，运行：setup-uninstall-mcp.bat
+echo 如需卸载，运行：scripts\windows\setup-uninstall-mcp.bat
 echo.
 pause

@@ -6,12 +6,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
+from urllib.parse import urlparse, urlunparse
 import logging
 
 from core.crawler import Crawler, CrawlResult
 from core.parser import Parser, ExtractedData
 from core.browser import BrowserManager, BrowserResult
-from core.search_engine import (
+from core.search.engine import (
     SearchEngine,
     SearchResponse,
     SearchResult,
@@ -30,6 +31,13 @@ from core.form_search import (
     FormFiller,
     SearchFormResult,
     auto_search,
+)
+from core.citation import (
+    build_web_citations,
+    build_paper_citations,
+    build_code_citations,
+    build_comparison_summary,
+    format_reference_block,
 )
 from config import crawler_config
 
@@ -79,6 +87,7 @@ class WebAgent:
     def __init__(self):
         self._crawler: Optional[Crawler] = None
         self._browser: Optional[BrowserManager] = None
+        self._browser_init_lock = asyncio.Lock()
         self._search_engine: Optional[MultiSearchEngine] = None
         self._academic_engine: Optional[AcademicSearchEngine] = None
         self._form_filler: Optional[FormFiller] = None
@@ -102,9 +111,12 @@ class WebAgent:
 
     async def _ensure_browser(self):
         """确保浏览器已初始化"""
-        if self._browser is None:
-            self._browser = BrowserManager()
-            await self._browser.start()
+        if self._browser is not None:
+            return
+        async with self._browser_init_lock:
+            if self._browser is None:
+                self._browser = BrowserManager()
+                await self._browser.start()
 
     async def close(self):
         """关闭"""
@@ -125,13 +137,14 @@ class WebAgent:
 
     # ==================== 核心方法 ====================
 
-    async def visit(self, url: str, use_browser: bool = False) -> AgentResponse:
+    async def visit(self, url: str, use_browser: bool = False, auto_fallback: bool = True) -> AgentResponse:
         """
         访问网页
 
         Args:
             url: 目标 URL
             use_browser: 是否使用浏览器（用于 JS 渲染页面）
+            auto_fallback: HTTP 失败时是否自动切换浏览器兜底
 
         Returns:
             AgentResponse: 访问结果
@@ -204,7 +217,47 @@ class WebAgent:
                         metadata={
                             "status_code": result.status_code,
                             "response_time": result.response_time,
+                            "fetch_mode": "http",
                         },
+                    )
+                elif auto_fallback and self._should_fallback_to_browser(result):
+                    logger.info("HTTP fetch failed for %s, trying browser fallback", url)
+                    browser_result = await self._browser_fetch(url)
+
+                    if browser_result.error is None and browser_result.html:
+                        parser = Parser().parse(browser_result.html, url)
+                        extracted = parser.extract()
+
+                        knowledge = PageKnowledge(
+                            url=url,
+                            title=extracted.title,
+                            content=extracted.text,
+                            links=extracted.links[:20],
+                            extracted_info=extracted.metadata,
+                        )
+                        self._cache[url] = knowledge
+                        self._knowledge_base.append(knowledge)
+
+                        return AgentResponse(
+                            success=True,
+                            content=f"已访问：{extracted.title}\n\n{extracted.text[:2000]}",
+                            data=extracted.to_dict(),
+                            urls=[link["href"] for link in extracted.links[:10]],
+                            metadata={
+                                "url": browser_result.url,
+                                "title": browser_result.title,
+                                "fetch_mode": "browser_fallback",
+                                "fallback_reason": result.error or f"status={result.status_code}",
+                            },
+                        )
+
+                    return AgentResponse(
+                        success=False,
+                        content=f"访问失败：{url}",
+                        error=(
+                            f"HTTP失败：{result.error or result.status_code}; "
+                            f"浏览器兜底失败：{browser_result.error or 'Empty content'}"
+                        ),
                     )
                 else:
                     return AgentResponse(
@@ -305,6 +358,8 @@ class WebAgent:
         max_pages: int = 10,
         max_depth: int = 3,
         pattern: Optional[str] = None,
+        allow_external: bool = False,
+        allow_subdomains: bool = True,
     ) -> AgentResponse:
         """
         深度爬取网站
@@ -314,19 +369,33 @@ class WebAgent:
             max_pages: 最大页面数
             max_depth: 最大深度
             pattern: URL 匹配模式（正则）
+            allow_external: 是否允许跨站点爬取
+            allow_subdomains: 禁止跨站时是否允许子域名
 
         Returns:
             AgentResponse: 爬取结果
         """
+        normalized_start = self._normalize_crawl_url(start_url)
+        if not normalized_start:
+            return AgentResponse(
+                success=False,
+                content=f"无效起始 URL: {start_url}",
+            )
+
         url_pattern = re.compile(pattern) if pattern else None
-        crawled = []
-        to_visit = [(start_url, 0)]  # (url, depth)
+        crawled: List[Dict[str, Any]] = []
+        to_visit = [(normalized_start, 0)]  # (url, depth)
+        queued = {normalized_start}
+        visited = set()
+        base_host = (urlparse(normalized_start).hostname or "").lower()
 
         while to_visit and len(crawled) < max_pages:
             url, depth = to_visit.pop(0)
+            queued.discard(url)
 
-            if depth > max_depth or url in [c["url"] for c in crawled]:
+            if depth > max_depth or url in visited:
                 continue
+            visited.add(url)
 
             # 访问页面
             result = await self.visit(url)
@@ -335,6 +404,7 @@ class WebAgent:
                     "url": url,
                     "title": result.data["title"] if result.data else "",
                     "depth": depth,
+                    "fetch_mode": result.metadata.get("fetch_mode"),
                 }
                 crawled.append(page_data)
                 logger.info(f"Crawled [{depth}]: {url}")
@@ -342,8 +412,23 @@ class WebAgent:
                 # 添加新链接
                 if result.urls:
                     for link_url in result.urls:
-                        if url_pattern is None or url_pattern.match(link_url):
-                            to_visit.append((link_url, depth + 1))
+                        normalized_link = self._normalize_crawl_url(link_url)
+                        if not normalized_link:
+                            continue
+                        if not self._is_crawlable_url(
+                            normalized_link,
+                            base_host=base_host,
+                            allow_external=allow_external,
+                            allow_subdomains=allow_subdomains,
+                        ):
+                            continue
+                        if url_pattern is not None and not url_pattern.match(normalized_link):
+                            continue
+                        if normalized_link in visited or normalized_link in queued:
+                            continue
+
+                        to_visit.append((normalized_link, depth + 1))
+                        queued.add(normalized_link)
 
         return AgentResponse(
             success=True,
@@ -351,6 +436,56 @@ class WebAgent:
             data={"pages": crawled},
             urls=[c["url"] for c in crawled],
         )
+
+    @staticmethod
+    def _normalize_crawl_url(url: str) -> Optional[str]:
+        """规范化 URL，去除 fragment，过滤明显不可爬取链接。"""
+        if not url:
+            return None
+        if not url.startswith(("http://", "https://")):
+            if url.startswith("www."):
+                url = "https://" + url
+            else:
+                return None
+
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+
+        # 过滤常见二进制/静态资源
+        static_ext = {
+            ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico",
+            ".pdf", ".zip", ".rar", ".7z", ".tar", ".gz",
+            ".mp3", ".wav", ".mp4", ".avi", ".mov", ".mkv",
+            ".css", ".js", ".woff", ".woff2", ".ttf", ".eot",
+        }
+        path_lower = parsed.path.lower()
+        if any(path_lower.endswith(ext) for ext in static_ext):
+            return None
+
+        normalized = parsed._replace(fragment="")
+        normalized_url = urlunparse(normalized)
+        return normalized_url.rstrip("/") if normalized_url.endswith("/") else normalized_url
+
+    @staticmethod
+    def _is_crawlable_url(
+        url: str,
+        base_host: str,
+        allow_external: bool,
+        allow_subdomains: bool,
+    ) -> bool:
+        """按域名策略判断链接是否应加入爬取队列。"""
+        if allow_external:
+            return True
+
+        host = (urlparse(url).hostname or "").lower()
+        if not host or not base_host:
+            return False
+        if host == base_host:
+            return True
+        if allow_subdomains and host.endswith("." + base_host):
+            return True
+        return False
 
     # ==================== 互联网搜索方法 ====================
 
@@ -410,21 +545,29 @@ class WebAgent:
                 seen_urls.add(result.url)
                 unique_results.append(result)
 
+        result_dicts = [r.to_dict() for r in unique_results]
+        citations = build_web_citations(result_dicts, query=query, prefix="W")
+        comparison = build_comparison_summary(result_dicts)
+        references_text = format_reference_block(citations, max_items=20)
+
         # 自动爬取
         crawled_content = []
         if auto_crawl and unique_results:
             crawled_content = await self._crawl_search_results(unique_results[:crawl_pages])
 
         # 构建响应
-        content = self._format_search_results(unique_results, crawled_content)
+        content = self._format_search_results(unique_results, crawled_content, citations)
 
         return AgentResponse(
             success=True,
             content=content,
             data={
-                "results": [r.to_dict() for r in unique_results],
+                "results": result_dicts,
                 "crawled_content": crawled_content,
                 "engines_used": [e.value for e in engines],
+                "citations": citations,
+                "references_text": references_text,
+                "comparison": comparison,
             },
             urls=[r.url for r in unique_results],
             metadata={
@@ -498,46 +641,139 @@ class WebAgent:
         Returns:
             AgentResponse: 研究结果
         """
-        # 生成多个搜索查询
         queries = self._generate_queries(topic, max_searches)
 
-        all_results = []
-        for query in queries:
-            result = await self.search_internet(query, num_results=5)
-            if result.success:
-                all_results.extend(result.data.get("results", []))
+        # MindSearch 风格：子查询并行执行
+        search_tasks = [
+            self.search_internet(query, num_results=5, auto_crawl=False)
+            for query in queries
+        ]
+        search_responses = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-        # 去重
+        all_results: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for response in search_responses:
+            if isinstance(response, Exception):
+                errors.append(str(response))
+                continue
+            if not response.success:
+                if response.error:
+                    errors.append(response.error)
+                continue
+            results = response.data.get("results", []) if response.data else []
+            if isinstance(results, list):
+                all_results.extend(results)
+
+        # 结果去重并规范化 URL
         seen_urls = set()
-        unique_urls = []
-        for r in all_results:
-            if r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                unique_urls.append(r["url"])
+        unique_urls: List[str] = []
+        for item in all_results:
+            if not isinstance(item, dict):
+                continue
+            raw_url = item.get("url", "")
+            normalized = self._normalize_crawl_url(raw_url)
+            if not normalized or normalized in seen_urls:
+                continue
+            seen_urls.add(normalized)
+            unique_urls.append(normalized)
 
-        # 爬取结果
-        crawl_result = await self.crawl(
-            unique_urls[0] if unique_urls else topic,
-            max_pages=max_pages,
-            max_depth=2,
-        )
+        if not unique_urls:
+            return AgentResponse(
+                success=False,
+                content=f"研究失败：未找到可爬取结果 - {topic}",
+                data={
+                    "topic": topic,
+                    "queries": queries,
+                    "errors": errors,
+                },
+                error="no_search_results",
+            )
 
-        # 整合知识
+        dedup_search_items: List[Dict[str, Any]] = []
+        seen_search_urls = set()
+        for item in all_results:
+            if not isinstance(item, dict):
+                continue
+            normalized_url = self._normalize_crawl_url(item.get("url", ""))
+            if not normalized_url or normalized_url in seen_search_urls:
+                continue
+            seen_search_urls.add(normalized_url)
+            normalized_item = dict(item)
+            normalized_item["url"] = normalized_url
+            dedup_search_items.append(normalized_item)
+
+        citations = build_web_citations(dedup_search_items, query=topic, prefix="R")
+        comparison = build_comparison_summary(dedup_search_items)
+        references_text = format_reference_block(citations, max_items=20)
+
+        # DocsGPT 风格：多种子站点分配抓取预算，避免只抓第一条结果
+        crawled_pages: List[Dict[str, Any]] = []
+        if max_pages > 0:
+            total_budget = max(1, max_pages)
+            seed_count = min(3, len(unique_urls), total_budget)
+            seeds = unique_urls[:seed_count]
+            base_budget = total_budget // seed_count
+            extra_budget = total_budget % seed_count
+
+            crawl_tasks = []
+            for idx, seed_url in enumerate(seeds):
+                budget = base_budget + (1 if idx < extra_budget else 0)
+                if budget <= 0:
+                    continue
+                crawl_tasks.append(
+                    self.crawl(
+                        seed_url,
+                        max_pages=budget,
+                        max_depth=2,
+                        allow_external=False,
+                        allow_subdomains=True,
+                    )
+                )
+
+            crawl_responses = await asyncio.gather(*crawl_tasks, return_exceptions=True)
+            crawled_seen = set()
+            for crawl_response in crawl_responses:
+                if isinstance(crawl_response, Exception):
+                    errors.append(str(crawl_response))
+                    continue
+                if not crawl_response.success:
+                    if crawl_response.error:
+                        errors.append(crawl_response.error)
+                    continue
+
+                pages = crawl_response.data.get("pages", []) if crawl_response.data else []
+                for page in pages:
+                    page_url = page.get("url") if isinstance(page, dict) else None
+                    if not page_url or page_url in crawled_seen:
+                        continue
+                    crawled_seen.add(page_url)
+                    crawled_pages.append(page)
+
         knowledge = self.get_knowledge_base()
 
         return AgentResponse(
             success=True,
-            content=f"完成主题研究：{topic}\n\n" +
-                    f"执行了 {len(queries)} 次搜索\n" +
-                    f"爬取了 {len(knowledge)} 个页面\n\n" +
-                    self._format_knowledge_summary(knowledge),
+            content=(
+                f"完成主题研究：{topic}\n\n"
+                f"执行了 {len(queries)} 次搜索\n"
+                f"搜索命中 {len(unique_urls)} 个唯一 URL\n"
+                f"实际爬取 {len(crawled_pages)} 个页面\n\n"
+                f"{self._format_knowledge_summary(knowledge)}\n\n"
+                f"{references_text}"
+            ),
             data={
                 "topic": topic,
                 "queries": queries,
                 "search_results": all_results,
+                "seed_urls": unique_urls[:3],
+                "crawled_pages": crawled_pages,
                 "knowledge": knowledge,
+                "errors": errors,
+                "citations": citations,
+                "references_text": references_text,
+                "comparison": comparison,
             },
-            urls=unique_urls[:max_pages],
+            urls=unique_urls[:max_pages] if max_pages > 0 else unique_urls,
         )
 
     # ==================== 学术模式搜索方法 ====================
@@ -571,33 +807,49 @@ class WebAgent:
         if sources is None:
             sources = self._select_academic_sources(query, include_code)
 
-        # 搜索论文
-        papers = []
-        if not include_code:
-            papers = await self._academic_engine.search_papers(
-                query, sources, num_results, fetch_abstracts
-            )
+        paper_sources = [s for s in sources if s not in {AcademicSource.GITHUB, AcademicSource.GITEE}]
+        code_sources = [s for s in sources if s in {AcademicSource.GITHUB, AcademicSource.GITEE}]
+
+        if not paper_sources:
+            paper_sources = [
+                AcademicSource.ARXIV,
+                AcademicSource.SEMANTIC_SCHOLAR,
+                AcademicSource.GOOGLE_SCHOLAR,
+            ]
+        if include_code and not code_sources:
+            code_sources = [AcademicSource.GITHUB, AcademicSource.GITEE]
+
+        # 搜索论文（修复：无论 include_code 是否开启，都执行论文检索）
+        papers = await self._academic_engine.search_papers(
+            query, paper_sources, num_results, fetch_abstracts
+        )
 
         # 搜索代码项目
         code_projects = []
-        if include_code:
-            code_sources = [s for s in sources if s in [AcademicSource.GITHUB, AcademicSource.GITEE]]
-            if code_sources:
-                code_projects = await self._academic_engine.search_code(query, code_sources, num_results)
+        if include_code and code_sources:
+            code_projects = await self._academic_engine.search_code(query, code_sources, num_results)
 
         # 缓存结果
         self._academic_cache[query] = papers
 
+        paper_dicts = [p.to_dict() for p in papers]
+        code_dicts = [c.to_dict() for c in code_projects]
+        citations = build_paper_citations(paper_dicts, query=query, prefix="P")
+        citations.extend(build_code_citations(code_dicts, query=query, prefix="C"))
+        references_text = format_reference_block(citations, max_items=30)
+
         # 构建响应
-        content = self._format_academic_results(papers, code_projects)
+        content = self._format_academic_results(papers, code_projects, citations)
 
         return AgentResponse(
             success=True,
             content=content,
             data={
-                "papers": [p.to_dict() for p in papers],
-                "code_projects": [c.to_dict() for c in code_projects],
+                "papers": paper_dicts,
+                "code_projects": code_dicts,
                 "sources": [s.value for s in sources],
+                "citations": citations,
+                "references_text": references_text,
             },
             urls=[p.url for p in papers] + [c.url for c in code_projects],
             metadata={
@@ -681,8 +933,12 @@ class WebAgent:
         """根据查询选择学术来源"""
         sources = []
 
-        # 默认包含 arXiv 和 Google Scholar
-        sources.extend([AcademicSource.ARXIV, AcademicSource.GOOGLE_SCHOLAR])
+        # 默认：预印本 + 学术图谱 + 学术搜索
+        sources.extend([
+            AcademicSource.ARXIV,
+            AcademicSource.SEMANTIC_SCHOLAR,
+            AcademicSource.GOOGLE_SCHOLAR,
+        ])
 
         # 中文查询添加 CNKI
         if re.search(r"[\u4e00-\u9fff]", query):
@@ -701,7 +957,11 @@ class WebAgent:
             sources.extend([AcademicSource.GITHUB, AcademicSource.GITEE])
             sources.append(AcademicSource.PAPER_WITH_CODE)
 
-        return sources
+        deduped = []
+        for source in sources:
+            if source not in deduped:
+                deduped.append(source)
+        return deduped
 
     def _format_knowledge_summary(self, knowledge: List[Dict]) -> str:
         """格式化知识摘要"""
@@ -728,6 +988,7 @@ class WebAgent:
         self,
         papers: List[PaperResult],
         code_projects: List[CodeProjectResult],
+        citations: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """格式化学术搜索结果"""
         lines = []
@@ -735,7 +996,9 @@ class WebAgent:
         if papers:
             lines.append(f"=== 找到 {len(papers)} 篇论文 ===\n")
             for i, p in enumerate(papers[:10], 1):
-                lines.append(f"[{i}] {p.title}")
+                citation_id = (p.metadata or {}).get("citation_id")
+                marker = f"[{citation_id}] " if citation_id else f"[{i}] "
+                lines.append(f"{marker}{p.title}")
                 lines.append(f"    作者：{', '.join(p.authors[:3]) if p.authors else 'N/A'}")
                 lines.append(f"    来源：{p.source}")
                 if p.publish_date:
@@ -751,29 +1014,51 @@ class WebAgent:
         if code_projects:
             lines.append(f"\n=== 找到 {len(code_projects)} 个代码项目 ===\n")
             for i, c in enumerate(code_projects[:10], 1):
-                lines.append(f"[{i}] {c.name} ({c.source})")
+                citation_id = (c.metadata or {}).get("citation_id")
+                marker = f"[{citation_id}] " if citation_id else f"[{i}] "
+                lines.append(f"{marker}{c.name} ({c.source})")
                 lines.append(f"    语言：{c.language}")
                 lines.append(f"    Stars: {c.stars}, Forks: {c.forks}")
                 lines.append(f"    {c.description[:150]}...")
                 lines.append(f"    URL: {c.url}")
                 lines.append("")
 
+        if citations:
+            lines.append("")
+            lines.append(format_reference_block(citations, max_items=30))
+
         return "\n".join(lines)
 
     def _generate_queries(self, topic: str, count: int) -> List[str]:
         """生成多个相关查询"""
-        queries = [topic]
+        count = max(1, count)
+        queries = [topic.strip()]
 
-        prefixes = [
-            "什么是",
-            "如何",
-            "为什么",
-            "最新",
-            "最佳实践",
-        ]
+        is_chinese = bool(re.search(r"[\u4e00-\u9fff]", topic))
+        expansions = (
+            [
+                f"什么是 {topic}",
+                f"如何 {topic}",
+                f"{topic} 最新进展",
+                f"{topic} 最佳实践",
+                f"{topic} 案例分析",
+            ]
+            if is_chinese
+            else [
+                f"what is {topic}",
+                f"{topic} latest updates",
+                f"{topic} best practices",
+                f"{topic} architecture",
+                f"{topic} case study",
+            ]
+        )
 
-        for i, prefix in enumerate(prefixes[:count-1]):
-            queries.append(f"{prefix} {topic}")
+        for expanded in expansions:
+            normalized = expanded.strip()
+            if normalized and normalized not in queries:
+                queries.append(normalized)
+            if len(queries) >= count:
+                break
 
         return queries[:count]
 
@@ -781,19 +1066,19 @@ class WebAgent:
         self,
         results: List[SearchResult],
     ) -> List[Dict[str, Any]]:
-        """爬取搜索结果页面"""
+        """爬取搜索结果页面（失败时自动浏览器兜底）。"""
         crawled = []
         for result in results:
             try:
-                page_result = await self._crawler.fetch_with_retry(result.url)
-                if page_result.success:
-                    parser = Parser().parse(page_result.html, result.url)
-                    extracted = parser.extract()
+                visit_result = await self.visit(result.url, use_browser=False, auto_fallback=True)
+                if visit_result.success and visit_result.data:
+                    text_content = visit_result.data.get("text", "")
                     crawled.append({
                         "url": result.url,
-                        "title": extracted.title,
-                        "content": extracted.text[:1500],
+                        "title": visit_result.data.get("title", ""),
+                        "content": text_content[:1500] if isinstance(text_content, str) else "",
                         "snippet": result.snippet,
+                        "fetch_mode": visit_result.metadata.get("fetch_mode"),
                     })
             except Exception as e:
                 logger.warning(f"Failed to crawl {result.url}: {e}")
@@ -803,12 +1088,15 @@ class WebAgent:
         self,
         results: List[SearchResult],
         crawled_content: List[Dict[str, Any]],
+        citations: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """格式化搜索结果"""
         lines = [f"找到 {len(results)} 个结果:\n"]
 
         for i, r in enumerate(results[:10], 1):
-            lines.append(f"[{i}] {r.title}")
+            citation_id = (r.metadata or {}).get("citation_id")
+            marker = f"[{citation_id}]" if citation_id else f"[{i}]"
+            lines.append(f"{marker} {r.title}")
             lines.append(f"    URL: {r.url}")
             lines.append(f"    来源：{r.engine}")
             lines.append(f"    摘要：{r.snippet[:150]}...")
@@ -820,6 +1108,9 @@ class WebAgent:
                 lines.append(f"[{page['title']}]")
                 lines.append(f"{page['content'][:500]}...")
                 lines.append("")
+
+        if citations:
+            lines.append(format_reference_block(citations, max_items=20))
 
         return "\n".join(lines)
 
@@ -839,7 +1130,34 @@ class WebAgent:
     async def _browser_fetch(self, url: str) -> BrowserResult:
         """使用浏览器获取"""
         await self._ensure_browser()
-        return await self._browser.fetch(url)
+        result = await self._browser.fetch(url)
+        if (
+            result.error is None
+            and result.cookies
+            and self._crawler is not None
+        ):
+            try:
+                injected = await self._crawler.seed_cookies(result.url or url, result.cookies)
+                if injected > 0:
+                    logger.info("已同步 %s 个浏览器 cookies 到 HTTP 会话: %s", injected, result.url or url)
+            except Exception as exc:
+                logger.debug("浏览器 cookie 同步失败（忽略） %s: %s", url, exc)
+        return result
+
+    def _should_fallback_to_browser(self, result: CrawlResult) -> bool:
+        """判断是否需要从 HTTP 抓取兜底到浏览器抓取。"""
+        if result.success:
+            return False
+
+        if result.status_code in {0, 401, 403, 404, 406, 408, 409, 410, 412, 418, 421, 425, 426, 429, 451, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525}:
+            return True
+
+        error_text = (result.error or "").lower()
+        fallback_keywords = [
+            "timeout", "ssl", "cloudflare", "captcha", "forbidden", "blocked",
+            "connection", "reset", "refused", "challenge", "javascript",
+        ]
+        return any(keyword in error_text for keyword in fallback_keywords)
 
     def _find_relevant_snippets(
         self,

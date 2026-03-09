@@ -1,0 +1,33 @@
+{
+  "_comment": "百度搜索引擊配置",
+  "id": "baidu",
+  "name": "百度",
+  "baseUrl": "https://www.baidu.com",
+  "searchPath": "/s?wd=",
+  "selectors": {
+    "resultContainer": "div.result, .c-container",
+    "title": "h3.t a, h3 a, .t a",
+    "link": "h3.t a, h3 a, .t a",
+    "snippet": "[data-module='abstract'], [data-module='sc_p'], .c-abstract, .c-showp"
+  },
+  "headers": {
+    "Accept-Language": "zh-CN,zh;q=0.9"
+  },
+  "antiBot": {
+    "enabled": true,
+    "detectors": [
+      "div#captcha",
+      "iframe#captcha"
+    ],
+    "errorMessage": "百度检测到验证机制，需要手动完成验证后重试。"
+  },
+  "customDelay": {
+    "min": 2000,
+    "max": 4000
+  },
+  "fallbackSelector": "div:has(a[href*='http'])",
+  "linkValidation": ["http", "www"],
+  "maxResultsPerPage": 10,
+  "timezoneList": ["Asia/Shanghai"],
+  "localeList": ["zh-CN", "zh-HK", "zh-TW"]
+}

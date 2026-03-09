@@ -10,9 +10,9 @@ from agents.web_agent import WebAgent, AgentResponse
 from core.crawler import Crawler
 from core.parser import Parser
 from core.browser import BrowserManager
-from core.search_engine import SearchEngine
+from core.search.engine import SearchEngine
 from core.academic_search import AcademicSource, is_academic_query
-from core.advanced_search import DeepSearchEngine, search_social_media, search_tech
+from core.search.advanced import DeepSearchEngine, search_social_media, search_tech, search_commerce
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,6 +71,7 @@ class WebTools:
             包含渲染后内容的字典
         """
         await self._ensure_initialized()
+        await self._agent._ensure_browser()
         result = await self._agent._browser.fetch(url, wait_for=wait_for)
         return {
             "success": result.error is None,
@@ -239,6 +240,7 @@ class WebTools:
         num_results: int = 10,
         include_code: bool = True,
         fetch_abstracts: bool = True,
+        sources: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         学术搜索 - 论文和代码项目
@@ -248,16 +250,41 @@ class WebTools:
             num_results: 结果数量
             include_code: 是否包含代码项目
             fetch_abstracts: 是否获取论文摘要
+            sources: 指定来源（arxiv/google_scholar/semantic_scholar/pubmed/ieee/cnki/wanfang/paper_with_code/github/gitee）
 
         Returns:
             学术搜索结果
         """
         await self._ensure_initialized()
+        normalized_sources = None
+        if sources:
+            source_map = {
+                "arxiv": AcademicSource.ARXIV,
+                "google_scholar": AcademicSource.GOOGLE_SCHOLAR,
+                "scholar": AcademicSource.GOOGLE_SCHOLAR,
+                "semantic_scholar": AcademicSource.SEMANTIC_SCHOLAR,
+                "semantic": AcademicSource.SEMANTIC_SCHOLAR,
+                "pubmed": AcademicSource.PUBMED,
+                "ieee": AcademicSource.IEEE,
+                "cnki": AcademicSource.CNKI,
+                "wanfang": AcademicSource.WANFANG,
+                "paper_with_code": AcademicSource.PAPER_WITH_CODE,
+                "pwc": AcademicSource.PAPER_WITH_CODE,
+                "github": AcademicSource.GITHUB,
+                "gitee": AcademicSource.GITEE,
+            }
+            normalized_sources = []
+            for source in sources:
+                enum_value = source_map.get(str(source or "").strip().lower())
+                if enum_value and enum_value not in normalized_sources:
+                    normalized_sources.append(enum_value)
+
         result = await self._agent.search_academic(
             query,
             num_results=num_results,
             include_code=include_code,
             fetch_abstracts=fetch_abstracts,
+            sources=normalized_sources,
         )
         return result.to_dict()
 
@@ -290,6 +317,7 @@ class WebTools:
         num_results: int = 20,
         use_english: bool = True,
         crawl_top: int = 5,
+        channel_profiles: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         深度搜索 - 多引擎并行，支持中英文
@@ -299,17 +327,22 @@ class WebTools:
             num_results: 每个引擎的结果数量
             use_english: 是否同时使用英文搜索
             crawl_top: 爬取前 N 个结果
+            channel_profiles: 渠道档案（news/platforms/commerce）
 
         Returns:
             深度搜索结果
         """
         deep_search = DeepSearchEngine()
-        return await deep_search.deep_search(
-            query,
-            num_results=num_results,
-            use_english=use_english,
-            crawl_top=crawl_top,
-        )
+        try:
+            return await deep_search.deep_search(
+                query,
+                num_results=num_results,
+                use_english=use_english,
+                crawl_top=crawl_top,
+                channel_profiles=channel_profiles,
+            )
+        finally:
+            await deep_search.close()
 
     async def web_search_social(
         self,
@@ -322,7 +355,7 @@ class WebTools:
         Args:
             query: 搜索关键词
             platforms: 指定平台（默认全部）
-                     支持：bilibili, zhihu, weibo, reddit, twitter
+                     支持：xiaohongshu, zhihu, tieba, douyin, bilibili, weibo, reddit, twitter
 
         Returns:
             社交媒体搜索结果
@@ -346,6 +379,24 @@ class WebTools:
             技术社区搜索结果
         """
         return await search_tech(query, sources)
+
+    async def web_search_commerce(
+        self,
+        query: str,
+        platforms: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        电商和本地生活平台搜索
+
+        Args:
+            query: 搜索关键词
+            platforms: 指定平台（默认全部）
+                     支持：taobao, jd, pinduoduo, meituan
+
+        Returns:
+            电商平台搜索结果
+        """
+        return await search_commerce(query, platforms)
 
     async def _ensure_initialized(self):
         """确保已初始化"""
@@ -447,14 +498,19 @@ async def setup_mcp_server():
             ),
             Tool(
                 name="web_search_academic",
-                description="Search academic papers and code projects (arXiv, Google Scholar, GitHub, etc.)",
+                description="Search academic papers and code projects with citation-ready metadata (arXiv, Semantic Scholar, PubMed, GitHub, etc.)",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Academic search query"},
                         "num_results": {"type": "integer", "description": "Number of results", "default": 10},
                         "include_code": {"type": "boolean", "description": "Include code projects from GitHub/Gitee", "default": True},
-                        "fetch_abstracts": {"type": "boolean", "description": "Fetch paper abstracts", "default": True}
+                        "fetch_abstracts": {"type": "boolean", "description": "Fetch paper abstracts", "default": True},
+                        "sources": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Specific academic sources (arxiv, google_scholar, semantic_scholar, pubmed, ieee, cnki, wanfang, paper_with_code, github, gitee)"
+                        },
                     },
                     "required": ["query"],
                 },
@@ -481,14 +537,19 @@ async def setup_mcp_server():
                         "query": {"type": "string", "description": "Search query"},
                         "num_results": {"type": "integer", "description": "Results per engine", "default": 20},
                         "use_english": {"type": "boolean", "description": "Also search with English query", "default": True},
-                        "crawl_top": {"type": "integer", "description": "Crawl top N results", "default": 5}
+                        "crawl_top": {"type": "integer", "description": "Crawl top N results", "default": 5},
+                        "channel_profiles": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Channel profiles to expand query via site:domain (supported: news, platforms, commerce)"
+                        },
                     },
                     "required": ["query"],
                 },
             ),
             Tool(
                 name="web_search_social",
-                description="Search social media platforms (Bilibili, Zhihu, Weibo, Reddit, Twitter)",
+                description="Search social media platforms (Xiaohongshu, Zhihu, Tieba, Douyin, Bilibili, Weibo, Reddit, Twitter)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -496,7 +557,7 @@ async def setup_mcp_server():
                         "platforms": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Platforms to search (bilibili, zhihu, weibo, reddit, twitter)"
+                            "description": "Platforms to search (xiaohongshu, zhihu, tieba, douyin, bilibili, weibo, reddit, twitter)"
                         }
                     },
                     "required": ["query"],
@@ -513,6 +574,22 @@ async def setup_mcp_server():
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Sources to search (github, stackoverflow, medium, hackernews)"
+                        }
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_search_commerce",
+                description="Search shopping/life-service platforms (Taobao, JD, Pinduoduo, Meituan)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "platforms": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Platforms to search (taobao, jd, pinduoduo, meituan)"
                         }
                     },
                     "required": ["query"],
@@ -628,7 +705,8 @@ async def setup_mcp_server():
                     arguments["query"],
                     num_results=arguments.get("num_results", 10),
                     include_code=arguments.get("include_code", True),
-                    fetch_abstracts=arguments.get("fetch_abstracts", True)
+                    fetch_abstracts=arguments.get("fetch_abstracts", True),
+                    sources=arguments.get("sources"),
                 )
             elif name == "web_search_site":
                 result = await web_tools.web_search_site(
@@ -642,6 +720,7 @@ async def setup_mcp_server():
                     num_results=arguments.get("num_results", 20),
                     use_english=arguments.get("use_english", True),
                     crawl_top=arguments.get("crawl_top", 5),
+                    channel_profiles=arguments.get("channel_profiles"),
                 )
             elif name == "web_search_social":
                 result = await web_tools.web_search_social(
@@ -652,6 +731,11 @@ async def setup_mcp_server():
                 result = await web_tools.web_search_tech(
                     arguments["query"],
                     sources=arguments.get("sources"),
+                )
+            elif name == "web_search_commerce":
+                result = await web_tools.web_search_commerce(
+                    arguments["query"],
+                    platforms=arguments.get("platforms"),
                 )
 
             if result:

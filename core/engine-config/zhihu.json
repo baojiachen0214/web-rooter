@@ -1,0 +1,32 @@
+{
+  "_comment": "知乎搜索配置",
+  "id": "zhihu",
+  "name": "知乎",
+  "baseUrl": "https://www.zhihu.com",
+  "searchPath": "/search?q=",
+  "selectors": {
+    "resultContainer": ".SearchResult-card, .ContentItem",
+    "title": ".ContentItem-title a",
+    "link": ".ContentItem-title a",
+    "snippet": ".RichText, .ContentItem-excerpt"
+  },
+  "headers": {
+    "Accept-Language": "zh-CN,zh;q=0.9"
+  },
+  "antiBot": {
+    "enabled": true,
+    "detectors": [
+      ".Captcha"
+    ],
+    "errorMessage": "知乎检测到验证，需要手动完成验证后重试。"
+  },
+  "customDelay": {
+    "min": 2000,
+    "max": 4000
+  },
+  "fallbackSelector": "div:has(a[href*='zhihu.com'])",
+  "linkValidation": ["zhihu"],
+  "maxResultsPerPage": 20,
+  "timezoneList": ["Asia/Shanghai"],
+  "localeList": ["zh-CN"]
+}

@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./LOGO.png" alt="Web-Rooter Logo" width="240" />
   <h1>Web-Rooter</h1>
-  <p><strong>面向 AI Agent 的「搜索 + 深度爬取 + 引用溯源」基础设施</strong></p>
+  <p><strong>面向 AI Agent 的网页搜索与深度爬虫基础设施</strong></p>
   <p>为 Claude Code、Cursor 等 AI 编程助手提供可验证的互联网信息获取能力</p>
 
   <p>
@@ -13,19 +13,25 @@
   </p>
 
   <p>
-    <a href="./README.zh-CN.md">简体中文</a> |
+    <a href="./README.md">入口页</a> |
     <a href="./README.en.md">English</a>
   </p>
 </div>
 
 ---
 
-## 为什么需要 Web-Rooter？
+## 项目定位
 
-AI 编程助手在解决实际问题时，常常面临以下痛点：
+Web-Rooter 不是"单纯抓网页"的工具，而是一个给 AI 工作流使用的检索基础设施：
 
-| 痛点 | Web-Rooter 解决方案 |
-|------|---------------------|
+- 先用多引擎高召回搜索找到候选来源
+- 再对关键页面做可控深爬与解析
+- 最终输出可引用、可对照、可追溯的结构化结果
+
+### 解决的核心痛点
+
+| 痛点 | Web-Rooter 方案 |
+|------|-----------------|
 | 搜索结果无法验证 | 自动抓取原始页面，提供 `citations` 溯源清单 |
 | 反爬页面获取失败 | HTTP + 浏览器双通道，挑战页自动切换 Playwright |
 | 信息来源单一 | 多引擎并行 + 渠道扩展（新闻/社交/电商/学术） |
@@ -53,9 +59,16 @@ AI 编程助手在解决实际问题时，常常面临以下痛点：
 6. **学术模式增强** - 支持 10+ 学术数据库，论文+代码联合检索
 7. **MCP 原生集成** - Claude Code 即装即用，15+ 工具暴露给 AI
 
+### 已知限制
+
+- **网络超时**：`deep` / `social` 命令在部分网络环境下可能遇到超时（由反爬/挑战页导致），建议：
+  - 使用 `--crawl=0` 跳过页面抓取，仅获取搜索结果
+  - 优先使用 `web` 命令作为替代
+  - 检查网络连接或尝试切换网络环境
+
 ---
 
-## 5 分钟快速体验
+## 快速开始
 
 ### 安装
 
@@ -65,83 +78,26 @@ python -m playwright install chromium
 python main.py --doctor
 ```
 
-### 典型工作流
+### 5 分钟体验
 
 ```bash
 # 1. 快速查资料（忘记命令时用这个）
-python main.py quick "OpenAI Agents SDK 最佳实践"
+python main.py quick "OpenAI Agents SDK"
 
-# 2. 多引擎搜索 + 自动抓取
-python main.py web "RAG 评估基准 2025" --crawl-pages=5
+# 2. 多引擎搜索 + 页面摘要
+python main.py web "RAG benchmark 2026" --crawl-pages=5
 
-# 3. 深度研究（多查询变体 + 渠道扩展）
-python main.py deep "AI Agent 工程化" --variants=4 --crawl=5 --platforms --channel=news
+# 3. 深度搜索（多查询变体 + 渠道扩展）
+python main.py deep "AI Agent 工程实践" --platforms --channel=news,commerce --crawl=5
 
-# 4. 社交媒体舆情
-python main.py social "iPhone 17 评测" --platform=xiaohongshu --platform=zhihu
+# 4. 社交媒体搜索
+python main.py social "iPhone 17" --platform=xiaohongshu --platform=zhihu
 
-# 5. 学术研究（带引用格式）
+# 5. 电商搜索
+python main.py shopping "羽绒服 轻量" --platform=taobao --platform=jd
+
+# 6. 学术搜索（带引用格式）
 python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
-
-# 6. 站点定向爬取
-python main.py crawl "https://docs.python.org/3/" 20 2 --pattern="/3/library/" --no-subdomains
-```
-
----
-
-## 输出示例
-
-### 深度搜索输出结构
-
-```json
-{
-  "query": "AI Agent 工程实践",
-  "total_results": 42,
-  "citations": [
-    {
-      "id": "P1",
-      "title": "Building Effective AI Agents",
-      "url": "https://www.anthropic.com/research/building-effective-agents",
-      "source": "anthropic",
-      "corroborated": true,
-      "corroborated_by": ["P3", "P7"]
-    }
-  ],
-  "references_text": "参考文献 / References:\n[P1] Building Effective AI Agents (anthropic) https://...\n[P3] AI Agent Patterns 2025 (github) https://...",
-  "comparison": {
-    "total_results": 42,
-    "corroborated_results": 11,
-    "domain_coverage": 17,
-    "engines_used": ["google", "bing", "duckduckgo"]
-  },
-  "crawled_content": [
-    {
-      "url": "https://...",
-      "title": "...",
-      "content": "...",
-      "citation_id": "P1"
-    }
-  ]
-}
-```
-
-### 学术搜索输出
-
-```json
-{
-  "query": "RAG evaluation",
-  "papers": [
-    {
-      "id": "S1",
-      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP",
-      "authors": ["Lewis et al."],
-      "venue": "NeurIPS 2020",
-      "url": "https://arxiv.org/abs/2005.11401",
-      "source": "arxiv"
-    }
-  ],
-  "references_text": "学术论文 / Papers:\n[S1] Lewis et al. Retrieval-Augmented Generation... (NeurIPS 2020) https://..."
-}
 ```
 
 ---
@@ -161,7 +117,7 @@ chmod +x scripts/unix/setup-claude-mcp.sh
 
 ### 手动配置
 
-在 Claude 配置文件中添加：
+在 Claude 配置文件（`%APPDATA%\Claude\config.json`）中添加：
 
 ```json
 {
@@ -194,61 +150,51 @@ chmod +x scripts/unix/setup-claude-mcp.sh
 
 ---
 
-## 技术特性
+## 安装与配置（按系统）
 
-### 反爬策略
+### Windows
 
-- **HTTP 优先**：高性能异步抓取，支持连接池与缓存
-- **浏览器兜底**：遇到挑战页自动切换 Playwright
-- **隐身模式**：Canvas 指纹噪声、WebRTC 禁用、随机 User-Agent
-- **Cloudflare 自动处理**：内置等待与重试逻辑
+- 一键基础安装：`install.bat`
+- 安装全局 `wr` 命令：`scripts\windows\install-system-cli.bat`
+- Claude MCP 安装：`scripts\windows\setup-claude-mcp.bat`
 
-### 搜索增强
+### macOS / Linux
 
-- **多引擎并行**：Google + Bing + Baidu + DuckDuckGo
-- **查询变体**：自动生成子查询，扩展召回
-- **渠道扩展**：`--news` / `--platforms` / `--commerce` 自动注入 site: 限定
-- **交叉验证**：`comparison.corroborated_results` 显示多源 corroborated 结果数
-
-### 可靠性保障
-
-- **断点续爬**：checkpoint 机制支持中断恢复
-- **内存优化**：大页面流式处理，防止 OOM
-- **健康检查**：`main.py --doctor` 一键诊断环境
-
-### 已知限制
-
-- **网络超时**：`deep` / `social` 命令在部分网络环境下可能遇到超时（由反爬/挑战页导致），建议：
-  - 使用 `--crawl=0` 跳过页面抓取，仅获取搜索结果
-  - 优先使用 `web` 命令作为替代
-  - 检查网络连接或尝试切换网络环境
+```bash
+chmod +x scripts/unix/*.sh
+./scripts/unix/install-system-cli.sh
+./scripts/unix/setup-claude-mcp.sh
+```
 
 ---
 
-## 项目结构
+## 目录总览
 
 ```
 web-rooter/
-├── main.py                 # CLI / MCP / HTTP 统一入口
-├── agents/
-│   └── web_agent.py        # 任务编排层 (visit/search/research/crawl)
-├── core/
-│   ├── crawler.py          # HTTP 抓取核心
-│   ├── browser.py          # Playwright 浏览器管理
-│   ├── search/             # 搜索引擎实现
-│   │   ├── engine_base.py  # 配置驱动搜索流程
-│   │   ├── advanced.py     # 多引擎与深度搜索聚合
-│   │   └── universal_parser.py  # 搜索结果解析
-│   ├── academic_search.py  # 学术搜索实现
-│   └── citation.py         # 引用格式生成
-├── tools/
-│   └── mcp_tools.py        # MCP 协议适配
-├── scripts/                # 跨平台安装脚本
-├── docs/                   # 完整文档
+├── main.py                 # CLI/MCP/HTTP 总入口
+├── agents/                 # 编排层（visit/search/research/crawl）
+│   └── web_agent.py
+├── core/                   # 搜索、爬虫、浏览器、解析核心
+│   ├── crawler.py          # HTTP 抓取
+│   ├── browser.py          # Playwright 浏览器
+│   ├── search/             # 搜索引擎
+│   │   ├── engine_base.py
+│   │   ├── advanced.py
+│   │   └── universal_parser.py
+│   ├── academic_search.py  # 学术搜索
+│   └── citation.py         # 引用生成
+├── tools/                  # MCP 工具适配
+│   └── mcp_tools.py
+├── scripts/                # 跨平台安装与集成脚本
+│   ├── windows/
+│   └── unix/
+├── docs/                   # 当前有效文档
 │   ├── guide/              # 使用指南
 │   ├── reference/          # API 参考
 │   └── architecture/       # 架构文档
-└── tests/                  # 自动化测试
+├── tests/                  # 自动化测试
+└── temp/                   # 参考项目快照（非运行时依赖）
 ```
 
 ---
@@ -257,6 +203,7 @@ web-rooter/
 
 | 文档 | 内容 |
 |------|------|
+| [docs/README.md](./docs/README.md) | 文档总览 |
 | [docs/guide/INSTALLATION.md](./docs/guide/INSTALLATION.md) | 详细安装指南 |
 | [docs/guide/CONFIGURATION.md](./docs/guide/CONFIGURATION.md) | 配置说明 |
 | [docs/guide/CLI.md](./docs/guide/CLI.md) | CLI 完整命令参考 |
@@ -266,7 +213,7 @@ web-rooter/
 
 ---
 
-## 开源致谢
+## 开源参考与致谢
 
 本项目在搜索/爬虫方向参考了多个优秀开源项目，详见 [ACKNOWLEDGMENTS.md](./ACKNOWLEDGMENTS.md)。
 
