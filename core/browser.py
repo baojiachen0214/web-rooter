@@ -16,6 +16,7 @@ import logging
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext, TimeoutError as PlaywrightTimeoutError
 from config import browser_config, BrowserConfig, StealthConfig
 from core.challenge_workflow import get_challenge_workflow_runner
+from core.auth_profiles import get_auth_profile_registry
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -303,6 +304,7 @@ class BrowserResult:
     screenshot: Optional[bytes] = None
     console_logs: List[str] = None
     cookies: Dict[str, str] = None
+    metadata: Dict[str, Any] = None
     error: Optional[str] = None
 
     def __post_init__(self):
@@ -310,6 +312,8 @@ class BrowserResult:
             self.console_logs = []
         if self.cookies is None:
             self.cookies = {}
+        if self.metadata is None:
+            self.metadata = {}
 
 
 @dataclass
@@ -807,6 +811,114 @@ class BrowserManager(BaseBrowserManager):
         self._context: Optional[BrowserContext] = None
         self._use_stealth = self.stealth_config.ENABLE_STEALTH
         self._start_lock = asyncio.Lock()
+        self._auth_registry = get_auth_profile_registry()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+
+    def _track_background_task(self, task: asyncio.Task[Any]) -> None:
+        """Track async callbacks and swallow close-race exceptions from detached tasks."""
+        self._background_tasks.add(task)
+
+        def _on_done(done: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(done)
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "target closed" in msg or "has been closed" in msg:
+                    logger.debug("Ignore background task close race: %s", exc)
+                    return
+                logger.debug("Background task failed: %s", exc)
+
+        task.add_done_callback(_on_done)
+
+    @staticmethod
+    def _build_local_storage_init_script(local_storage: Dict[str, Dict[str, str]]) -> str:
+        payload = json.dumps(local_storage, ensure_ascii=False)
+        return (
+            "(() => {"
+            f"const store = {payload};"
+            "const origin = window.location.origin;"
+            "const entries = store[origin] || store['*'];"
+            "if (!entries) return;"
+            "for (const [k, v] of Object.entries(entries)) {"
+            "try { window.localStorage.setItem(String(k), String(v)); } catch (_) {}"
+            "}"
+            "})();"
+        )
+
+    async def _apply_auth_profile(self, page: Page, target_url: str) -> Dict[str, Any]:
+        """根据 URL 匹配本地登录 profile 并注入上下文。"""
+        try:
+            payload = self._auth_registry.collect_auth_payload(target_url)
+        except Exception as exc:
+            logger.debug("collect auth profile failed for %s: %s", target_url, exc)
+            return {
+                "matched": None,
+                "configured": False,
+                "warnings": [f"collect_failed:{exc}"],
+                "requires_user_input": False,
+            }
+
+        headers = payload.pop("headers", {}) if isinstance(payload, dict) else {}
+        cookies = payload.pop("cookies", []) if isinstance(payload, dict) else []
+        local_storage = payload.pop("local_storage", {}) if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {"matched": None, "configured": False, "warnings": [], "requires_user_input": False}
+
+        applied_headers = 0
+        applied_cookies = 0
+        applied_local_storage = 0
+
+        if isinstance(headers, dict) and headers:
+            try:
+                await page.set_extra_http_headers({str(k): str(v) for k, v in headers.items() if str(k).strip()})
+                applied_headers = len(headers)
+            except Exception as exc:
+                payload.setdefault("warnings", []).append(f"apply_headers_failed:{exc}")
+
+        if isinstance(cookies, list) and cookies:
+            try:
+                await page.context.add_cookies(cookies)
+                applied_cookies = len(cookies)
+            except Exception as exc:
+                payload.setdefault("warnings", []).append(f"apply_cookies_failed:{exc}")
+
+        if isinstance(local_storage, dict) and local_storage:
+            try:
+                await page.add_init_script(self._build_local_storage_init_script(local_storage))
+                applied_local_storage = sum(len(v) for v in local_storage.values() if isinstance(v, dict))
+            except Exception as exc:
+                payload.setdefault("warnings", []).append(f"apply_local_storage_failed:{exc}")
+
+        payload["applied_headers"] = applied_headers
+        payload["applied_cookies"] = applied_cookies
+        payload["applied_local_storage_items"] = applied_local_storage
+        return payload
+
+    @staticmethod
+    def _detect_login_wall(url: str, title: str, html: str) -> bool:
+        merged = f"{title or ''}\n{url or ''}\n{(html or '')[:12000]}".lower()
+        strong_markers = [
+            "sign in to continue",
+            "log in to continue",
+            "please log in",
+            "please sign in",
+            "scan qr code to login",
+            "login required",
+            "登录后查看更多",
+            "登录后可见",
+            "请先登录",
+            "扫码登录",
+            "请登录后继续",
+        ]
+        if any(marker in merged for marker in strong_markers):
+            return True
+
+        weak_markers = ["sign in", "log in", "登录", "register", "立即登录", "立即注册", "验证身份"]
+        weak_hits = sum(1 for marker in weak_markers if marker in merged)
+        return weak_hits >= 3
 
     async def start(self, engine_id: str = "default"):
         """启动浏览器（支持普通启动、CDP 连接、真实 Chrome）"""
@@ -1121,11 +1233,33 @@ class BrowserManager(BaseBrowserManager):
             for script in scripts:
                 await page.add_init_script(script)
 
-        self._context.on("page", init_page)
+        def on_page(page: Page) -> None:
+            self._track_background_task(asyncio.create_task(init_page(page)))
+
+        self._context.on("page", on_page)
 
     async def close(self):
         """关闭浏览器"""
         async with self._start_lock:
+            if self._background_tasks:
+                pending = list(self._background_tasks)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                self._background_tasks.clear()
+
+            if self._context:
+                try:
+                    pages = list(getattr(self._context, "pages", []) or [])
+                    for page in pages:
+                        try:
+                            if page and not page.is_closed():
+                                await page.close()
+                        except Exception as exc:
+                            logger.debug(f"关闭 page 失败: {exc}")
+                except Exception as exc:
+                    logger.debug(f"关闭 context pages 失败: {exc}")
+
             if self._browser:
                 try:
                     await self._browser.close()
@@ -1178,8 +1312,15 @@ class BrowserManager(BaseBrowserManager):
         Returns:
             BrowserResult: 渲染后的结果
         """
-        if not self._browser:
+        if not self._browser or self._context is None:
             await self.start(engine_id or "default")
+        if self._context is None:
+            return BrowserResult(
+                url=url,
+                html="",
+                title="",
+                error="browser_context_unavailable",
+            )
 
         console_logs = []
         page: Optional[Page] = None
@@ -1187,6 +1328,7 @@ class BrowserManager(BaseBrowserManager):
         try:
             page = await self._context.new_page()
             anti_bot = AntiBotActions(page)
+            auth_profile = await self._apply_auth_profile(page, url)
 
             # 收集控制台日志
             page.on("console", lambda msg: console_logs.append(msg.text))
@@ -1258,6 +1400,18 @@ class BrowserManager(BaseBrowserManager):
                 for item in cookie_items
                 if item.get("name")
             }
+            login_wall = self._detect_login_wall(page.url, title, html)
+            result_metadata = {
+                "auth": auth_profile,
+                "login_wall": login_wall,
+            }
+            if login_wall and isinstance(auth_profile, dict):
+                if auth_profile.get("matched") is None:
+                    result_metadata["login_hint"] = (
+                        "页面存在登录门槛且未命中 auth profile。请先执行 `python main.py auth-template` 并配置本地登录态。"
+                    )
+                elif auth_profile.get("requires_user_input"):
+                    result_metadata["login_hint"] = "已命中 auth profile，但登录态未配置完整，需要用户补充本地凭据。"
 
             return BrowserResult(
                 url=page.url,
@@ -1266,6 +1420,7 @@ class BrowserManager(BaseBrowserManager):
                 screenshot=screenshot,
                 console_logs=console_logs,
                 cookies=cookie_map,
+                metadata=result_metadata,
             )
 
         except Exception as e:
@@ -1346,19 +1501,31 @@ class BrowserManager(BaseBrowserManager):
 
     async def _handle_cloudflare(self, page: Page, timeout: int = 5000):
         """处理 Cloudflare Turnstile 验证"""
+        selector = "iframe[src*='challenges.cloudflare.com']"
         try:
-            # 等待 Turnstile 出现
-            await page.wait_for_selector("iframe[src*='challenges.cloudflare.com']", timeout=timeout)
-            logger.info("Cloudflare challenge detected")
+            # Poll query_selector instead of wait_for_selector to avoid detached-frame timeout futures.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max(1.0, timeout / 1000.0)
+            challenged = None
+            while loop.time() < deadline:
+                challenged = await page.query_selector(selector)
+                if challenged:
+                    break
+                await asyncio.sleep(0.25)
 
-            # 等待验证完成（通常会自动完成）
+            if not challenged:
+                return
+
+            logger.info("Cloudflare challenge detected")
             await asyncio.sleep(2)
 
-            # 检查是否还在挑战页面
-            is_challenged = await page.query_selector("iframe[src*='challenges.cloudflare.com']")
-            if is_challenged:
-                logger.info("Waiting for Cloudflare challenge to resolve...")
-                await asyncio.sleep(3)
+            resolve_deadline = loop.time() + 6.0
+            while loop.time() < resolve_deadline:
+                current = await page.query_selector(selector)
+                if not current:
+                    return
+                await asyncio.sleep(0.5)
+            logger.info("Cloudflare challenge not fully resolved within grace window")
 
         except PlaywrightTimeoutError:
             # 没有 Cloudflare 挑战，继续

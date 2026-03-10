@@ -12,7 +12,7 @@ import os
 import subprocess
 import importlib.util
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
 
 from agents.web_agent import WebAgent
@@ -375,6 +375,142 @@ class WebRooterCLI:
             data = self.agent.get_challenge_profiles()
             self._print_result({"success": True, **data})
 
+        elif command in {"auth-profiles", "auth_profiles", "login-profiles", "login_profiles"}:
+            data = self.agent.get_auth_profiles()
+            self._print_result({"success": True, **data})
+
+        elif command in {"auth-hint", "auth_hint", "login-hint", "login_hint"}:
+            if not args:
+                print("用法：auth-hint <url>")
+                return True
+            data = self.agent.get_auth_hint(args[0])
+            self._print_result({"success": True, **data})
+
+        elif command in {"auth-template", "auth_template", "login-template", "login_template"}:
+            output_path: Optional[str] = None
+            force = False
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg == "--force":
+                    force = True
+                elif arg.startswith("--output="):
+                    output_path = arg.split("=", 1)[1].strip() or output_path
+                elif arg == "--output" and i + 1 < len(args):
+                    i += 1
+                    output_path = args[i].strip() or output_path
+                elif not arg.startswith("--") and output_path is None:
+                    output_path = arg.strip()
+                i += 1
+
+            try:
+                data = self.agent.export_auth_template(output_path=output_path, force=force)
+                self._print_result(data)
+            except FileExistsError as exc:
+                self._print_result({
+                    "success": False,
+                    "error": str(exc),
+                    "hint": "目标文件已存在。追加 --force 覆盖，或指定新的输出路径。",
+                })
+            except Exception as exc:
+                self._print_result({
+                    "success": False,
+                    "error": str(exc),
+                })
+
+        elif command in {"workflow-schema", "workflow_schema", "flow-schema", "flow_schema"}:
+            data = self.agent.get_workflow_schema()
+            self._print_result({"success": True, **data})
+
+        elif command in {"workflow-template", "workflow_template", "flow-template", "flow_template"}:
+            output_path: Optional[str] = None
+            scenario = "social_comments"
+            force = False
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg == "--force":
+                    force = True
+                elif arg.startswith("--scenario="):
+                    scenario = arg.split("=", 1)[1].strip() or scenario
+                elif arg == "--scenario" and i + 1 < len(args):
+                    i += 1
+                    scenario = args[i].strip() or scenario
+                elif arg.startswith("--output="):
+                    output_path = arg.split("=", 1)[1].strip() or output_path
+                elif arg == "--output" and i + 1 < len(args):
+                    i += 1
+                    output_path = args[i].strip() or output_path
+                elif not arg.startswith("--") and output_path is None:
+                    output_path = arg.strip()
+                i += 1
+
+            try:
+                data = self.agent.export_workflow_template(
+                    output_path=output_path,
+                    scenario=scenario,
+                    force=force,
+                )
+                self._print_result(data)
+            except FileExistsError as exc:
+                self._print_result({
+                    "success": False,
+                    "error": str(exc),
+                    "hint": "目标文件已存在。追加 --force 覆盖，或指定新的输出路径。",
+                })
+            except Exception as exc:
+                self._print_result({
+                    "success": False,
+                    "error": str(exc),
+                })
+
+        elif command in {"workflow", "flow"}:
+            strict = False
+            spec_parts: List[str] = []
+            overrides: Dict[str, Any] = {}
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg == "--strict":
+                    strict = True
+                elif arg.startswith("--var=") or arg.startswith("--set="):
+                    raw_pair = arg.split("=", 1)[1]
+                    key, value = self._parse_key_value_pair(raw_pair)
+                    if key:
+                        self._set_nested_value(overrides, key, value)
+                elif arg in {"--var", "--set"} and i + 1 < len(args):
+                    i += 1
+                    key, value = self._parse_key_value_pair(args[i])
+                    if key:
+                        self._set_nested_value(overrides, key, value)
+                else:
+                    spec_parts.append(arg)
+                i += 1
+
+            spec_input = " ".join(spec_parts).strip()
+            if not spec_input:
+                print("用法：workflow <spec-file|json> [--var key=value] [--set key=value] [--strict]")
+                print("示例：workflow .web-rooter/workflow.social.json --var topic='AI Agent 评论' --var top_hits=8")
+                print("先生成模板：workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force")
+                return True
+
+            try:
+                spec = self._load_workflow_spec(spec_input)
+            except Exception as exc:
+                self._print_result({
+                    "success": False,
+                    "error": f"workflow spec 解析失败: {exc}",
+                    "hint": "确认是有效 JSON，或传入存在的 JSON 文件路径。",
+                })
+                return True
+
+            result = await self.agent.run_workflow_spec(
+                spec=spec,
+                variable_overrides=overrides or None,
+                strict=strict,
+            )
+            self._print_result(result)
+
         elif command == "academic" and args:
             include_code = True
             fetch_abstracts = True
@@ -704,6 +840,56 @@ class WebRooterCLI:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _parse_scalar_or_json(value: str) -> Any:
+        raw = (value or "").strip()
+        if raw == "":
+            return ""
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+
+    @classmethod
+    def _parse_key_value_pair(cls, raw: str) -> tuple[Optional[str], Any]:
+        text = (raw or "").strip()
+        if "=" not in text:
+            return None, None
+        key, value = text.split("=", 1)
+        normalized_key = key.strip()
+        if not normalized_key:
+            return None, None
+        return normalized_key, cls._parse_scalar_or_json(value)
+
+    @staticmethod
+    def _set_nested_value(target: Dict[str, Any], dotted_key: str, value: Any) -> None:
+        parts = [item.strip() for item in str(dotted_key or "").split(".") if item.strip()]
+        if not parts:
+            return
+        current = target
+        for part in parts[:-1]:
+            next_value = current.get(part)
+            if not isinstance(next_value, dict):
+                next_value = {}
+                current[part] = next_value
+            current = next_value
+        current[parts[-1]] = value
+
+    @staticmethod
+    def _load_workflow_spec(spec_input: str) -> Dict[str, Any]:
+        candidate = Path(spec_input).expanduser()
+        if candidate.exists():
+            with candidate.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("workflow file root must be a JSON object")
+            return data
+
+        data = json.loads(spec_input)
+        if not isinstance(data, dict):
+            raise ValueError("workflow JSON root must be an object")
+        return data
+
     async def _run_doctor(self):
         """运行本地环境诊断，减少 CLI 集成的试错成本。"""
         print("=" * 60)
@@ -915,11 +1101,19 @@ Web-Rooter 可用命令:
 
 【导出与诊断】
   export <query> <file>           - 导出深度搜索结果到 JSON
+  workflow-schema                 - 查看 AI 可编排 workflow schema
+  workflow-template [path] [--scenario=social_comments|academic_relations] [--force]
+                                  - 导出 workflow 模板（本地改造后可直接运行）
+  workflow <spec-file|json> [--var key=value] [--set key=value] [--strict]
+                                  - 运行声明式工作流（AI 可自主决策每一步）
   doctor                          - 环境自检（依赖/浏览器/抓取链路）
   context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
   processors [--load=module:obj] [--force] - 查看/加载抓取后处理扩展
   planners [--load=module:obj] [--force] - 查看/加载 MindSearch planner 扩展
   challenge-profiles              - 查看 challenge workflow 路由档案
+  auth-profiles                   - 查看本地登录态 profile
+  auth-hint <url>                 - 查看指定站点登录态匹配与提示
+  auth-template [path] [--force]  - 导出本地登录模板 JSON
 
 【其他】
   help                            - 帮助信息
@@ -946,6 +1140,14 @@ Web-Rooter 可用命令:
   processors --load=plugins/post_processors/my_proc.py:create_processor --force
   planners --load=plugins/planners/my_planner.py:create_planner --force
   challenge-profiles
+  auth-template
+  auth-template .web-rooter/login_profiles.json --force
+  auth-hint https://www.zhihu.com
+  workflow-schema
+  workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
+  workflow .web-rooter/workflow.social.json --var topic=\"手机 评测\" --var top_hits=8
+  workflow-template .web-rooter/workflow.academic.json --scenario=academic_relations --force
+  workflow .web-rooter/workflow.academic.json --var topic=\"RAG evaluation benchmark\" --strict
   doctor
   # 也可直接输入 URL 或查询词（未知命令会自动转智能模式）
   python main.py "https://example.com"

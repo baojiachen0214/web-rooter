@@ -54,7 +54,10 @@ AI 编程助手在解决实际问题时，常常面临以下痛点：
 7. **MCP 原生集成** - Claude Code 即装即用，15+ 工具暴露给 AI
 8. **挑战页工作流路由** - 内置 `cloudflare_interstitial` / `cloudflare_turnstile` / `frame_checkbox`，支持 JSON 自定义 profile
 9. **MindSearch 图研究增强** - 产出 `mindsearch_compat`（`node`/`adjacency_list`/`ref2url`）兼容结构，便于外层 AI 推理
-10. **可插拔扩展接口** - 支持 `postprocessors`（结果后处理）与 `planners`（研究规划器）热加载
+10. **平台级挑战模板库** - 默认加载 `profiles/challenge_profiles/*.json`（含小红书/知乎/微博/抖音/电商模板）
+11. **可插拔扩展接口** - 支持 `postprocessors`（结果后处理）与 `planners`（研究规划器）热加载
+12. **登录态本地模板** - 支持 `auth-template`/`auth-profiles`/`auth-hint`，让 AI 明确引导用户补全需登录站点配置
+13. **AI 可编排 Workflow** - 用声明式 JSON 让 AI 动态决定每一步“搜什么、爬什么、怎么爬”
 
 ---
 
@@ -95,6 +98,11 @@ python main.py crawl "https://docs.python.org/3/" 20 2 --pattern="/3/library/" -
 # 8. 查看扩展与挑战页路由（不需要记住内部细节）
 python main.py planners
 python main.py challenge-profiles
+python main.py auth-template
+python main.py auth-hint https://www.zhihu.com
+python main.py workflow-schema
+python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
+python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8
 python main.py context --limit=20
 ```
 
@@ -206,6 +214,7 @@ chmod +x scripts/unix/setup-claude-mcp.sh
 | `web_context_snapshot` | 查看全局深度抓取上下文事件 |
 | `web_postprocessors` / `web_planners` | 加载后处理器 / 研究规划器扩展 |
 | `web_challenge_profiles` | 查看挑战页 workflow 路由档案 |
+| `web_auth_profiles` / `web_auth_hint` / `web_auth_template` | 管理需登录站点的本地登录态模板 |
 
 ---
 
@@ -251,6 +260,7 @@ web-rooter/
 │   ├── crawler.py          # HTTP 抓取核心
 │   ├── browser.py          # Playwright 浏览器管理
 │   ├── challenge_workflow.py # 挑战页 workflow 路由与动作编排
+│   ├── workflow.py         # 声明式 AI 工作流执行器（可组合步骤）
 │   ├── global_context.py   # 全局深度抓取事件存储
 │   ├── postprocess.py      # 抓取后处理扩展注册中心
 │   ├── search/             # 搜索引擎实现
@@ -264,6 +274,10 @@ web-rooter/
 ├── plugins/                # 用户扩展（示例）
 │   ├── post_processors/
 │   └── planners/
+├── profiles/               # 内置可配置模板
+│   ├── challenge_profiles/ # 平台级挑战页 profile JSON
+│   ├── auth/               # 登录态模板 JSON
+│   └── workflows/          # workflow 模板 JSON（社交/学术）
 ├── tools/
 │   └── mcp_tools.py        # MCP 协议适配
 ├── scripts/                # 跨平台安装脚本

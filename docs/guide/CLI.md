@@ -23,6 +23,12 @@ python main.py academic <query> [--papers-only|--with-code] [--no-abstracts] [--
 python main.py processors [--load=module:object] [--force]
 python main.py planners [--load=module:object] [--force]
 python main.py challenge-profiles
+python main.py auth-profiles
+python main.py auth-hint <url>
+python main.py auth-template [path] [--force]
+python main.py workflow-schema
+python main.py workflow-template [path] [--scenario=social_comments|academic_relations] [--force]
+python main.py workflow <spec-file|json> [--var key=value] [--set key=value] [--strict]
 python main.py context [--limit=N] [--event=type]
 ```
 
@@ -74,6 +80,32 @@ python main.py academic "RAG benchmark" --papers-only --source=arxiv --source=se
 python main.py academic "Agent eval framework" --with-code --num-results=15 --source=github
 ```
 
+### 7) 需登录站点（本地登录态模板）
+
+```bash
+python main.py auth-template
+python main.py auth-profiles
+python main.py auth-hint https://www.zhihu.com
+```
+
+填写本地 `login_profiles.json` 后，Claude Code 可以继续调用 `social/site/deep/mindsearch`，避免反复询问登录细节。
+
+### 8) AI 可编排 Workflow（不写死爬虫流程）
+
+```bash
+python main.py workflow-schema
+python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
+python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8
+
+python main.py workflow-template .web-rooter/workflow.academic.json --scenario=academic_relations --force
+python main.py workflow .web-rooter/workflow.academic.json --var topic="RAG benchmark" --strict
+```
+
+Workflow 机制的意义：
+- 外层 AI 按目标动态决定“搜什么、爬什么、怎么爬”
+- 每一步可组合（search/visit/crawl/extract/academic/mindsearch）
+- 用 `${vars...}` / `${steps...}` 在步骤间传递上下文，减少硬编码站点脚本
+
 ## Notes
 
 - `deep --variants` 用于子查询分解，默认值为 `1`
@@ -82,3 +114,4 @@ python main.py academic "Agent eval framework" --with-code --num-results=15 --so
 - `crawl` 默认不跨站，`--allow-external` 才会跨域
 - 无法稳定用 HTTP 抓取时，优先 `visit --js` 或 `quick --js`
 - `web/deep/academic/research` 输出包含 `citations` 字段；`deep/research` 还包含 `comparison` 交叉来源统计
+- `challenge-profiles` 会显示 profile 来源（`builtin` 或 JSON 路径），便于排查平台级挑战策略是否生效

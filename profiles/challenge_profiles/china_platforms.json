@@ -1,0 +1,260 @@
+{
+  "profiles": [
+    {
+      "name": "xiaohongshu_platform_gate",
+      "priority": 360,
+      "domains": ["xiaohongshu.com", "xhslink.com"],
+      "markers": ["xiaohongshu", "小红书", "安全验证", "验证码", "请完成验证", "verify", "captcha", "登录"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 900},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('同意')",
+            "button:has-text('继续')",
+            "button:has-text('验证')",
+            "button:has-text('确定')",
+            "button:has-text('Continue')",
+            "button:has-text('Verify')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "frame_click_any",
+          "frame_keywords": ["captcha", "challenge", "cloudflare", "recaptcha", "hcaptcha"],
+          "selectors": ["#recaptcha-anchor", "input[type='checkbox']", "div[role='checkbox']", "button"],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": [
+            "div[role='slider']",
+            "[class*='slider' i]",
+            "[id*='slider' i]",
+            "[class*='verify' i] [class*='drag' i]"
+          ],
+          "distance_px": 260,
+          "timeout_ms": 2200,
+          "retries": 2
+        },
+        {"type": "delay", "wait_ms": 1200},
+        {"type": "wait_challenge_disappear", "timeout_ms": 6200}
+      ]
+    },
+    {
+      "name": "zhihu_platform_gate",
+      "priority": 340,
+      "domains": ["zhihu.com"],
+      "markers": ["zhihu", "知乎", "安全验证", "captcha", "human verification", "登录", "sign in"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "delay", "wait_ms": 700},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('继续')",
+            "button:has-text('验证')",
+            "button:has-text('登录')",
+            "button:has-text('Continue')",
+            "button:has-text('Verify')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "frame_click_any",
+          "frame_keywords": ["captcha", "challenge", "cloudflare", "recaptcha", "hcaptcha"],
+          "selectors": ["#recaptcha-anchor", "input[type='checkbox']", "div[role='checkbox']", "button"],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": ["div[role='slider']", "[class*='slider' i]", "[id*='slider' i]"],
+          "distance_px": 250,
+          "timeout_ms": 2200,
+          "retries": 2
+        },
+        {"type": "delay", "wait_ms": 1100},
+        {"type": "wait_challenge_disappear", "timeout_ms": 5600}
+      ]
+    },
+    {
+      "name": "weibo_platform_gate",
+      "priority": 338,
+      "domains": ["weibo.com", "weibo.cn", "s.weibo.com"],
+      "markers": ["weibo", "微博", "安全验证", "验证码", "captcha", "登录", "verify"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 850},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": ["div[role='slider']", "[class*='slider' i]", "[class*='verify' i] [class*='drag' i]"],
+          "distance_px": 255,
+          "timeout_ms": 2300,
+          "retries": 2
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 5600}
+      ]
+    },
+    {
+      "name": "douyin_platform_gate",
+      "priority": 342,
+      "domains": ["douyin.com", "iesdouyin.com"],
+      "markers": ["douyin", "抖音", "安全验证", "验证码", "captcha", "challenge", "登录"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 900},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": ["div[role='slider']", "[class*='slider' i]", "[id*='slider' i]"],
+          "distance_px": 260,
+          "timeout_ms": 2300,
+          "retries": 2
+        },
+        {
+          "type": "frame_click_any",
+          "frame_keywords": ["captcha", "challenge", "cloudflare", "recaptcha", "hcaptcha"],
+          "selectors": ["#recaptcha-anchor", "input[type='checkbox']", "div[role='checkbox']", "button"],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 6000}
+      ]
+    },
+    {
+      "name": "bilibili_platform_gate",
+      "priority": 320,
+      "domains": ["bilibili.com"],
+      "markers": ["bilibili", "哔哩哔哩", "验证", "captcha", "登录"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "delay", "wait_ms": 800},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1700,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": ["div[role='slider']", "[class*='slider' i]"],
+          "distance_px": 250,
+          "timeout_ms": 2200,
+          "retries": 2
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 5200}
+      ]
+    },
+    {
+      "name": "tieba_platform_gate",
+      "priority": 318,
+      "domains": ["tieba.baidu.com"],
+      "markers": ["tieba", "贴吧", "验证", "captcha", "登录"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "delay", "wait_ms": 800},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1700,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": ["div[role='slider']", "[class*='slider' i]"],
+          "distance_px": 250,
+          "timeout_ms": 2200,
+          "retries": 2
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 5200}
+      ]
+    },
+    {
+      "name": "ecommerce_slider_gate",
+      "priority": 348,
+      "domains": ["taobao.com", "tmall.com", "jd.com", "pinduoduo.com", "yangkeduo.com", "meituan.com", "dianping.com"],
+      "markers": ["slide", "slider", "captcha", "安全验证", "拖动", "登录", "verify"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 850},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": [
+            "div[role='slider']",
+            "[class*='slider' i]",
+            "[id*='slider' i]",
+            "[class*='verify' i] [class*='drag' i]"
+          ],
+          "distance_px": 280,
+          "timeout_ms": 2600,
+          "retries": 3
+        },
+        {
+          "type": "frame_click_any",
+          "frame_keywords": ["captcha", "challenge", "cloudflare", "recaptcha", "hcaptcha"],
+          "selectors": ["#recaptcha-anchor", "input[type='checkbox']", "div[role='checkbox']", "button"],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {"type": "delay", "wait_ms": 1200},
+        {"type": "wait_challenge_disappear", "timeout_ms": 6800}
+      ]
+    }
+  ]
+}

@@ -21,6 +21,12 @@
 | `web_postprocessors` | 抓取结果后处理扩展管理 |
 | `web_planners` | MindSearch planner 扩展管理 |
 | `web_challenge_profiles` | challenge workflow profile 列表 |
+| `web_auth_profiles` | 本地登录态 profile 列表 |
+| `web_auth_hint` | 指定 URL 的登录态匹配与提示 |
+| `web_auth_template` | 导出本地登录态 JSON 模板 |
+| `web_workflow_schema` | 声明式 workflow schema（供 AI 自主编排） |
+| `web_workflow_template` | 导出 workflow 模板 JSON |
+| `web_workflow_run` | 运行 workflow 任务流（可传变量覆盖） |
 | `web_extract` | 目标信息提取 |
 | `web_crawl` | 站点深度爬取 |
 | `parse_html` | HTML 解析 |
@@ -28,10 +34,10 @@
 
 ## Practical Usage Order
 
-1. `web_search_internet` / `web_research`
-2. `web_fetch`（失败时 `web_fetch_js`）
-3. `web_extract` / `parse_html`
-4. 需要站点级遍历时再用 `web_crawl`
+1. `web_workflow_schema`（先拿能力边界）
+2. `web_workflow_template`（生成本地模板并按任务修改）
+3. `web_workflow_run`（一次执行可组合流程）
+4. 细粒度调试时再用 `web_search_internet` / `web_fetch` / `web_extract` / `web_crawl`
 
 ## Output Notes
 

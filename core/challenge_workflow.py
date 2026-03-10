@@ -36,6 +36,7 @@ class ChallengeStep:
     wait_ms: int = 0
     frame_keywords: List[str] = field(default_factory=list)
     retries: int = 1
+    distance_px: int = 260
 
 
 @dataclass
@@ -230,6 +231,7 @@ def _load_custom_profiles_from_json(path: Path) -> Dict[str, ChallengeProfile]:
                     wait_ms=int(step_raw.get("wait_ms", 0) or 0),
                     frame_keywords=[str(x).lower() for x in frame_keywords if str(x).strip()],
                     retries=max(1, int(step_raw.get("retries", 1) or 1)),
+                    distance_px=int(step_raw.get("distance_px", 260) or 260),
                 )
             )
 
@@ -260,26 +262,67 @@ class ChallengeWorkflowRunner:
         "just a moment",
         "verifying you are human",
         "turnstile",
+        "slider",
+        "slide to verify",
+        "please verify",
+        "login required",
+        "sign in to continue",
         "人机验证",
+        "安全验证",
+        "滑块",
+        "验证码",
+        "登录后查看",
         "访问受限",
     ]
 
     def __init__(self):
         self._profiles = _default_profiles()
+        self._profile_sources: Dict[str, str] = {name: "builtin" for name in self._profiles}
         self._loaded_custom_paths: set[Path] = set()
         self._load_custom_profiles_if_needed()
 
-    def _load_custom_profiles_if_needed(self, force: bool = False) -> None:
+    def _discover_profile_paths(self) -> List[Path]:
+        project_root = Path(__file__).resolve().parent.parent
+        default_dirs: List[Path] = [
+            project_root / "profiles" / "challenge_profiles",
+            Path.home() / ".web-rooter" / "challenge-profiles",
+        ]
         file_paths: List[Path] = []
-        profile_file = os.getenv("WEB_ROOTER_CHALLENGE_PROFILE_FILE", "").strip()
-        if profile_file:
-            file_paths.append(Path(profile_file).expanduser().resolve())
+        seen: set[Path] = set()
 
-        profile_dir = os.getenv("WEB_ROOTER_CHALLENGE_PROFILE_DIR", "").strip()
-        if profile_dir:
-            resolved_dir = Path(profile_dir).expanduser().resolve()
-            if resolved_dir.exists() and resolved_dir.is_dir():
-                file_paths.extend(sorted(resolved_dir.glob("*.json")))
+        def add_file(path: Path) -> None:
+            resolved = path.expanduser().resolve()
+            if resolved in seen or not resolved.exists() or not resolved.is_file():
+                return
+            seen.add(resolved)
+            file_paths.append(resolved)
+
+        def add_dir(path: Path) -> None:
+            resolved_dir = path.expanduser().resolve()
+            if not resolved_dir.exists() or not resolved_dir.is_dir():
+                return
+            for item in sorted(resolved_dir.glob("*.json")):
+                add_file(item)
+
+        for default_dir in default_dirs:
+            add_dir(default_dir)
+
+        profile_dir_env = os.getenv("WEB_ROOTER_CHALLENGE_PROFILE_DIR", "").strip()
+        if profile_dir_env:
+            for raw_dir in profile_dir_env.split(os.pathsep):
+                if raw_dir.strip():
+                    add_dir(Path(raw_dir.strip()))
+
+        profile_file_env = os.getenv("WEB_ROOTER_CHALLENGE_PROFILE_FILE", "").strip()
+        if profile_file_env:
+            for raw_file in profile_file_env.split(os.pathsep):
+                if raw_file.strip():
+                    add_file(Path(raw_file.strip()))
+
+        return file_paths
+
+    def _load_custom_profiles_if_needed(self, force: bool = False) -> None:
+        file_paths = self._discover_profile_paths()
 
         for path in file_paths:
             if not force and path in self._loaded_custom_paths:
@@ -287,6 +330,8 @@ class ChallengeWorkflowRunner:
             custom = _load_custom_profiles_from_json(path)
             if custom:
                 self._profiles.update(custom)
+                for name in custom:
+                    self._profile_sources[name] = str(path)
                 logger.info("已加载 %d 个自定义 challenge profiles: %s", len(custom), path)
             self._loaded_custom_paths.add(path)
 
@@ -306,6 +351,7 @@ class ChallengeWorkflowRunner:
             rows.append(
                 {
                     "name": profile.name,
+                    "source": self._profile_sources.get(profile.name, "builtin"),
                     "priority": profile.priority,
                     "domains": profile.domains,
                     "markers": profile.markers,
@@ -493,6 +539,41 @@ class ChallengeWorkflowRunner:
             for selector in [s for s in selectors if s]:
                 try:
                     await page.wait_for_selector(selector, timeout=timeout)
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        if step_type in {"drag_slider", "drag_slider_any"}:
+            selectors = [s for s in ([step.selector] + step.selectors) if s]
+            if not selectors:
+                selectors = [
+                    "[class*='slider' i]",
+                    "[id*='slider' i]",
+                    "[class*='verify' i] [role='slider']",
+                    "div[role='slider']",
+                ]
+            distance = max(80, min(420, int(step.distance_px or 260)))
+            for selector in selectors:
+                locator = page.locator(selector).first
+                try:
+                    if await locator.count() <= 0:
+                        continue
+                    if not await locator.is_visible(timeout=timeout):
+                        continue
+                    box = await locator.bounding_box()
+                    if not box:
+                        continue
+                    start_x = box["x"] + min(max(8.0, box["width"] * 0.2), 28.0)
+                    start_y = box["y"] + (box["height"] / 2) + random.uniform(-1.5, 1.5)
+                    end_x = start_x + distance + random.uniform(-10.0, 10.0)
+                    end_y = start_y + random.uniform(-2.0, 2.0)
+                    await page.mouse.move(start_x, start_y)
+                    await asyncio.sleep(random.uniform(0.06, 0.12))
+                    await page.mouse.down()
+                    await page.mouse.move(end_x, end_y, steps=random.randint(16, 28))
+                    await asyncio.sleep(random.uniform(0.03, 0.12))
+                    await page.mouse.up()
                     return True
                 except Exception:
                     continue

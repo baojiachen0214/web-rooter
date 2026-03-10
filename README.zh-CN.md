@@ -60,7 +60,10 @@ Web-Rooter 不是"单纯抓网页"的工具，而是一个给 AI 工作流使用
 7. **MCP 原生集成** - Claude Code 即装即用，15+ 工具暴露给 AI
 8. **挑战页 workflow 路由** - 内置 Cloudflare/通用挑战页 profile，支持 JSON 自定义
 9. **MindSearch 兼容图输出** - 提供 `mindsearch_compat`（`node` / `adjacency_list` / `ref2url`）
-10. **可插拔扩展机制** - `postprocessors` + `planners` 双注册中心，支持热加载
+10. **平台级挑战模板库** - 默认加载 `profiles/challenge_profiles/*.json`（含小红书/知乎/微博/抖音/电商模板）
+11. **可插拔扩展机制** - `postprocessors` + `planners` 双注册中心，支持热加载
+12. **登录态本地模板** - `auth-template` / `auth-profiles` / `auth-hint` 支持需登录站点配置
+13. **AI 可编排 Workflow** - 用声明式 JSON 让 AI 动态决定每一步“搜什么、爬什么、怎么爬”
 
 ### 已知限制
 
@@ -108,6 +111,11 @@ python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branc
 # 8. 查看扩展与挑战页路由
 python main.py planners
 python main.py challenge-profiles
+python main.py auth-template
+python main.py auth-hint https://www.zhihu.com
+python main.py workflow-schema
+python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
+python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8
 python main.py context --limit=20
 ```
 
@@ -162,6 +170,7 @@ chmod +x scripts/unix/setup-claude-mcp.sh
 | `web_context_snapshot` | 查看全局深度抓取上下文 |
 | `web_postprocessors` / `web_planners` | 加载后处理器 / 研究规划器扩展 |
 | `web_challenge_profiles` | 查看挑战页 workflow 路由档案 |
+| `web_auth_profiles` / `web_auth_hint` / `web_auth_template` | 管理需登录站点的本地登录态模板 |
 
 ---
 
@@ -207,6 +216,9 @@ web-rooter/
 ├── plugins/                # 用户扩展（示例）
 │   ├── post_processors/
 │   └── planners/
+├── profiles/               # 内置可配置模板
+│   ├── challenge_profiles/ # 平台级挑战页 profile JSON
+│   └── auth/               # 登录态模板 JSON
 ├── tools/                  # MCP 工具适配
 │   └── mcp_tools.py
 ├── scripts/                # 跨平台安装与集成脚本

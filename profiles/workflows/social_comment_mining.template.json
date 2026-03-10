@@ -1,0 +1,51 @@
+{
+  "name": "social-comment-mining",
+  "description": "Search social platforms, visit top hits, then extract comment evidence.",
+  "variables": {
+    "topic": "手机 续航 评测",
+    "platforms": [
+      "xiaohongshu",
+      "zhihu",
+      "weibo",
+      "bilibili",
+      "tieba",
+      "douyin"
+    ],
+    "top_hits": 6,
+    "use_browser": true
+  },
+  "steps": [
+    {
+      "id": "social_search",
+      "tool": "social",
+      "args": {
+        "query": "${vars.topic} 评论 用户反馈",
+        "platforms": "${vars.platforms}"
+      }
+    },
+    {
+      "id": "visit_top_hits",
+      "tool": "visit",
+      "for_each": "${steps.social_search.results}",
+      "item_alias": "hit",
+      "max_items": "${vars.top_hits}",
+      "continue_on_error": true,
+      "args": {
+        "url": "${local.hit.url}",
+        "use_browser": "${vars.use_browser}"
+      }
+    },
+    {
+      "id": "extract_comment_signals",
+      "tool": "extract",
+      "for_each": "${steps.visit_top_hits.items}",
+      "item_alias": "page",
+      "max_items": "${vars.top_hits}",
+      "continue_on_error": true,
+      "args": {
+        "url": "${local.page.input.url}",
+        "target": "提取评论区观点、情绪倾向、代表性原句、作者信息、互动数据"
+      }
+    }
+  ]
+}

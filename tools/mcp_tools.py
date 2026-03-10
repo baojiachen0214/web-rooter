@@ -429,6 +429,77 @@ class WebTools:
             **data,
         }
 
+    async def web_auth_profiles(self) -> Dict[str, Any]:
+        """
+        查看本地登录态 profile 列表。
+        """
+        await self._ensure_initialized()
+        data = self._agent.get_auth_profiles()
+        return {
+            "success": True,
+            **data,
+        }
+
+    async def web_auth_hint(self, url: str) -> Dict[str, Any]:
+        """
+        根据 URL 返回登录态配置提示。
+        """
+        await self._ensure_initialized()
+        data = self._agent.get_auth_hint(url)
+        return {
+            "success": True,
+            **data,
+        }
+
+    async def web_auth_template(
+        self,
+        output_path: Optional[str] = None,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        导出本地登录态模板 JSON。
+        """
+        await self._ensure_initialized()
+        return self._agent.export_auth_template(output_path=output_path, force=force)
+
+    async def web_workflow_schema(self) -> Dict[str, Any]:
+        """Return workflow schema so AI can decide crawl steps dynamically."""
+        await self._ensure_initialized()
+        data = self._agent.get_workflow_schema()
+        return {
+            "success": True,
+            **data,
+        }
+
+    async def web_workflow_template(
+        self,
+        output_path: Optional[str] = None,
+        scenario: str = "social_comments",
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Export workflow template JSON for local customization."""
+        await self._ensure_initialized()
+        return self._agent.export_workflow_template(
+            output_path=output_path,
+            scenario=scenario,
+            force=force,
+        )
+
+    async def web_workflow_run(
+        self,
+        spec: Dict[str, Any],
+        variables: Optional[Dict[str, Any]] = None,
+        strict: bool = False,
+    ) -> Dict[str, Any]:
+        """Run declarative workflow spec."""
+        await self._ensure_initialized()
+        response = await self._agent.run_workflow_spec(
+            spec=spec,
+            variable_overrides=variables,
+            strict=strict,
+        )
+        return response.to_dict()
+
     async def web_search_social(
         self,
         query: str,
@@ -705,6 +776,69 @@ async def setup_mcp_server():
                 },
             ),
             Tool(
+                name="web_auth_profiles",
+                description="List local auth/login profiles used for login-required websites",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="web_auth_hint",
+                description="Show auth profile match/hint for a target URL",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Target URL"}
+                    },
+                    "required": ["url"],
+                },
+            ),
+            Tool(
+                name="web_auth_template",
+                description="Export local auth profile JSON template for user-filled credentials",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "output_path": {"type": "string", "description": "Optional output path"},
+                        "force": {"type": "boolean", "description": "Overwrite if exists", "default": False}
+                    },
+                },
+            ),
+            Tool(
+                name="web_workflow_schema",
+                description="Get declarative workflow schema so AI can compose crawl/search steps dynamically",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="web_workflow_template",
+                description="Export workflow template JSON for local customization (social_comments / academic_relations)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "output_path": {"type": "string", "description": "Optional output path"},
+                        "scenario": {"type": "string", "description": "Template scenario", "default": "social_comments"},
+                        "force": {"type": "boolean", "description": "Overwrite if exists", "default": False}
+                    },
+                },
+            ),
+            Tool(
+                name="web_workflow_run",
+                description="Run a declarative workflow spec (JSON object) with optional variable overrides",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "spec": {"type": "object", "description": "Workflow JSON spec"},
+                        "variables": {"type": "object", "description": "Optional variable overrides"},
+                        "strict": {"type": "boolean", "description": "Fail fast on any step failure", "default": False}
+                    },
+                    "required": ["spec"],
+                },
+            ),
+            Tool(
                 name="web_search_social",
                 description="Search social media platforms (Xiaohongshu, Zhihu, Tieba, Douyin, Bilibili, Weibo, Reddit, Twitter)",
                 inputSchema={
@@ -908,6 +1042,29 @@ async def setup_mcp_server():
                 )
             elif name == "web_challenge_profiles":
                 result = await web_tools.web_challenge_profiles()
+            elif name == "web_auth_profiles":
+                result = await web_tools.web_auth_profiles()
+            elif name == "web_auth_hint":
+                result = await web_tools.web_auth_hint(arguments["url"])
+            elif name == "web_auth_template":
+                result = await web_tools.web_auth_template(
+                    output_path=arguments.get("output_path"),
+                    force=arguments.get("force", False),
+                )
+            elif name == "web_workflow_schema":
+                result = await web_tools.web_workflow_schema()
+            elif name == "web_workflow_template":
+                result = await web_tools.web_workflow_template(
+                    output_path=arguments.get("output_path"),
+                    scenario=arguments.get("scenario", "social_comments"),
+                    force=arguments.get("force", False),
+                )
+            elif name == "web_workflow_run":
+                result = await web_tools.web_workflow_run(
+                    spec=arguments["spec"],
+                    variables=arguments.get("variables"),
+                    strict=arguments.get("strict", False),
+                )
             elif name == "web_search_social":
                 result = await web_tools.web_search_social(
                     arguments["query"],

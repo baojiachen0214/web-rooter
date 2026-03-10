@@ -1,0 +1,56 @@
+{
+  "name": "paper-relation-mining",
+  "description": "Search papers and relation context, then visit top paper pages for evidence.",
+  "variables": {
+    "topic": "retrieval augmented generation evaluation benchmark",
+    "paper_sources": [
+      "arxiv",
+      "semantic_scholar",
+      "google_scholar"
+    ],
+    "num_results": 8,
+    "crawl_top_papers": 5
+  },
+  "steps": [
+    {
+      "id": "academic_search",
+      "tool": "academic",
+      "args": {
+        "query": "${vars.topic}",
+        "num_results": "${vars.num_results}",
+        "include_code": true,
+        "fetch_abstracts": true,
+        "sources": "${vars.paper_sources}"
+      }
+    },
+    {
+      "id": "mindsearch_relation",
+      "tool": "mindsearch",
+      "args": {
+        "query": "${vars.topic}",
+        "max_turns": 3,
+        "max_branches": 4,
+        "num_results": 6,
+        "crawl_top": 1,
+        "planner_name": "heuristic",
+        "strict_expand": true,
+        "channel_profiles": [
+          "news",
+          "platforms"
+        ]
+      }
+    },
+    {
+      "id": "visit_top_papers",
+      "tool": "visit",
+      "for_each": "${steps.academic_search.data.papers}",
+      "item_alias": "paper",
+      "max_items": "${vars.crawl_top_papers}",
+      "continue_on_error": true,
+      "args": {
+        "url": "${local.paper.url}",
+        "use_browser": false
+      }
+    }
+  ]
+}

@@ -2,9 +2,11 @@
 AI Web Agent - 自然语言网页访问接口
 """
 import asyncio
+import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
@@ -45,6 +47,13 @@ from core.search.research_planner import get_research_planner_registry
 from core.global_context import get_global_deep_context
 from core.postprocess import get_post_processor_registry
 from core.challenge_workflow import get_challenge_workflow_runner
+from core.auth_profiles import get_auth_profile_registry
+from core.workflow import (
+    WorkflowRunner,
+    build_workflow_template,
+    get_workflow_schema,
+    available_workflow_templates,
+)
 from config import crawler_config
 
 logging.basicConfig(level=logging.INFO)
@@ -188,6 +197,9 @@ class WebAgent:
                         metadata={
                             "url": result.url,
                             "title": result.title,
+                            "login_wall": (result.metadata or {}).get("login_wall"),
+                            "login_hint": (result.metadata or {}).get("login_hint"),
+                            "auth": (result.metadata or {}).get("auth"),
                         },
                     )
                 else:
@@ -1017,6 +1029,102 @@ class WebAgent:
         runner = get_challenge_workflow_runner()
         return {
             "profiles": runner.describe_profiles(),
+        }
+
+    def get_auth_profiles(self) -> Dict[str, Any]:
+        """获取本地登录态 profile 列表。"""
+        registry = get_auth_profile_registry()
+        return {
+            "profiles": registry.describe_profiles(),
+        }
+
+    def get_auth_hint(self, url: str) -> Dict[str, Any]:
+        """根据 URL 提示登录态配置建议。"""
+        registry = get_auth_profile_registry()
+        return registry.build_hint(url)
+
+    def export_auth_template(self, output_path: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+        """导出本地登录态 JSON 模板。"""
+        registry = get_auth_profile_registry()
+        return registry.export_template(output_path=output_path, force=force)
+
+    async def run_workflow_spec(
+        self,
+        spec: Dict[str, Any],
+        variable_overrides: Optional[Dict[str, Any]] = None,
+        strict: bool = False,
+    ) -> AgentResponse:
+        """运行声明式 workflow（给外层 AI 按目标动态编排抓取流程）。"""
+        runner = WorkflowRunner(self)
+        payload = await runner.run_spec(
+            spec=spec,
+            variable_overrides=variable_overrides,
+            strict=strict,
+        )
+        reports = payload.get("reports", []) if isinstance(payload, dict) else []
+        completed = sum(
+            1
+            for item in reports
+            if isinstance(item, dict) and item.get("status") in {"completed", "soft_failed"}
+        )
+        total = len(reports) if isinstance(reports, list) else 0
+        failed_step = payload.get("failed_step") if isinstance(payload, dict) else None
+        content = (
+            f"Workflow 执行完成：{payload.get('name', 'workflow')}\n"
+            f"步骤：{completed}/{total}\n"
+            f"硬失败步骤：{failed_step or '无'}\n"
+            f"软失败步骤：{payload.get('soft_failed_steps', 0)}"
+        )
+        return AgentResponse(
+            success=bool(payload.get("success")),
+            content=content,
+            data=payload,
+            urls=payload.get("urls", []) if isinstance(payload.get("urls"), list) else [],
+            error=(None if payload.get("success") else f"workflow_failed:{failed_step or 'unknown'}"),
+            metadata={
+                "mode": "workflow",
+                "name": payload.get("name"),
+                "failed_step": failed_step,
+                "strict": strict,
+            },
+        )
+
+    def get_workflow_schema(self) -> Dict[str, Any]:
+        """返回 workflow 可编排 schema，便于 AI 自主决策每一步。"""
+        return get_workflow_schema()
+
+    def export_workflow_template(
+        self,
+        output_path: Optional[str] = None,
+        scenario: str = "social_comments",
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """导出 workflow 模板 JSON（本地可编辑）。"""
+        template = build_workflow_template(scenario=scenario)
+        if output_path:
+            target = Path(output_path).expanduser()
+            if not target.is_absolute():
+                target = Path.cwd() / target
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and not force:
+                raise FileExistsError(f"workflow template already exists: {target}")
+            target.write_text(
+                json.dumps(template, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return {
+                "success": True,
+                "scenario": scenario,
+                "path": str(target),
+                "template": template,
+                "templates": available_workflow_templates(),
+            }
+
+        return {
+            "success": True,
+            "scenario": scenario,
+            "template": template,
+            "templates": available_workflow_templates(),
         }
 
     # ==================== 学术模式搜索方法 ====================

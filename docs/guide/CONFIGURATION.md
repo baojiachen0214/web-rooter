@@ -50,12 +50,37 @@ export WEB_ROOTER_CHALLENGE_PROFILE_FILE=/abs/path/challenge_profiles.json
 # 指定 challenge profile 目录（自动加载 *.json）
 export WEB_ROOTER_CHALLENGE_PROFILE_DIR=/abs/path/challenge_profiles
 
+# 默认会自动加载：
+#   ./profiles/challenge_profiles/*.json
+#   ~/.web-rooter/challenge-profiles/*.json
+
 # 强制使用某个 profile（调试用）
 export WEB_ROOTER_CHALLENGE_PROFILE=cloudflare_turnstile
 
 # 每轮最多尝试多少 profile
 export WEB_ROOTER_CHALLENGE_MAX_PROFILES=3
 ```
+
+### Login/Auth Profiles（需登录站点）
+
+```bash
+# 指定单个登录态 profile 文件
+export WEB_ROOTER_AUTH_PROFILE_FILE=/abs/path/login_profiles.json
+
+# 指定登录态 profile 目录（自动加载 *.json）
+export WEB_ROOTER_AUTH_PROFILE_DIR=/abs/path/auth_profiles
+```
+
+默认会尝试读取：
+
+- `./.web-rooter/login_profiles.json`
+- `~/.web-rooter/login_profiles.json`
+
+推荐流程：
+
+1. 先执行 `python main.py auth-template` 生成模板
+2. 在本地填充 cookies / storage_state（不要提交到仓库）
+3. 使用 `python main.py auth-hint https://target.site` 验证命中情况
 
 ### MindSearch Planner
 

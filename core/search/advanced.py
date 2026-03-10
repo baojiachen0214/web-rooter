@@ -1405,6 +1405,51 @@ def _count_high_signal_results(
     return count
 
 
+def _filter_platform_results(
+    results: List[Dict[str, Any]],
+    target_domains: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    if not isinstance(results, list):
+        return []
+
+    domains = [d.lower() for d in (target_domains or []) if d]
+    filtered: List[Dict[str, Any]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        if not url:
+            continue
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if domains and host and not any(host == d or host.endswith("." + d) for d in domains):
+            continue
+        if _is_low_signal_url(url):
+            continue
+        filtered.append(item)
+
+    return _dedupe_result_dicts(filtered)
+
+
+def _refine_platform_payload(
+    payload: Dict[str, Any],
+    query: str,
+    target_domains: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    result = dict(payload or {})
+    raw_results = result.get("results", []) if isinstance(result.get("results"), list) else []
+    filtered_results = _filter_platform_results(raw_results, target_domains=target_domains)
+    if not filtered_results:
+        return result
+
+    result["results"] = filtered_results
+    result["total_results"] = len(filtered_results)
+    result["citations"] = build_web_citations(filtered_results, query=query, prefix="W")
+    result["comparison"] = build_comparison_summary(filtered_results)
+    result["references_text"] = format_reference_block(result["citations"], max_items=40)
+    return result
+
+
 def _merge_search_payload(
     primary: Dict[str, Any],
     backup: Dict[str, Any],
@@ -1651,12 +1696,18 @@ async def search_social_media(
         query=query,
         target_domains=selected_domains,
     )
+    required_high_signal = max(1, min_expected - 1)
     force_low_signal_backup = str(os.getenv("WEB_ROOTER_FORCE_PLATFORM_BACKUP_ON_LOW_SIGNAL", "0")).lower() in {
         "1", "true", "yes", "on"
     }
+    require_high_signal = str(os.getenv("WEB_ROOTER_REQUIRE_HIGH_SIGNAL_PRIMARY", "0")).lower() in {
+        "1", "true", "yes", "on"
+    }
     if primary_results >= min_expected and (
-        not force_low_signal_backup or primary_high_signal >= max(1, min_expected - 1)
+        primary_high_signal >= required_high_signal
+        or (not force_low_signal_backup and not require_high_signal)
     ):
+        primary = _refine_platform_payload(primary, query=query, target_domains=selected_domains)
         primary["success"] = True
         return _finalize_payload_with_extensions(
             payload=primary,
@@ -1672,6 +1723,7 @@ async def search_social_media(
         use_english=False,
     )
     merged = _merge_search_payload(primary, backup, query=query)
+    merged = _refine_platform_payload(merged, query=query, target_domains=selected_domains)
     return _finalize_payload_with_extensions(
         payload=merged,
         query=query,
@@ -1766,12 +1818,18 @@ async def search_commerce(
         query=query,
         target_domains=selected_domains,
     )
+    required_high_signal = max(1, min_expected - 1)
     force_low_signal_backup = str(os.getenv("WEB_ROOTER_FORCE_PLATFORM_BACKUP_ON_LOW_SIGNAL", "0")).lower() in {
         "1", "true", "yes", "on"
     }
+    require_high_signal = str(os.getenv("WEB_ROOTER_REQUIRE_HIGH_SIGNAL_PRIMARY", "0")).lower() in {
+        "1", "true", "yes", "on"
+    }
     if primary_results >= min_expected and (
-        not force_low_signal_backup or primary_high_signal >= max(1, min_expected - 1)
+        primary_high_signal >= required_high_signal
+        or (not force_low_signal_backup and not require_high_signal)
     ):
+        primary = _refine_platform_payload(primary, query=query, target_domains=selected_domains)
         primary["success"] = True
         return _finalize_payload_with_extensions(
             payload=primary,
@@ -1787,6 +1845,7 @@ async def search_commerce(
         use_english=False,
     )
     merged = _merge_search_payload(primary, backup, query=query)
+    merged = _refine_platform_payload(merged, query=query, target_domains=selected_domains)
     return _finalize_payload_with_extensions(
         payload=merged,
         query=query,

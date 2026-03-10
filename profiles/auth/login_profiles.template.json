@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "notes": "本文件只保存在本地，请勿提交含真实账号凭据的版本。建议放在 .web-rooter/login_profiles.json。",
+  "profiles": [
+    {
+      "name": "xiaohongshu_local_auth",
+      "enabled": false,
+      "priority": 220,
+      "domains": ["xiaohongshu.com", "xhslink.com"],
+      "mode": "storage_state",
+      "login_url": "https://www.xiaohongshu.com/explore",
+      "storage_state_file": "./.web-rooter/auth/xiaohongshu_state.json",
+      "headers": {},
+      "cookies": [],
+      "local_storage": {
+        "https://www.xiaohongshu.com": {
+          "__EXAMPLE_KEY__": "__EXAMPLE_VALUE__"
+        }
+      },
+      "notes": "建议在本机手动登录后导出 storage_state，并定期更新。"
+    },
+    {
+      "name": "zhihu_local_auth",
+      "enabled": false,
+      "priority": 220,
+      "domains": ["zhihu.com"],
+      "mode": "cookies",
+      "login_url": "https://www.zhihu.com/signin",
+      "cookies_file": "./.web-rooter/auth/zhihu_cookies.json",
+      "headers": {},
+      "cookies": [
+        {
+          "name": "z_c0",
+          "value": "__REPLACE_ME__",
+          "domain": ".zhihu.com",
+          "path": "/",
+          "httpOnly": true,
+          "secure": true
+        }
+      ],
+      "local_storage": {},
+      "notes": "cookies 可与 cookies_file 并用；真实值请仅本地保存。"
+    },
+    {
+      "name": "weibo_local_auth",
+      "enabled": false,
+      "priority": 220,
+      "domains": ["weibo.com", "weibo.cn", "s.weibo.com"],
+      "mode": "auto",
+      "login_url": "https://weibo.com/login.php",
+      "storage_state_file": "./.web-rooter/auth/weibo_state.json",
+      "cookies_file": "./.web-rooter/auth/weibo_cookies.json",
+      "headers": {},
+      "cookies": [],
+      "local_storage": {},
+      "notes": "auto 模式会尝试 headers/cookies/storage_state，命中即用。"
+    },
+    {
+      "name": "douyin_local_auth",
+      "enabled": false,
+      "priority": 220,
+      "domains": ["douyin.com", "iesdouyin.com"],
+      "mode": "storage_state",
+      "login_url": "https://www.douyin.com/",
+      "storage_state_file": "./.web-rooter/auth/douyin_state.json",
+      "headers": {},
+      "cookies": [],
+      "local_storage": {},
+      "notes": "抖音网页常有登录门槛，建议优先 storage_state。"
+    },
+    {
+      "name": "commerce_local_auth",
+      "enabled": false,
+      "priority": 210,
+      "domains": ["taobao.com", "tmall.com", "jd.com", "pinduoduo.com", "yangkeduo.com", "meituan.com", "dianping.com"],
+      "mode": "manual",
+      "login_url": "https://www.taobao.com/",
+      "headers": {},
+      "cookies": [],
+      "local_storage": {},
+      "notes": "电商平台风控更强，先手动登录，再将 cookies 或 storage_state 放到本地。"
+    }
+  ]
+}

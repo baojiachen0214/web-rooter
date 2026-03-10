@@ -54,7 +54,10 @@ AI coding assistants often face these challenges when solving real-world problem
 7. **Native MCP Integration** - Claude Code ready out-of-box, 15+ tools exposed to AI
 8. **Challenge Workflow Routing** - Built-in Cloudflare/general challenge profiles with JSON-based custom routing
 9. **MindSearch Compatibility Output** - Includes `mindsearch_compat` (`node` / `adjacency_list` / `ref2url`) for external AI orchestration
-10. **Pluggable Extensions** - Hot-loadable `postprocessors` and `planners`
+10. **Platform Challenge Template Library** - Auto-loads `profiles/challenge_profiles/*.json` (Xiaohongshu/Zhihu/Weibo/Douyin/E-commerce templates included)
+11. **Pluggable Extensions** - Hot-loadable `postprocessors` and `planners`
+12. **Local Auth Template Flow** - `auth-template` / `auth-profiles` / `auth-hint` for login-required sites
+13. **AI-Orchestrated Workflow** - Declarative JSON flow lets AI decide each crawl/search step dynamically
 
 ### Known Limitations
 
@@ -102,6 +105,11 @@ python main.py mindsearch "multimodal LLM production engineering" --turns=3 --br
 # 8. Inspect extension and challenge routing state
 python main.py planners
 python main.py challenge-profiles
+python main.py auth-template
+python main.py auth-hint https://www.zhihu.com
+python main.py workflow-schema
+python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
+python main.py workflow .web-rooter/workflow.social.json --var topic="phone review" --var top_hits=8
 python main.py context --limit=20
 ```
 
@@ -156,6 +164,7 @@ Add to your Claude config file (`~/Library/Application Support/Claude/config.jso
 | `web_context_snapshot` | Global deep-crawl context snapshot |
 | `web_postprocessors` / `web_planners` | Post-process / planner extension management |
 | `web_challenge_profiles` | Challenge workflow profile listing |
+| `web_auth_profiles` / `web_auth_hint` / `web_auth_template` | Local auth profile management for login-required sites |
 
 ---
 
@@ -201,6 +210,9 @@ web-rooter/
 ├── plugins/                # User extensions (examples)
 │   ├── post_processors/
 │   └── planners/
+├── profiles/               # Built-in configurable templates
+│   ├── challenge_profiles/ # Platform challenge profile JSONs
+│   └── auth/               # Local auth profile template JSON
 ├── tools/                  # MCP adapter
 │   └── mcp_tools.py
 ├── scripts/                # Cross-platform install scripts
