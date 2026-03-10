@@ -1,0 +1,189 @@
+name: Build Multi-Platform Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub Release'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            artifact_name: web-rooter-linux-x64
+          - os: macos-13
+            platform: macos-x64
+            artifact_name: web-rooter-macos-x64
+          - os: macos-latest
+            platform: macos-arm64
+            artifact_name: web-rooter-macos-arm64
+          - os: windows-latest
+            platform: windows-x64
+            artifact_name: web-rooter-windows-x64
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.platform }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Install Playwright browsers (for bundling driver)
+        run: python -m playwright install chromium
+        # Playwright driver (not browser) is bundled; browser is auto-installed at runtime
+
+      - name: Build binary
+        run: pyinstaller web-rooter.spec --clean
+
+      - name: Verify binary exists
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "windows-x64" ]; then
+            ls -la dist/web-rooter.exe
+          else
+            ls -la dist/web-rooter
+          fi
+
+      - name: Test binary runs
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "windows-x64" ]; then
+            dist/web-rooter.exe --help || true
+          else
+            chmod +x dist/web-rooter
+            dist/web-rooter --help || true
+          fi
+
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar czf ${{ matrix.artifact_name }}.tar.gz web-rooter
+          shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd dist
+          Compress-Archive -Path web-rooter.exe -DestinationPath ${{ matrix.artifact_name }}.zip
+          (Get-FileHash ${{ matrix.artifact_name }}.zip -Algorithm SHA256).Hash.ToLower() + "  " + "${{ matrix.artifact_name }}.zip" | Out-File -Encoding ASCII ${{ matrix.artifact_name }}.zip.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/${{ matrix.artifact_name }}.tar.gz
+            dist/${{ matrix.artifact_name }}.tar.gz.sha256
+            dist/${{ matrix.artifact_name }}.zip
+            dist/${{ matrix.artifact_name }}.zip.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "version=v$(date +'%Y%m%d')-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Web-Rooter ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          generate_release_notes: true
+          body: |
+            ## Web-Rooter MCP Server - 预编译二进制
+
+            无需安装 Python 环境，下载对应平台的二进制文件即可直接使用。
+
+            ### 下载
+
+            | 平台 | 文件 |
+            |------|------|
+            | Linux x64 | `web-rooter-linux-x64.tar.gz` |
+            | macOS x64 (Intel) | `web-rooter-macos-x64.tar.gz` |
+            | macOS ARM64 (Apple Silicon) | `web-rooter-macos-arm64.tar.gz` |
+            | Windows x64 | `web-rooter-windows-x64.zip` |
+
+            ### 使用方法
+
+            1. 下载并解压对应平台的文件
+            2. 首次运行会自动安装 Chromium 浏览器（需要网络）
+            3. 配置 Claude Desktop / Claude Code MCP:
+
+            **Claude Code (`.mcp.json`)**:
+            ```json
+            {
+              "mcpServers": {
+                "web-rooter": {
+                  "command": "/path/to/web-rooter",
+                  "args": ["--mcp"]
+                }
+              }
+            }
+            ```
+
+            **Claude Desktop (`claude_desktop_config.json`)**:
+            ```json
+            {
+              "mcpServers": {
+                "web-rooter": {
+                  "command": "/path/to/web-rooter",
+                  "args": ["--mcp"]
+                }
+              }
+            }
+            ```
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.tar.gz.sha256
+            artifacts/**/*.zip
+            artifacts/**/*.zip.sha256

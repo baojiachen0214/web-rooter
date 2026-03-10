@@ -813,6 +813,9 @@ def main():
         args.args.extend(unknown)
 
     if args.mcp:
+        from core.browser_bootstrap import ensure_browser_ready
+        if not ensure_browser_ready():
+            print("[MCP] 警告: Chromium 未就绪，JS 渲染功能可能不可用", flush=True)
         print("[MCP] 启动 MCP 服务器...")
         asyncio.run(run_mcp_server())
     elif args.server:

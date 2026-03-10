@@ -10,6 +10,7 @@
 """
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field, asdict, fields
@@ -91,6 +92,12 @@ class ConfigLoader:
             Path.cwd() / "engine-config",
             Path.cwd() / "core" / "engine-config",
         ]
+
+        # PyInstaller 打包环境：从 _MEIPASS 中查找
+        if getattr(sys, 'frozen', False):
+            bundle_dir = Path(sys._MEIPASS)
+            possible_paths.insert(0, bundle_dir / "core" / "engine-config")
+            possible_paths.insert(0, bundle_dir / "engine-config")
 
         for test_path in possible_paths:
             if test_path.exists() and (test_path / "common.json").exists():
