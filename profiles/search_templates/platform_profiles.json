@@ -1,0 +1,39 @@
+{
+  "engine_search_urls": {
+    "meituan": [
+      "https://i.meituan.com/s/{query}",
+      "https://www.dianping.com/search/keyword/1/0_{query}"
+    ],
+    "pinduoduo": [
+      "https://mobile.yangkeduo.com/search_result.html?search_key={query}",
+      "https://www.pinduoduo.com/search_result.html?search_key={query}"
+    ],
+    "douyin": [
+      "https://www.douyin.com/search/{query}",
+      "https://www.iesdouyin.com/share/search/{query}"
+    ]
+  },
+  "backup_domain_priority": {
+    "zhihu.com": 100,
+    "bilibili.com": 98,
+    "tieba.baidu.com": 96,
+    "weibo.com": 95,
+    "jd.com": 96,
+    "taobao.com": 94,
+    "tmall.com": 93,
+    "dianping.com": 92,
+    "meituan.com": 90
+  },
+  "backup_domain_query_hints": {
+    "zhihu.com": "question 回答 评论",
+    "xiaohongshu.com": "explore 笔记 评论",
+    "bilibili.com": "video 弹幕 评论",
+    "douyin.com": "video 评论",
+    "weibo.com": "status 评论",
+    "taobao.com": "商品 评价 评论 item",
+    "tmall.com": "商品 评价 评论 item",
+    "jd.com": "商品 评价 评论 item",
+    "meituan.com": "团购 店铺 评价 评论",
+    "dianping.com": "店铺 评价 评论"
+  }
+}

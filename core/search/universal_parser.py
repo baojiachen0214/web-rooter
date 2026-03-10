@@ -55,6 +55,10 @@ class UniversalResultParser:
         seen_links = set()
 
         try:
+            if await self._is_challenge_page(page):
+                logger.warning("检测到挑战页，跳过结果解析：%s", page.url)
+                return []
+
             # 阶段 1：按配置选择器提取
             result_containers = await self._find_result_containers(page)
             if not result_containers and self.fallback_selector:
@@ -98,6 +102,41 @@ class UniversalResultParser:
             logger.error("解析搜索结果失败：%s", exc)
 
         return results
+
+    async def _is_challenge_page(self, page: Page) -> bool:
+        """页面级挑战识别，避免把验证页中的帮助链接误当作搜索结果。"""
+        try:
+            title = (await page.title() or "").strip().lower()
+        except Exception:
+            title = ""
+
+        try:
+            body_text = await page.evaluate(
+                "() => (document && document.body && document.body.innerText) ? document.body.innerText.slice(0, 3000) : ''"
+            )
+        except Exception:
+            body_text = ""
+
+        text = f"{title} {body_text} {page.url}".lower()
+        challenge_markers = [
+            "captcha",
+            "recaptcha",
+            "verify you are human",
+            "human verification",
+            "unusual traffic",
+            "cloudflare",
+            "cf-challenge",
+            "just a moment",
+            "安全验证",
+            "百度安全验证",
+            "ç¾åº¦å®å¨éªè¯",
+            "人机验证",
+            "请输入验证码",
+            "检测到异常流量",
+            "访问受限",
+            "blocked",
+        ]
+        return any(marker in text for marker in challenge_markers)
 
     async def _find_result_containers(self, page: Page) -> List[Any]:
         if not self.selectors:
@@ -285,8 +324,10 @@ class UniversalResultParser:
             "cf-challenge",
             "blocked",
             "forbidden",
-            "自动检测到",
+            "安全验证",
+            "百度安全验证",
             "人机验证",
+            "自动检测到",
             "服务条款",
             "sorry/index",
         ]

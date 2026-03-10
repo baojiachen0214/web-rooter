@@ -14,6 +14,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
@@ -33,6 +34,7 @@ from core.memory_optimizer import (
 from core.citation import build_web_citations, build_comparison_summary, format_reference_block
 from core.global_context import get_global_deep_context
 from core.postprocess import PostProcessContext, run_post_processors
+from core.auth_profiles import get_auth_profile_registry
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -131,6 +133,7 @@ class AdvancedSearchEngineClient:
 
     _PATH_QUERY_ENGINES = {
         AdvancedSearchEngine.DOUYIN,
+        AdvancedSearchEngine.MEITUAN,
     }
 
     # 搜索引擎 URL 模板（支持多语言）
@@ -345,80 +348,109 @@ class AdvancedSearchEngineClient:
         """执行搜索"""
         start_time = datetime.now()
 
-        # 构建搜索 URL
-        url_template = self.SEARCH_URLS.get(engine)
-        if not url_template:
+        if engine not in self.SEARCH_URLS:
             return SearchResponse(
                 query=query,
                 engine=engine.value,
                 error=f"不支持的搜索引擎：{engine.value}",
             )
 
-        # 根据语言调整 URL
+        # 根据语言调整引擎
         if language == "en" and engine in [AdvancedSearchEngine.GOOGLE, AdvancedSearchEngine.BING]:
-            # 使用英文版
             engine = AdvancedSearchEngine.GOOGLE_US if engine == AdvancedSearchEngine.GOOGLE else AdvancedSearchEngine.BING_US
-            url_template = self.SEARCH_URLS[engine]
-
-        if engine in self._PATH_QUERY_ENGINES:
-            encoded_query = quote(query, safe="")
-        else:
-            encoded_query = quote_plus(query)
-        search_url = url_template.format(query=encoded_query, count=num_results)
-
-        try:
-            # 首选 HTTP 搜索（快）
-            result = await self._crawler.fetch_with_retry(
-                search_url,
-                retries=2,
+        url_templates = _get_engine_search_url_templates(engine)
+        if not url_templates:
+            return SearchResponse(
+                query=query,
+                engine=engine.value,
+                error=f"未找到可用搜索入口模板：{engine.value}",
             )
 
-            if result.success:
-                parsed_results = self._parse_results(engine, result.html)
-                if parsed_results:
-                    for r in parsed_results:
-                        r.language = language
-                        r.metadata.setdefault("fetch_mode", "http")
+        try:
+            candidate_urls: List[str] = []
+            for template in url_templates:
+                if "{query}" not in template:
+                    continue
+                encoded_query = quote(query, safe="") if engine in self._PATH_QUERY_ENGINES else quote_plus(query)
+                try:
+                    search_url = template.format(query=encoded_query, count=num_results)
+                except Exception:
+                    continue
+                if search_url and search_url not in candidate_urls:
+                    candidate_urls.append(search_url)
 
-                    search_time = (datetime.now() - start_time).total_seconds()
-                    return SearchResponse(
-                        query=query,
-                        engine=engine.value,
-                        results=parsed_results,
-                        total_results=len(parsed_results),
-                        search_time=search_time,
-                    )
-
-                logger.info(
-                    "HTTP search got 0 parsed results for %s, switching to browser fallback",
-                    engine.value,
+            if not candidate_urls:
+                return SearchResponse(
+                    query=query,
+                    engine=engine.value,
+                    error=f"搜索入口模板不可用：{engine.value}",
                 )
-            else:
+
+            http_attempt_errors: List[str] = []
+            any_http_failure = False
+            for search_url in candidate_urls:
+                result = await self._crawler.fetch_with_retry(search_url, retries=2)
+                if result.success:
+                    parsed_results = self._parse_results(engine, result.html)
+                    if parsed_results:
+                        for r in parsed_results:
+                            r.language = language
+                            r.metadata.setdefault("fetch_mode", "http")
+                            r.metadata.setdefault("search_url", search_url)
+
+                        search_time = (datetime.now() - start_time).total_seconds()
+                        return SearchResponse(
+                            query=query,
+                            engine=engine.value,
+                            results=parsed_results,
+                            total_results=len(parsed_results),
+                            search_time=search_time,
+                        )
+
+                    http_attempt_errors.append(f"http_empty:{search_url}")
+                    logger.info(
+                        "HTTP search got 0 parsed results for %s via %s",
+                        engine.value,
+                        search_url,
+                    )
+                    continue
+
+                any_http_failure = True
+                http_attempt_errors.append(f"http_failed:{search_url}:{result.error or result.status_code}")
                 logger.info(
-                    "HTTP search failed for %s (%s), switching to browser fallback",
+                    "HTTP search failed for %s via %s (%s)",
                     engine.value,
+                    search_url,
                     result.error or result.status_code,
                 )
 
             # 兜底：配置驱动浏览器搜索（playwright-search-mcp 风格）
-            fallback = await self._search_with_browser_configured(
-                engine=engine,
+            browser_attempt_errors: List[str] = []
+            browser_max_urls = max(1, int(os.getenv("WEB_ROOTER_BROWSER_URL_CANDIDATES", "2")))
+            for search_url in candidate_urls[:browser_max_urls]:
+                fallback = await self._search_with_browser_configured(
+                    engine=engine,
+                    query=query,
+                    search_url=search_url,
+                    num_results=num_results,
+                    language=language,
+                )
+
+                if fallback.error is None and fallback.results:
+                    for item in fallback.results:
+                        item.metadata.setdefault("search_url", search_url)
+                    return fallback
+
+                if fallback.error:
+                    browser_attempt_errors.append(f"{search_url}:{fallback.error}")
+
+            error_prefix = "HTTP搜索失败" if any_http_failure else "HTTP搜索结果为空"
+            fallback_error_text = "; ".join(browser_attempt_errors[:2]) if browser_attempt_errors else "浏览器兜底未解析到结果"
+            return SearchResponse(
                 query=query,
-                search_url=search_url,
-                num_results=num_results,
-                language=language,
+                engine=engine.value,
+                error=f"{error_prefix}; 浏览器兜底失败：{fallback_error_text}",
             )
-
-            if fallback.error is None:
-                return fallback
-
-            error_prefix = (
-                f"HTTP搜索失败：{result.error or result.status_code}"
-                if not result.success
-                else "HTTP搜索结果为空"
-            )
-            fallback.error = f"{error_prefix}; 浏览器兜底失败：{fallback.error}"
-            return fallback
 
         except Exception as e:
             logger.exception(f"搜索失败 {engine.value}: {e}")
@@ -1353,6 +1385,341 @@ def _extract_query_tokens(query: str) -> List[str]:
     return [token for token in tokens if len(token) >= 2]
 
 
+_COMMENT_INTENT_TERMS = (
+    "评论", "评价", "反馈", "吐槽", "测评", "体验", "弹幕", "讨论", "口碑", "回复",
+    "comment", "comments", "review", "reviews", "rating", "ratings", "feedback", "discussion",
+)
+
+_SOCIAL_HIGH_SIGNAL_HINTS = (
+    "/explore/", "/question/", "/answer/", "/p/", "/video/", "/status/", "/comments/",
+    "/read/cv", "/opus/", "/note/",
+)
+
+_SOCIAL_NAV_NOISE_HINTS = (
+    "/jingxuan", "/follow", "/friend", "/anime", "/match/home", "/platform", "/home",
+    "/hot", "/rank", "/topic", "/discover", "/aisearch",
+)
+
+_COMMERCE_HIGH_SIGNAL_HINTS = (
+    "item.taobao.com/item.htm", "detail.tmall.com/item.htm", "item.jd.com/",
+    "yangkeduo.com/goods", "goods.html", "/deal/", "/shop/", "/poi/",
+)
+
+_COMMERCE_NAV_NOISE_HINTS = (
+    "/win-together", "/technology", "/csr", "/passport", "/reg", "/club", "/union",
+    "/order", "/buyertrade", "/daxue", "/help", "/service", "/about", "/login",
+)
+
+_BACKUP_DOMAIN_PRIORITY: Dict[str, int] = {
+    # social
+    "zhihu.com": 100,
+    "bilibili.com": 98,
+    "tieba.baidu.com": 96,
+    "weibo.com": 95,
+    "weibo.cn": 94,
+    "douyin.com": 92,
+    "iesdouyin.com": 91,
+    "xiaohongshu.com": 84,
+    "xhslink.com": 70,
+    # commerce
+    "jd.com": 96,
+    "taobao.com": 94,
+    "tmall.com": 93,
+    "dianping.com": 92,
+    "meituan.com": 90,
+    "pinduoduo.com": 88,
+    "yangkeduo.com": 87,
+}
+
+_BACKUP_DOMAIN_QUERY_HINTS: Dict[str, str] = {
+    "zhihu.com": "question 回答 评论",
+    "xiaohongshu.com": "explore 笔记 评论",
+    "xhslink.com": "小红书 笔记 评论",
+    "bilibili.com": "video 弹幕 评论",
+    "tieba.baidu.com": "贴吧 回复 评论",
+    "douyin.com": "video 评论",
+    "iesdouyin.com": "video 评论",
+    "weibo.com": "status 评论",
+    "weibo.cn": "status 评论",
+    "taobao.com": "商品 评价 评论 item",
+    "tmall.com": "商品 评价 评论 item",
+    "jd.com": "商品 评价 评论 item",
+    "pinduoduo.com": "商品 评价 评论",
+    "yangkeduo.com": "商品 评价 评论",
+    "meituan.com": "团购 店铺 评价 评论",
+    "dianping.com": "店铺 评价 评论",
+}
+
+_ENGINE_URL_FALLBACK_TEMPLATES: Dict[str, List[str]] = {
+    # 主入口常见 404/跳转时尝试备用网址
+    "meituan": [
+        "https://i.meituan.com/s/{query}",
+        "https://www.dianping.com/search/keyword/1/0_{query}",
+    ],
+    "pinduoduo": [
+        "https://mobile.yangkeduo.com/search_result.html?search_key={query}",
+        "https://www.pinduoduo.com/search_result.html?search_key={query}",
+    ],
+    "douyin": [
+        "https://www.douyin.com/search/{query}",
+        "https://www.iesdouyin.com/share/search/{query}",
+    ],
+}
+
+_PLATFORM_PROFILE_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _to_bool_env(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _default_platform_profile_path() -> Path:
+    return _project_root() / "profiles" / "search_templates" / "platform_profiles.json"
+
+
+def _load_platform_profile_cache(force: bool = False) -> Dict[str, Any]:
+    global _PLATFORM_PROFILE_CACHE
+    if _PLATFORM_PROFILE_CACHE is not None and not force:
+        return _PLATFORM_PROFILE_CACHE
+
+    profile_data: Dict[str, Any] = {
+        "engine_search_urls": {},
+        "backup_domain_priority": {},
+        "backup_domain_query_hints": {},
+    }
+
+    file_candidates: List[Path] = []
+    env_file = str(os.getenv("WEB_ROOTER_PLATFORM_PROFILE_FILE", "")).strip()
+    if env_file:
+        file_candidates.append(Path(env_file).expanduser())
+    file_candidates.append(_default_platform_profile_path())
+
+    loaded_path: Optional[Path] = None
+    for candidate in file_candidates:
+        path = candidate.resolve()
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("加载平台模板配置失败 %s: %s", path, exc)
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        raw_engine_urls = payload.get("engine_search_urls", {})
+        if isinstance(raw_engine_urls, dict):
+            for engine_name, urls in raw_engine_urls.items():
+                key = str(engine_name or "").strip().lower()
+                if not key or not isinstance(urls, list):
+                    continue
+                normalized_urls = [
+                    str(item or "").strip()
+                    for item in urls
+                    if str(item or "").strip()
+                ]
+                if normalized_urls:
+                    profile_data["engine_search_urls"][key] = normalized_urls
+
+        raw_priority = payload.get("backup_domain_priority", {})
+        if isinstance(raw_priority, dict):
+            for domain, value in raw_priority.items():
+                key = str(domain or "").strip().lower()
+                if not key:
+                    continue
+                try:
+                    profile_data["backup_domain_priority"][key] = int(value)
+                except Exception:
+                    continue
+
+        raw_hints = payload.get("backup_domain_query_hints", {})
+        if isinstance(raw_hints, dict):
+            for domain, hint in raw_hints.items():
+                key = str(domain or "").strip().lower()
+                val = str(hint or "").strip()
+                if key and val:
+                    profile_data["backup_domain_query_hints"][key] = val
+
+        loaded_path = path
+        break
+
+    _PLATFORM_PROFILE_CACHE = profile_data
+    if loaded_path is not None:
+        logger.info("已加载平台模板配置: %s", loaded_path)
+    return _PLATFORM_PROFILE_CACHE
+
+
+def _get_engine_search_url_templates(engine: AdvancedSearchEngine) -> List[str]:
+    base_template = AdvancedSearchEngineClient.SEARCH_URLS.get(engine)
+    templates: List[str] = []
+    if base_template:
+        templates.append(base_template)
+
+    key = str(engine.value or "").strip().lower()
+    fallback_templates = _ENGINE_URL_FALLBACK_TEMPLATES.get(key, [])
+    for tpl in fallback_templates:
+        if tpl not in templates:
+            templates.append(tpl)
+
+    profile_data = _load_platform_profile_cache()
+    custom_templates = profile_data.get("engine_search_urls", {}).get(key, [])
+    if isinstance(custom_templates, list):
+        for tpl in custom_templates:
+            candidate = str(tpl or "").strip()
+            if candidate and candidate not in templates:
+                templates.append(candidate)
+
+    max_templates = max(1, int(os.getenv("WEB_ROOTER_ENGINE_URL_CANDIDATES", "3")))
+    return templates[:max_templates]
+
+
+def _get_backup_domain_priority(domain: str) -> int:
+    token = str(domain or "").strip().lower()
+    if not token:
+        return 50
+    profile_data = _load_platform_profile_cache()
+    custom_value = profile_data.get("backup_domain_priority", {}).get(token)
+    if isinstance(custom_value, int):
+        return custom_value
+    return _BACKUP_DOMAIN_PRIORITY.get(token, 50)
+
+
+def _get_backup_domain_query_hint(domain: str) -> str:
+    token = str(domain or "").strip().lower()
+    if not token:
+        return ""
+    profile_data = _load_platform_profile_cache()
+    custom_hint = profile_data.get("backup_domain_query_hints", {}).get(token)
+    if isinstance(custom_hint, str) and custom_hint.strip():
+        return custom_hint.strip()
+    return _BACKUP_DOMAIN_QUERY_HINTS.get(token, "")
+
+
+def _build_auth_guidance(target_domains: List[str]) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    requires_user_input = False
+    any_configured = False
+    any_disabled = False
+    try:
+        registry = get_auth_profile_registry()
+    except Exception as exc:
+        return {
+            "summary": "auth_registry_unavailable",
+            "errors": [str(exc)],
+            "profiles": [],
+            "requires_user_input": False,
+            "any_configured": False,
+        }
+
+    seen = set()
+    for raw_domain in target_domains:
+        domain = str(raw_domain or "").strip().lower()
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        hint = registry.build_hint(f"https://{domain}/")
+        row = {
+            "domain": domain,
+            "matched": hint.get("matched"),
+            "configured": bool(hint.get("configured")),
+            "requires_user_input": bool(hint.get("requires_user_input")),
+            "hint": hint.get("hint", ""),
+            "login_url": hint.get("login_url"),
+            "disabled_profiles": hint.get("disabled_profiles", []),
+        }
+        if row["configured"]:
+            any_configured = True
+        if row["requires_user_input"]:
+            requires_user_input = True
+        if isinstance(row.get("disabled_profiles"), list) and row["disabled_profiles"]:
+            any_disabled = True
+        rows.append(row)
+
+    if requires_user_input:
+        summary = "matched_but_requires_local_credentials"
+    elif any_configured:
+        summary = "auth_profiles_ready"
+    elif any_disabled:
+        summary = "matched_profiles_disabled"
+    else:
+        summary = "no_configured_auth_profiles"
+
+    return {
+        "summary": summary,
+        "profiles": rows,
+        "requires_user_input": requires_user_input,
+        "any_configured": any_configured,
+        "any_disabled": any_disabled,
+    }
+
+
+def _domain_auth_priority_boost(domain: str) -> int:
+    token = str(domain or "").strip().lower()
+    if not token:
+        return 0
+    try:
+        registry = get_auth_profile_registry()
+        payload = registry.collect_auth_payload(f"https://{token}/")
+    except Exception:
+        return 0
+
+    if not isinstance(payload, dict):
+        return 0
+    if payload.get("configured"):
+        return 18
+    if payload.get("matched"):
+        return 8
+    return 0
+
+
+def _attach_platform_runtime_hints(
+    payload: Dict[str, Any],
+    target_domains: List[str],
+    mode: Literal["social", "commerce", "generic"],
+) -> Dict[str, Any]:
+    result = dict(payload or {})
+    auth_guidance = _build_auth_guidance(target_domains)
+    result["auth_guidance"] = auth_guidance
+
+    total_results = int(result.get("total_results", 0) or 0)
+    next_actions: List[str] = []
+    if total_results <= 0:
+        if auth_guidance.get("summary") == "matched_profiles_disabled":
+            next_actions.append(
+                "检测到本地存在匹配 profile 但为 disabled。请将对应条目的 `enabled` 设为 true，并补充 cookies/storage_state。"
+            )
+        elif auth_guidance.get("requires_user_input"):
+            next_actions.append(
+                "该场景存在登录门槛。请先调用 `web_auth_hint` 定位目标域名，再用 `web_auth_template` 导出并补全本地登录态。"
+            )
+        next_actions.append(
+            "若仍无结果，建议调高 `WEB_ROOTER_SEARCH_TIMEOUT_SEC` 与 `WEB_ROOTER_PLATFORM_BACKUP_TIMEOUT_SEC` 后重试。"
+        )
+        next_actions.append(
+            "可用 `web_challenge_profiles` 检查挑战配置，并在本地 profile JSON 中按目标站点补充规则。"
+        )
+    elif _to_bool_env("WEB_ROOTER_ENABLE_RECOVERY_MODE", default=True):
+        if isinstance(result.get("recovery_mode"), dict) and result["recovery_mode"].get("active"):
+            next_actions.append(
+                "当前结果来自 recovery 模式（低置信）。建议继续收集登录态后再次抓取同一查询。"
+            )
+
+    if next_actions:
+        result["next_actions"] = next_actions
+    result["platform_mode"] = mode
+    return result
+
+
+def _has_comment_intent(query: str) -> bool:
+    text = str(query or "").strip().lower()
+    return any(term in text for term in _COMMENT_INTENT_TERMS)
+
+
 def _is_low_signal_url(url: str) -> bool:
     parsed = urlparse(url or "")
     path = (parsed.path or "").lower()
@@ -1363,14 +1730,148 @@ def _is_low_signal_url(url: str) -> bool:
         "login", "signup", "register", "privacy", "agreement", "terms", "help", "about",
         "account", "my", "cart", "coupon", "customer", "service", "download",
         "protocol", "policy", "setting", "settings", "user/self",
+        "win-together", "technology", "csr", "passport", "reg", "club", "union", "buyertrade",
+        "jingxuan", "follow", "friend", "match/home", "anime", "platform",
     )
     return any(keyword in path for keyword in low_signal_keywords)
+
+
+def _is_challenge_or_gate_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    text = f"{host}{path}?{query}"
+    markers = (
+        "captcha",
+        "challenge",
+        "verify",
+        "spiderindefence",
+        "wappass.baidu.com",
+        "cf-challenge",
+        "turnstile",
+        "recaptcha",
+        "hcaptcha",
+        "/error/404",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _platform_signal_score(
+    item: Dict[str, Any],
+    mode: Literal["social", "commerce", "generic"],
+    query: str,
+) -> int:
+    url = str(item.get("url") or "")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    title = str(item.get("title") or "")
+    snippet = str(item.get("snippet") or item.get("description") or "")
+    text = f"{host}{path} {title} {snippet} {url}".lower()
+
+    score = 0
+
+    if _is_challenge_or_gate_url(url):
+        score -= 8
+
+    if mode == "social":
+        # 平台特异高信号：帖子/视频/问答详情页
+        if host.endswith("bilibili.com") and path.startswith("/video/"):
+            score += 6
+        if host.endswith("xiaohongshu.com") and re.match(r"^/explore/[a-z0-9]+", path):
+            score += 6
+        if host.endswith("zhihu.com") and "/question/" in path:
+            score += 6
+        if host.endswith("tieba.baidu.com") and path.startswith("/p/"):
+            score += 6
+        if host.endswith("douyin.com") and "/video/" in path:
+            score += 6
+        if host.endswith("weibo.com") and "/status/" in path:
+            score += 6
+        if host.endswith("reddit.com") and "/comments/" in path:
+            score += 6
+        if (host.endswith("x.com") or host.endswith("twitter.com")) and "/status/" in path:
+            score += 6
+
+        # 平台特异低信号：导航/账号/创作者后台
+        if host.startswith("creator.xiaohongshu.com"):
+            score -= 7
+        if host.startswith("account.bilibili.com"):
+            score -= 7
+        if path in {
+            "/explore", "/notification", "/jingxuan", "/follow", "/friend",
+            "/anime", "/match/home", "/platform", "/platform/home.html",
+        }:
+            score -= 7
+
+        if any(hint in text for hint in _SOCIAL_HIGH_SIGNAL_HINTS):
+            score += 4
+        if any(hint in text for hint in _SOCIAL_NAV_NOISE_HINTS):
+            score -= 4
+    elif mode == "commerce":
+        # 平台特异高信号：商品/团购详情页
+        if host.startswith("item.taobao.com") and "item.htm" in path:
+            score += 6
+        if host.startswith("detail.tmall.com") and "item.htm" in path:
+            score += 6
+        if host.startswith("item.jd.com"):
+            score += 6
+        if (
+            (host.endswith("yangkeduo.com") or host.endswith("pinduoduo.com"))
+            and ("goods" in path or "goods_id=" in parsed.query.lower())
+        ):
+            score += 6
+        if (host.endswith("meituan.com") or host.endswith("dianping.com")) and any(
+            seg in path for seg in ("/deal/", "/shop/", "/poi/")
+        ):
+            score += 5
+
+        # 平台特异低信号：品牌页/账号/帮助中心
+        if host.startswith((
+            "wj-dongjian.jd.com",
+            "passport.jd.com",
+            "reg.jd.com",
+            "club.jd.com",
+            "union.jd.com",
+            "buyertrade.taobao.com",
+            "ishop.taobao.com",
+        )):
+            score -= 7
+        if path in {"/contact", "/win-together", "/technology", "/csr"}:
+            score -= 7
+
+        if any(hint in text for hint in _COMMERCE_HIGH_SIGNAL_HINTS):
+            score += 4
+        if any(hint in text for hint in _COMMERCE_NAV_NOISE_HINTS):
+            score -= 4
+
+    tokens = _extract_query_tokens(query)
+    if tokens and any(token in text for token in tokens):
+        score += 1
+
+    if _has_comment_intent(query):
+        matched_comment_terms = sum(1 for term in _COMMENT_INTENT_TERMS if term in text)
+        if matched_comment_terms > 0:
+            score += min(3, matched_comment_terms)
+        else:
+            score -= 1
+
+    if _is_low_signal_url(url):
+        score -= 2
+    if path in {"", "/"}:
+        score -= 2
+    if not title and not snippet:
+        score -= 1
+
+    return score
 
 
 def _count_high_signal_results(
     results: List[Dict[str, Any]],
     query: str,
     target_domains: Optional[List[str]] = None,
+    mode: Literal["social", "commerce", "generic"] = "generic",
 ) -> int:
     if not isinstance(results, list) or not results:
         return 0
@@ -1387,33 +1888,36 @@ def _count_high_signal_results(
         host = (parsed.hostname or "").lower()
         if domains and host and not any(host == d or host.endswith("." + d) for d in domains):
             continue
-        if _is_low_signal_url(url):
+        score = _platform_signal_score(item, mode=mode, query=query)
+        if score >= 2:
+            count += 1
             continue
-
-        text = " ".join(
-            [
-                str(item.get("title") or ""),
-                str(item.get("snippet") or ""),
-                str(item.get("description") or ""),
-                url,
-            ]
-        ).lower()
-        if tokens and not any(token in text for token in tokens):
-            continue
-        count += 1
+        if mode == "generic" and not _is_low_signal_url(url):
+            text = " ".join(
+                [
+                    str(item.get("title") or ""),
+                    str(item.get("snippet") or ""),
+                    str(item.get("description") or ""),
+                    url,
+                ]
+            ).lower()
+            if not tokens or any(token in text for token in tokens):
+                count += 1
 
     return count
 
 
 def _filter_platform_results(
     results: List[Dict[str, Any]],
+    query: str,
+    mode: Literal["social", "commerce", "generic"] = "generic",
     target_domains: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     if not isinstance(results, list):
         return []
 
     domains = [d.lower() for d in (target_domains or []) if d]
-    filtered: List[Dict[str, Any]] = []
+    scored_items: List[Dict[str, Any]] = []
     for item in results:
         if not isinstance(item, dict):
             continue
@@ -1424,22 +1928,157 @@ def _filter_platform_results(
         host = (parsed.hostname or "").lower()
         if domains and host and not any(host == d or host.endswith("." + d) for d in domains):
             continue
-        if _is_low_signal_url(url):
+        signal_score = _platform_signal_score(item, mode=mode, query=query)
+        if signal_score <= -3:
             continue
-        filtered.append(item)
+        normalized = dict(item)
+        metadata = normalized.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata = dict(metadata)
+        metadata["signal_score"] = signal_score
+        normalized["metadata"] = metadata
+        normalized["_signal_score"] = signal_score
+        scored_items.append(normalized)
 
-    return _dedupe_result_dicts(filtered)
+    if not scored_items:
+        return []
+
+    scored_items.sort(
+        key=lambda it: (
+            int(it.get("_signal_score", 0)),
+            -int(it.get("rank", 9999) or 9999),
+        ),
+        reverse=True,
+    )
+
+    comment_intent = _has_comment_intent(query)
+    high_signal = [it for it in scored_items if int(it.get("_signal_score", 0)) >= 2]
+    medium_signal = [it for it in scored_items if 0 <= int(it.get("_signal_score", 0)) < 2]
+
+    if comment_intent:
+        if high_signal or medium_signal:
+            selected = high_signal + medium_signal
+        else:
+            selected = scored_items[: min(max(3, len(scored_items)), 8)]
+    else:
+        selected = high_signal + medium_signal if (high_signal or medium_signal) else scored_items
+
+    for item in selected:
+        item.pop("_signal_score", None)
+
+    return _dedupe_result_dicts(selected)
+
+
+def _build_recovery_results(
+    results: List[Dict[str, Any]],
+    query: str,
+    mode: Literal["social", "commerce", "generic"] = "generic",
+    target_domains: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    if not isinstance(results, list) or not results:
+        return []
+
+    domains = [d.lower() for d in (target_domains or []) if d]
+    candidates: List[Dict[str, Any]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        if not url or _is_challenge_or_gate_url(url):
+            continue
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if domains and host and not any(host == d or host.endswith("." + d) for d in domains):
+            continue
+
+        signal_score = _platform_signal_score(item, mode=mode, query=query)
+        # recovery 模式允许低信号，但仍过滤掉明显噪声
+        if signal_score <= -6:
+            continue
+
+        normalized = dict(item)
+        metadata = normalized.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata = dict(metadata)
+        metadata["signal_score"] = signal_score
+        metadata["recovery_mode"] = True
+        metadata["confidence"] = "low"
+        normalized["metadata"] = metadata
+        normalized["_signal_score"] = signal_score
+        candidates.append(normalized)
+
+    if not candidates:
+        return []
+
+    candidates.sort(
+        key=lambda it: (
+            int(it.get("_signal_score", -999)),
+            -int(it.get("rank", 9999) or 9999),
+        ),
+        reverse=True,
+    )
+    max_items = max(1, int(os.getenv("WEB_ROOTER_RECOVERY_MAX_RESULTS", "3")))
+    selected = candidates[:max_items]
+    for item in selected:
+        item.pop("_signal_score", None)
+    return _dedupe_result_dicts(selected)
 
 
 def _refine_platform_payload(
     payload: Dict[str, Any],
     query: str,
+    mode: Literal["social", "commerce", "generic"] = "generic",
     target_domains: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     result = dict(payload or {})
     raw_results = result.get("results", []) if isinstance(result.get("results"), list) else []
-    filtered_results = _filter_platform_results(raw_results, target_domains=target_domains)
+    filtered_results = _filter_platform_results(
+        raw_results,
+        query=query,
+        mode=mode,
+        target_domains=target_domains,
+    )
     if not filtered_results:
+        recovery_enabled = _to_bool_env("WEB_ROOTER_ENABLE_RECOVERY_MODE", default=True)
+        recovery_results = (
+            _build_recovery_results(
+                raw_results,
+                query=query,
+                mode=mode,
+                target_domains=target_domains,
+            )
+            if recovery_enabled
+            else []
+        )
+        if recovery_results:
+            result["results"] = recovery_results
+            result["total_results"] = len(recovery_results)
+            result["citations"] = build_web_citations(recovery_results, query=query, prefix="W")
+            result["comparison"] = build_comparison_summary(recovery_results)
+            result["references_text"] = format_reference_block(result["citations"], max_items=40)
+            result["recovery_mode"] = {
+                "active": True,
+                "reason": "all_platform_results_filtered_as_low_signal",
+                "max_results": len(recovery_results),
+            }
+            errors = result.get("errors", []) if isinstance(result.get("errors"), list) else []
+            if "recovery_mode_active_low_confidence" not in errors:
+                errors = list(errors) + ["recovery_mode_active_low_confidence"]
+            result["errors"] = errors
+            return result
+
+        result["results"] = []
+        result["total_results"] = 0
+        result["citations"] = []
+        result["comparison"] = build_comparison_summary([])
+        result["references_text"] = ""
+        if raw_results:
+            errors = result.get("errors", []) if isinstance(result.get("errors"), list) else []
+            if "all_platform_results_filtered_as_low_signal" not in errors:
+                errors = list(errors) + ["all_platform_results_filtered_as_low_signal"]
+            result["errors"] = errors
         return result
 
     result["results"] = filtered_results
@@ -1533,19 +2172,49 @@ async def _run_platform_backup_search(
     query: str,
     target_domains: List[str],
     profile: Optional[str],
+    intent_hint: Optional[str] = None,
     use_english: bool = False,
 ) -> Dict[str, Any]:
     """平台站点直连结果不足时，使用通用搜索引擎 + site:domain 兜底。"""
+    _ = profile  # reserved for future per-profile backup tuning
     if not target_domains:
         return {"success": False, "results": [], "errors": ["no_target_domains"]}
 
-    backup_engines = [
-        AdvancedSearchEngine.GOOGLE,
-        AdvancedSearchEngine.BING,
-        AdvancedSearchEngine.BAIDU,
-        AdvancedSearchEngine.DUCKDUCKGO,
-    ]
-    max_domains = max(2, int(os.getenv("WEB_ROOTER_PLATFORM_BACKUP_DOMAINS", "4")))
+    normalized_domains: List[str] = []
+    seen_domains = set()
+    for raw_domain in target_domains:
+        domain = str(raw_domain or "").strip().lower()
+        if not domain or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        normalized_domains.append(domain)
+
+    if not normalized_domains:
+        return {"success": False, "results": [], "errors": ["no_normalized_target_domains"]}
+
+    # 站点级备份优先探测命中率较高的域名，避免短链/高挑战域名耗尽预算。
+    indexed_domains = list(enumerate(normalized_domains))
+    indexed_domains.sort(
+        key=lambda pair: (
+            _get_backup_domain_priority(pair[1]) + _domain_auth_priority_boost(pair[1]),
+            -pair[0],
+        ),
+        reverse=True,
+    )
+    prioritized_domains = [domain for _, domain in indexed_domains]
+
+    # 平台兜底场景优先保证可达性，中文环境默认走 Baidu/Bing。
+    backup_engines = (
+        [
+            AdvancedSearchEngine.GOOGLE,
+            AdvancedSearchEngine.BING,
+            AdvancedSearchEngine.BAIDU,
+            AdvancedSearchEngine.DUCKDUCKGO,
+        ]
+        if use_english
+        else [AdvancedSearchEngine.BAIDU]
+    )
+    max_domains = max(2, int(os.getenv("WEB_ROOTER_PLATFORM_BACKUP_DOMAINS", "6")))
     task_timeout = max(25, int(os.getenv("WEB_ROOTER_PLATFORM_BACKUP_TIMEOUT_SEC", "80")))
 
     deep_search = DeepSearchEngine()
@@ -1554,19 +2223,29 @@ async def _run_platform_backup_search(
     used_queries: List[str] = []
 
     try:
-        for domain in target_domains[:max_domains]:
-            domain_query = f"{query} site:{domain}"
+        for domain in prioritized_domains[:max_domains]:
+            domain_hint = _get_backup_domain_query_hint(domain)
+            query_with_hint = " ".join(
+                part
+                for part in [
+                    str(query or "").strip(),
+                    str(intent_hint or "").strip(),
+                    domain_hint,
+                ]
+                if part
+            ).strip()
+            domain_query = f"{query_with_hint or query} site:{domain}"
             used_queries.append(domain_query)
             try:
                 response = await asyncio.wait_for(
                     deep_search.deep_search(
                         domain_query,
-                        num_results=8,
+                        num_results=6,
                         use_english=use_english,
                         engines=backup_engines,
                         crawl_top=0,
                         query_variants=1,
-                        channel_profiles=[profile] if profile else None,
+                        channel_profiles=None,
                     ),
                     timeout=task_timeout,
                 )
@@ -1689,26 +2368,39 @@ async def search_social_media(
     finally:
         await deep_search.close()
 
-    primary_results = int(primary.get("total_results", 0) or 0)
     min_expected = max(2, min(len(engines), 4))
+    required_high_signal = max(1, min_expected - 1)
+    comment_intent = _has_comment_intent(query)
+    primary = _refine_platform_payload(
+        primary,
+        query=query,
+        mode="social",
+        target_domains=selected_domains,
+    )
+    primary_results = int(primary.get("total_results", 0) or 0)
     primary_high_signal = _count_high_signal_results(
         primary.get("results", []) if isinstance(primary.get("results"), list) else [],
         query=query,
         target_domains=selected_domains,
+        mode="social",
     )
-    required_high_signal = max(1, min_expected - 1)
     force_low_signal_backup = str(os.getenv("WEB_ROOTER_FORCE_PLATFORM_BACKUP_ON_LOW_SIGNAL", "0")).lower() in {
         "1", "true", "yes", "on"
     }
     require_high_signal = str(os.getenv("WEB_ROOTER_REQUIRE_HIGH_SIGNAL_PRIMARY", "0")).lower() in {
         "1", "true", "yes", "on"
     }
+    enforce_high_signal = require_high_signal or comment_intent
     if primary_results >= min_expected and (
         primary_high_signal >= required_high_signal
-        or (not force_low_signal_backup and not require_high_signal)
+        or (not force_low_signal_backup and not enforce_high_signal)
     ):
-        primary = _refine_platform_payload(primary, query=query, target_domains=selected_domains)
         primary["success"] = True
+        primary = _attach_platform_runtime_hints(
+            primary,
+            target_domains=selected_domains,
+            mode="social",
+        )
         return _finalize_payload_with_extensions(
             payload=primary,
             query=query,
@@ -1720,10 +2412,21 @@ async def search_social_media(
         query=query,
         target_domains=selected_domains,
         profile="platforms",
+        intent_hint="评论 讨论 用户反馈 弹幕" if comment_intent else None,
         use_english=False,
     )
     merged = _merge_search_payload(primary, backup, query=query)
-    merged = _refine_platform_payload(merged, query=query, target_domains=selected_domains)
+    merged = _refine_platform_payload(
+        merged,
+        query=query,
+        mode="social",
+        target_domains=selected_domains,
+    )
+    merged = _attach_platform_runtime_hints(
+        merged,
+        target_domains=selected_domains,
+        mode="social",
+    )
     return _finalize_payload_with_extensions(
         payload=merged,
         query=query,
@@ -1811,26 +2514,39 @@ async def search_commerce(
     finally:
         await deep_search.close()
 
-    primary_results = int(primary.get("total_results", 0) or 0)
     min_expected = max(2, min(len(engines), 4))
+    required_high_signal = max(1, min_expected - 1)
+    comment_intent = _has_comment_intent(query)
+    primary = _refine_platform_payload(
+        primary,
+        query=query,
+        mode="commerce",
+        target_domains=selected_domains,
+    )
+    primary_results = int(primary.get("total_results", 0) or 0)
     primary_high_signal = _count_high_signal_results(
         primary.get("results", []) if isinstance(primary.get("results"), list) else [],
         query=query,
         target_domains=selected_domains,
+        mode="commerce",
     )
-    required_high_signal = max(1, min_expected - 1)
     force_low_signal_backup = str(os.getenv("WEB_ROOTER_FORCE_PLATFORM_BACKUP_ON_LOW_SIGNAL", "0")).lower() in {
         "1", "true", "yes", "on"
     }
     require_high_signal = str(os.getenv("WEB_ROOTER_REQUIRE_HIGH_SIGNAL_PRIMARY", "0")).lower() in {
         "1", "true", "yes", "on"
     }
+    enforce_high_signal = require_high_signal or comment_intent
     if primary_results >= min_expected and (
         primary_high_signal >= required_high_signal
-        or (not force_low_signal_backup and not require_high_signal)
+        or (not force_low_signal_backup and not enforce_high_signal)
     ):
-        primary = _refine_platform_payload(primary, query=query, target_domains=selected_domains)
         primary["success"] = True
+        primary = _attach_platform_runtime_hints(
+            primary,
+            target_domains=selected_domains,
+            mode="commerce",
+        )
         return _finalize_payload_with_extensions(
             payload=primary,
             query=query,
@@ -1842,10 +2558,21 @@ async def search_commerce(
         query=query,
         target_domains=selected_domains,
         profile="commerce",
+        intent_hint="评价 评论 开箱 购买反馈" if comment_intent else None,
         use_english=False,
     )
     merged = _merge_search_payload(primary, backup, query=query)
-    merged = _refine_platform_payload(merged, query=query, target_domains=selected_domains)
+    merged = _refine_platform_payload(
+        merged,
+        query=query,
+        mode="commerce",
+        target_domains=selected_domains,
+    )
+    merged = _attach_platform_runtime_hints(
+        merged,
+        target_domains=selected_domains,
+        mode="commerce",
+    )
     return _finalize_payload_with_extensions(
         payload=merged,
         query=query,

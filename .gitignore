@@ -56,3 +56,7 @@ logs/
 *.log
 .cache/
 .web-rooter/
+
+# Local reports (keep local, do not push)
+docs/reports/*
+!docs/reports/.gitkeep

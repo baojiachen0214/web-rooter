@@ -82,6 +82,31 @@ export WEB_ROOTER_AUTH_PROFILE_DIR=/abs/path/auth_profiles
 2. 在本地填充 cookies / storage_state（不要提交到仓库）
 3. 使用 `python main.py auth-hint https://target.site` 验证命中情况
 
+### Platform Search Templates + Recovery Mode
+
+```bash
+# 自定义平台搜索入口/域名优先级模板（默认读取仓库内模板）
+export WEB_ROOTER_PLATFORM_PROFILE_FILE=/abs/path/platform_profiles.json
+
+# 每个引擎最多尝试多少入口 URL（含主模板+备用模板）
+export WEB_ROOTER_ENGINE_URL_CANDIDATES=3
+
+# 浏览器兜底最多尝试多少入口 URL
+export WEB_ROOTER_BROWSER_URL_CANDIDATES=2
+
+# 平台级 backup 站点数量与单站点超时
+export WEB_ROOTER_PLATFORM_BACKUP_DOMAINS=6
+export WEB_ROOTER_PLATFORM_BACKUP_TIMEOUT_SEC=80
+
+# 结果为 0 时是否启用 recovery（低置信结果兜底）
+export WEB_ROOTER_ENABLE_RECOVERY_MODE=1
+export WEB_ROOTER_RECOVERY_MAX_RESULTS=3
+```
+
+默认平台模板路径：
+
+- `./profiles/search_templates/platform_profiles.json`
+
 ### MindSearch Planner
 
 ```bash

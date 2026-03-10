@@ -3,6 +3,7 @@
 ## Philosophy
 
 - `quick` 是默认入口：忘记命令细节时优先用它
+- CLI 是一等接口：MCP 只是 CLI 能力的适配层
 - URL 访问优先 `visit`，跨站信息检索优先 `web/deep`
 - 深度搜索与深度爬取分离，避免默认过重
 

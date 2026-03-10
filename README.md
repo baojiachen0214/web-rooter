@@ -1,8 +1,8 @@
 <div align="center">
   <img src="./LOGO.png" alt="Web-Rooter Logo" width="240" />
   <h1>Web-Rooter</h1>
-  <p><strong>面向 AI Agent 的「搜索 + 深度爬取 + 引用溯源」基础设施</strong></p>
-  <p>为 Claude Code、Cursor 等 AI 编程助手提供可验证的互联网信息获取能力</p>
+  <p><strong>CLI-First 的「搜索 + 深度爬取 + 引用溯源」基础设施</strong></p>
+  <p>面向任意 AI 工具（Claude Code / Cursor / 本地 Agent），统一通过 CLI 调度</p>
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
@@ -30,7 +30,17 @@ AI 编程助手在解决实际问题时，常常面临以下痛点：
 | 反爬页面获取失败 | HTTP + 浏览器双通道，挑战页自动切换 Playwright |
 | 信息来源单一 | 多引擎并行 + 渠道扩展（新闻/社交/电商/学术） |
 | 结果格式混乱 | 统一结构化输出，含 `references_text` 可直接引用 |
-| 与 AI 工具链割裂 | 原生 MCP 协议支持，Claude Code 即装即用 |
+| AI 工具切换成本高 | 以 CLI 为一等接口，MCP/HTTP 仅做适配层 |
+
+---
+
+## CLI First（推荐使用方式）
+
+Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
+
+- AI 只需调用 `python main.py ...` 或全局 `wr ...`
+- 同一套命令可在 Claude Code、Cursor、本地 Agent、CI 脚本中复用
+- MCP 保留为可选适配层，而不是默认工作流依赖
 
 ---
 
@@ -40,24 +50,25 @@ AI 编程助手在解决实际问题时，常常面临以下痛点：
 
 - **Python 3.10+** + **AsyncIO** - 高性能异步爬虫引擎
 - **Playwright** - 浏览器自动化与反检测
-- **MCP Protocol** - 原生 AI 工具链集成
+- **CLI Runtime** - AI 工具无关的一致入口
 - **Multi-Engine Search** - Google/Bing/Baidu/DuckDuckGo 并行
 
 ### 亮点与特色
 
-1. **搜索+爬取一体化** - 从检索到内容获取一站式完成，无需手动切换工具
+1. **CLI-First 统一入口** - `quick/web/deep/social/shopping/academic/mindsearch` 一套命令覆盖主流程
 2. **智能反爬对抗** - HTTP 优先，遇挑战页自动切换 Playwright，成功率提升 80%+
 3. **引用溯源输出** - 自动生成可引用的参考文献格式，AI 直接可用
 4. **多源交叉验证** - `comparison.corroborated_results` 显示多源 corroborated 结果数
 5. **渠道扩展能力** - `--news/--platforms/--commerce` 一键扩展搜索渠道
 6. **学术模式增强** - 支持 10+ 学术数据库，论文+代码联合检索
-7. **MCP 原生集成** - Claude Code 即装即用，15+ 工具暴露给 AI
+7. **MCP 可选集成** - 提供 15+ 工具适配，但推荐优先走 CLI
 8. **挑战页工作流路由** - 内置 `cloudflare_interstitial` / `cloudflare_turnstile` / `frame_checkbox`，支持 JSON 自定义 profile
 9. **MindSearch 图研究增强** - 产出 `mindsearch_compat`（`node`/`adjacency_list`/`ref2url`）兼容结构，便于外层 AI 推理
 10. **平台级挑战模板库** - 默认加载 `profiles/challenge_profiles/*.json`（含小红书/知乎/微博/抖音/电商模板）
 11. **可插拔扩展接口** - 支持 `postprocessors`（结果后处理）与 `planners`（研究规划器）热加载
 12. **登录态本地模板** - 支持 `auth-template`/`auth-profiles`/`auth-hint`，让 AI 明确引导用户补全需登录站点配置
 13. **AI 可编排 Workflow** - 用声明式 JSON 让 AI 动态决定每一步“搜什么、爬什么、怎么爬”
+14. **平台搜索模板 + Recovery 模式** - `profiles/search_templates/platform_profiles.json` 可配置平台入口与域名优先级，0 结果时可启用低置信兜底
 
 ---
 
@@ -276,6 +287,7 @@ web-rooter/
 │   └── planners/
 ├── profiles/               # 内置可配置模板
 │   ├── challenge_profiles/ # 平台级挑战页 profile JSON
+│   ├── search_templates/   # 平台搜索入口/backup 优先级模板 JSON
 │   ├── auth/               # 登录态模板 JSON
 │   └── workflows/          # workflow 模板 JSON（社交/学术）
 ├── tools/
