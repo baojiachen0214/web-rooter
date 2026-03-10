@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "web-rooter": {
+      "command": "/path/to/web-rooter",
+      "args": ["--mcp"]
+    }
+  }
+}
