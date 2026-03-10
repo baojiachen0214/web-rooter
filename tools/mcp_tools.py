@@ -759,11 +759,6 @@ async def setup_mcp_server():
 async def run_mcp_server():
     """运行 MCP 服务器"""
     from mcp.server.stdio import stdio_server
-    from core.browser_bootstrap import ensure_browser_ready
-
-    # 首次运行时自动安装 Chromium 浏览器
-    if not ensure_browser_ready():
-        logger.warning("Chromium 浏览器未就绪，部分功能（JS 渲染）可能不可用")
 
     server, web_tools = await setup_mcp_server()
 

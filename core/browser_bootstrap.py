@@ -9,6 +9,7 @@ import sys
 import os
 import logging
 from pathlib import Path
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,29 @@ def _get_playwright_browsers_path() -> Path:
             base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
         return base / "web-rooter" / "playwright-browsers"
 
-    # 正常 Python 环境：使用 Playwright 默认路径
-    return Path.home() / ".cache" / "ms-playwright"
+    # 正常 Python 环境：与 Playwright 默认路径保持一致
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return base / "ms-playwright"
+
+
+def _build_driver_install_command() -> List[str]:
+    """构建 Playwright 驱动安装命令，兼容不同版本返回值。"""
+    from playwright._impl._driver import compute_driver_executable
+
+    driver = compute_driver_executable()
+    if isinstance(driver, (tuple, list)):
+        parts = [str(p) for p in driver if p]
+        if len(parts) >= 2:
+            # 典型格式: [node_executable, cli_js]
+            return [parts[0], parts[1], "install", "chromium"]
+        if len(parts) == 1:
+            return [parts[0], "install", "chromium"]
+    return [str(driver), "install", "chromium"]
 
 
 def is_chromium_installed() -> bool:
@@ -64,6 +86,8 @@ def install_chromium() -> bool:
     browsers_path = _get_playwright_browsers_path()
     env = os.environ.copy()
     env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+    # 保证当前进程后续运行也使用同一路径
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
 
     logger.info(f"正在安装 Chromium 浏览器到 {browsers_path} ...")
     print(f"[Setup] 首次运行，正在安装 Chromium 浏览器...", flush=True)
@@ -72,10 +96,9 @@ def install_chromium() -> bool:
     try:
         # 方法 1: 通过 Playwright 内部驱动安装（在 PyInstaller 环境中最可靠）
         try:
-            from playwright._impl._driver import compute_driver_executable
-            driver_executable = compute_driver_executable()
+            command = _build_driver_install_command()
             result = subprocess.run(
-                [str(driver_executable), "install", "chromium"],
+                command,
                 env=env,
                 capture_output=True,
                 text=True,
@@ -139,10 +162,9 @@ def ensure_browser_ready() -> bool:
     Returns:
         True 如果浏览器已就绪，False 如果安装失败
     """
-    # 设置环境变量以确保 Playwright 使用正确的路径
-    if getattr(sys, 'frozen', False):
-        browsers_path = _get_playwright_browsers_path()
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+    # 统一设置环境变量，确保安装与运行路径一致
+    browsers_path = _get_playwright_browsers_path()
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
 
     if is_chromium_installed():
         logger.info("Chromium 浏览器已就绪")
