@@ -59,6 +59,25 @@ class WebTools:
         result = await self._agent.visit(url)
         return result.to_dict()
 
+    async def fetch_html(
+        self,
+        url: str,
+        use_browser: bool = False,
+        auto_fallback: bool = True,
+        max_chars: int = 80000,
+    ) -> Dict[str, Any]:
+        """
+        获取原始 HTML（推荐 AI 进行结构分析时使用）。
+        """
+        await self._ensure_initialized()
+        result = await self._agent.fetch_html(
+            url=url,
+            use_browser=use_browser,
+            auto_fallback=auto_fallback,
+            max_chars=max_chars,
+        )
+        return result.to_dict()
+
     async def fetch_js(self, url: str, wait_for: Optional[str] = None) -> Dict[str, Any]:
         """
         使用浏览器获取网页（支持 JavaScript）
@@ -191,6 +210,32 @@ class WebTools:
         """
         await self._ensure_initialized()
         result = await self._agent.search_internet(query, num_results=num_results)
+        return result.to_dict()
+
+    async def web_orchestrate(
+        self,
+        task: str,
+        html_first: bool = True,
+        top_results: int = 5,
+        use_browser: bool = False,
+        crawl_assist: bool = False,
+        crawl_pages: int = 2,
+        strict: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        AI 默认入口（推荐）：
+        workflow 编排优先 + HTML-first 分析优先，爬取作为辅助。
+        """
+        await self._ensure_initialized()
+        result = await self._agent.orchestrate_task(
+            task=task,
+            html_first=html_first,
+            top_results=top_results,
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=crawl_pages,
+            strict=strict,
+        )
         return result.to_dict()
 
     async def web_search_combined(
@@ -581,8 +626,39 @@ async def setup_mcp_server():
     async def list_tools() -> list[Tool]:
         return [
             Tool(
+                name="web_orchestrate",
+                description="RECOMMENDED default for AI: workflow-first orchestration with HTML-first analysis; low-level tools are auxiliary",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "Natural-language task/goal"},
+                        "html_first": {"type": "boolean", "description": "Read raw HTML first before deeper crawl", "default": True},
+                        "top_results": {"type": "integer", "description": "Top pages to inspect", "default": 5},
+                        "use_browser": {"type": "boolean", "description": "Prefer browser rendering for dynamic pages", "default": False},
+                        "crawl_assist": {"type": "boolean", "description": "Enable crawl as auxiliary step", "default": False},
+                        "crawl_pages": {"type": "integer", "description": "Auxiliary crawl page budget", "default": 2},
+                        "strict": {"type": "boolean", "description": "Fail fast on step errors", "default": False}
+                    },
+                    "required": ["task"],
+                },
+            ),
+            Tool(
+                name="web_fetch_html",
+                description="Low-level helper: fetch raw HTML for AI DOM/structure analysis",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Target URL"},
+                        "use_browser": {"type": "boolean", "description": "Use browser rendering", "default": False},
+                        "auto_fallback": {"type": "boolean", "description": "Fallback to browser if HTTP fails", "default": True},
+                        "max_chars": {"type": "integer", "description": "Max HTML chars returned", "default": 80000}
+                    },
+                    "required": ["url"],
+                },
+            ),
+            Tool(
                 name="web_fetch",
-                description="Fetch content from a URL",
+                description="Low-level helper: fetch parsed page summary from a URL",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -593,7 +669,7 @@ async def setup_mcp_server():
             ),
             Tool(
                 name="web_fetch_js",
-                description="Fetch content from a URL using a browser (for JavaScript-rendered pages)",
+                description="Low-level helper: fetch page via browser for JavaScript-rendered pages",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -942,7 +1018,24 @@ async def setup_mcp_server():
         try:
             result = None
 
-            if name == "web_fetch":
+            if name == "web_orchestrate":
+                result = await web_tools.web_orchestrate(
+                    arguments["task"],
+                    html_first=arguments.get("html_first", True),
+                    top_results=arguments.get("top_results", 5),
+                    use_browser=arguments.get("use_browser", False),
+                    crawl_assist=arguments.get("crawl_assist", False),
+                    crawl_pages=arguments.get("crawl_pages", 2),
+                    strict=arguments.get("strict", False),
+                )
+            elif name == "web_fetch_html":
+                result = await web_tools.fetch_html(
+                    arguments["url"],
+                    use_browser=arguments.get("use_browser", False),
+                    auto_fallback=arguments.get("auto_fallback", True),
+                    max_chars=arguments.get("max_chars", 80000),
+                )
+            elif name == "web_fetch":
                 result = await web_tools.fetch(arguments["url"])
             elif name == "web_fetch_js":
                 result = await web_tools.fetch_js(

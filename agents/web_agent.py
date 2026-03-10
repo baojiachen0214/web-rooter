@@ -292,6 +292,118 @@ class WebAgent:
                 error=str(e),
             )
 
+    async def fetch_html(
+        self,
+        url: str,
+        use_browser: bool = False,
+        auto_fallback: bool = True,
+        max_chars: int = 80000,
+    ) -> AgentResponse:
+        """
+        获取原始 HTML（面向 AI 的 HTML-first 分析）。
+
+        与 visit 的区别：
+        - visit 偏向结构化抽取与文本摘要
+        - fetch_html 直接返回 HTML 片段，便于 AI 自行分析 DOM 结构
+        """
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        max_chars = max(1000, min(max_chars, 300000))
+        html = ""
+        title = ""
+        fetch_mode = "http"
+        final_url = url
+        status_code: Optional[int] = None
+        metadata: Dict[str, Any] = {}
+
+        try:
+            if use_browser:
+                browser_result = await self._browser_fetch(url)
+                if browser_result.error:
+                    return AgentResponse(
+                        success=False,
+                        content=f"HTML 获取失败：{url}",
+                        error=browser_result.error,
+                    )
+                html = browser_result.html or ""
+                title = browser_result.title or ""
+                final_url = browser_result.url or url
+                fetch_mode = "browser"
+                metadata = browser_result.metadata or {}
+            else:
+                crawler_result = await self._crawler_fetch(url)
+                if crawler_result.success:
+                    html = crawler_result.html or ""
+                    status_code = crawler_result.status_code
+                    final_url = crawler_result.url or url
+                    fetch_mode = "http"
+                elif auto_fallback and self._should_fallback_to_browser(crawler_result):
+                    browser_result = await self._browser_fetch(url)
+                    if browser_result.error:
+                        return AgentResponse(
+                            success=False,
+                            content=f"HTML 获取失败：{url}",
+                            error=(
+                                f"HTTP失败（{crawler_result.error or crawler_result.status_code}）；"
+                                f"Browser失败（{browser_result.error}）"
+                            ),
+                        )
+                    html = browser_result.html or ""
+                    title = browser_result.title or ""
+                    final_url = browser_result.url or url
+                    fetch_mode = "browser_fallback"
+                    metadata = browser_result.metadata or {}
+                else:
+                    return AgentResponse(
+                        success=False,
+                        content=f"HTML 获取失败：{url}",
+                        error=crawler_result.error or f"status={crawler_result.status_code}",
+                    )
+
+            parser = Parser().parse(html, final_url)
+            extracted = parser.extract()
+            if not title:
+                title = extracted.title or ""
+            links = extracted.links[:50]
+            text_preview = (extracted.text or "")[:2000]
+
+            truncated = len(html) > max_chars
+            html_view = html[:max_chars]
+            return AgentResponse(
+                success=True,
+                content=(
+                    f"已获取 HTML：{title or final_url}\n"
+                    f"模式：{fetch_mode}\n"
+                    f"长度：{len(html)} 字符"
+                ),
+                data={
+                    "url": final_url,
+                    "title": title,
+                    "html": html_view,
+                    "html_truncated": truncated,
+                    "html_chars": len(html),
+                    "text_preview": text_preview,
+                    "links": links,
+                    "fetch_mode": fetch_mode,
+                    "status_code": status_code,
+                },
+                urls=[item.get("href") for item in links if isinstance(item, dict) and item.get("href")][:30],
+                metadata={
+                    "fetch_mode": fetch_mode,
+                    "status_code": status_code,
+                    "login_wall": metadata.get("login_wall") if isinstance(metadata, dict) else None,
+                    "login_hint": metadata.get("login_hint") if isinstance(metadata, dict) else None,
+                },
+            )
+        except Exception as e:
+            logger.exception("Error fetching html from %s", url)
+            return AgentResponse(
+                success=False,
+                content=f"HTML 获取失败：{url}",
+                error=str(e),
+            )
+
     async def search(self, query: str, url: Optional[str] = None) -> AgentResponse:
         """
         在已访问的页面或指定页面中搜索信息
@@ -1126,6 +1238,343 @@ class WebAgent:
             "template": template,
             "templates": available_workflow_templates(),
         }
+
+    async def orchestrate_task(
+        self,
+        task: str,
+        html_first: bool = True,
+        top_results: int = 5,
+        use_browser: bool = False,
+        crawl_assist: bool = False,
+        crawl_pages: int = 2,
+        strict: bool = False,
+    ) -> AgentResponse:
+        """
+        默认 AI 入口：
+        - 以 workflow 编排层为主
+        - 以 HTML-first 分析为主（非必要不深爬）
+        """
+        task_text = str(task or "").strip()
+        if not task_text:
+            return AgentResponse(
+                success=False,
+                content="任务为空",
+                error="empty_task",
+            )
+
+        route, spec = self._build_default_orchestration_spec(
+            task=task_text,
+            html_first=html_first,
+            top_results=top_results,
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=crawl_pages,
+        )
+        response = await self.run_workflow_spec(spec=spec, strict=strict)
+        response.metadata.update(
+            {
+                "mode": "workflow_default",
+                "route": route,
+                "html_first": html_first,
+                "crawl_assist": crawl_assist,
+                "top_results": top_results,
+            }
+        )
+        response.content = (
+            f"默认编排执行完成：{task_text}\n"
+            f"路由：{route}\n"
+            f"策略：{'HTML-first' if html_first else 'visit-first'} / "
+            f"{'crawl-assist on' if crawl_assist else 'crawl-assist off'}\n\n"
+            f"{response.content}"
+        )
+        return response
+
+    def _build_default_orchestration_spec(
+        self,
+        task: str,
+        html_first: bool,
+        top_results: int,
+        use_browser: bool,
+        crawl_assist: bool,
+        crawl_pages: int,
+    ) -> tuple[str, Dict[str, Any]]:
+        route = self._classify_task_route(task)
+        top_hits = max(1, min(int(top_results), 20))
+        assist_pages = max(1, min(int(crawl_pages), 10))
+
+        if route == "url":
+            spec: Dict[str, Any] = {
+                "name": "default-url-analysis",
+                "description": "Analyze a target URL with auth hint and HTML-first reading.",
+                "variables": {
+                    "target_url": task,
+                    "use_browser": use_browser,
+                    "top_hits": top_hits,
+                },
+                "steps": [
+                    {
+                        "id": "auth_hint",
+                        "tool": "auth_hint",
+                        "continue_on_error": True,
+                        "args": {"url": "${vars.target_url}"},
+                    },
+                    {
+                        "id": "read_target",
+                        "tool": "fetch_html" if html_first else "visit",
+                        "args": {
+                            "url": "${vars.target_url}",
+                            "use_browser": "${vars.use_browser}",
+                            "auto_fallback": True,
+                            "max_chars": 80000,
+                        },
+                    },
+                ],
+            }
+            if crawl_assist:
+                spec["steps"].append(
+                    {
+                        "id": "crawl_assist",
+                        "tool": "crawl",
+                        "continue_on_error": True,
+                        "args": {
+                            "url": "${vars.target_url}",
+                            "max_pages": assist_pages,
+                            "max_depth": 2,
+                            "allow_external": False,
+                            "allow_subdomains": True,
+                        },
+                    }
+                )
+            return route, spec
+
+        if route == "academic":
+            spec = build_workflow_template("academic_relations")
+            spec.setdefault("variables", {})
+            spec["variables"]["topic"] = task
+            spec["variables"]["crawl_top_papers"] = top_hits
+            if html_first:
+                spec["steps"][-1] = {
+                    "id": "read_top_papers_html",
+                    "tool": "fetch_html",
+                    "for_each": "${steps.academic_search.data.papers}",
+                    "item_alias": "paper",
+                    "max_items": "${vars.crawl_top_papers}",
+                    "continue_on_error": True,
+                    "args": {
+                        "url": "${local.paper.url}",
+                        "use_browser": False,
+                        "auto_fallback": True,
+                        "max_chars": 60000,
+                    },
+                }
+            return route, spec
+
+        if route == "social":
+            social_query = task if any(k in task.lower() for k in ("评论", "comment", "反馈", "discussion")) else f"{task} 评论 用户反馈"
+            spec = {
+                "name": "default-social-analysis",
+                "description": "Search social platforms then inspect top pages in HTML-first mode.",
+                "variables": {
+                    "query": social_query,
+                    "platforms": ["xiaohongshu", "zhihu", "tieba", "douyin", "bilibili", "weibo"],
+                    "top_hits": top_hits,
+                    "use_browser": use_browser,
+                },
+                "steps": [
+                    {
+                        "id": "social_search",
+                        "tool": "social",
+                        "args": {
+                            "query": "${vars.query}",
+                            "platforms": "${vars.platforms}",
+                        },
+                    },
+                    {
+                        "id": "read_top_pages",
+                        "tool": "fetch_html" if html_first else "visit",
+                        "for_each": "${steps.social_search.results}",
+                        "item_alias": "hit",
+                        "max_items": "${vars.top_hits}",
+                        "continue_on_error": True,
+                        "args": {
+                            "url": "${local.hit.url}",
+                            "use_browser": "${vars.use_browser}",
+                            "auto_fallback": True,
+                            "max_chars": 60000,
+                        },
+                    },
+                ],
+            }
+            if crawl_assist:
+                spec["steps"].append(
+                    {
+                        "id": "crawl_assist",
+                        "tool": "crawl",
+                        "for_each": "${steps.read_top_pages.items}",
+                        "item_alias": "page",
+                        "max_items": 1,
+                        "continue_on_error": True,
+                        "args": {
+                            "url": "${local.page.input.url}",
+                            "max_pages": assist_pages,
+                            "max_depth": 2,
+                            "allow_external": False,
+                            "allow_subdomains": True,
+                        },
+                    }
+                )
+            return route, spec
+
+        if route == "commerce":
+            commerce_query = task if any(k in task.lower() for k in ("价格", "评价", "review", "price")) else f"{task} 价格 评价"
+            spec = {
+                "name": "default-commerce-analysis",
+                "description": "Search commerce platforms then inspect top pages in HTML-first mode.",
+                "variables": {
+                    "query": commerce_query,
+                    "platforms": ["taobao", "jd", "pinduoduo", "meituan"],
+                    "top_hits": top_hits,
+                    "use_browser": use_browser,
+                },
+                "steps": [
+                    {
+                        "id": "commerce_search",
+                        "tool": "commerce",
+                        "args": {
+                            "query": "${vars.query}",
+                            "platforms": "${vars.platforms}",
+                        },
+                    },
+                    {
+                        "id": "read_top_pages",
+                        "tool": "fetch_html" if html_first else "visit",
+                        "for_each": "${steps.commerce_search.results}",
+                        "item_alias": "hit",
+                        "max_items": "${vars.top_hits}",
+                        "continue_on_error": True,
+                        "args": {
+                            "url": "${local.hit.url}",
+                            "use_browser": "${vars.use_browser}",
+                            "auto_fallback": True,
+                            "max_chars": 60000,
+                        },
+                    },
+                ],
+            }
+            if crawl_assist:
+                spec["steps"].append(
+                    {
+                        "id": "crawl_assist",
+                        "tool": "crawl",
+                        "for_each": "${steps.read_top_pages.items}",
+                        "item_alias": "page",
+                        "max_items": 1,
+                        "continue_on_error": True,
+                        "args": {
+                            "url": "${local.page.input.url}",
+                            "max_pages": assist_pages,
+                            "max_depth": 2,
+                            "allow_external": False,
+                            "allow_subdomains": True,
+                        },
+                    }
+                )
+            return route, spec
+
+        spec = {
+            "name": "default-general-analysis",
+            "description": "General web analysis with search + HTML-first reading.",
+            "variables": {
+                "query": task,
+                "top_hits": top_hits,
+                "num_results": max(8, top_hits * 2),
+                "use_browser": use_browser,
+            },
+            "steps": [
+                {
+                    "id": "web_search",
+                    "tool": "search_internet",
+                    "args": {
+                        "query": "${vars.query}",
+                        "num_results": "${vars.num_results}",
+                        "auto_crawl": False,
+                    },
+                },
+                {
+                    "id": "read_top_pages",
+                    "tool": "fetch_html" if html_first else "visit",
+                    "for_each": "${steps.web_search.data.results}",
+                    "item_alias": "hit",
+                    "max_items": "${vars.top_hits}",
+                    "continue_on_error": True,
+                    "args": {
+                        "url": "${local.hit.url}",
+                        "use_browser": "${vars.use_browser}",
+                        "auto_fallback": True,
+                        "max_chars": 60000,
+                    },
+                },
+            ],
+        }
+        if crawl_assist:
+            spec["steps"].append(
+                {
+                    "id": "crawl_assist",
+                    "tool": "crawl",
+                    "for_each": "${steps.read_top_pages.items}",
+                    "item_alias": "page",
+                    "max_items": 1,
+                    "continue_on_error": True,
+                    "args": {
+                        "url": "${local.page.input.url}",
+                        "max_pages": assist_pages,
+                        "max_depth": 2,
+                        "allow_external": False,
+                        "allow_subdomains": True,
+                    },
+                }
+            )
+        return route, spec
+
+    def _classify_task_route(self, task: str) -> str:
+        value = str(task or "").strip()
+        lower = value.lower()
+        if self._looks_like_url(value):
+            return "url"
+
+        if is_academic_query(value) or any(
+            token in lower
+            for token in [
+                "paper", "arxiv", "doi", "citation", "benchmark", "ablation",
+                "论文", "文献", "引文", "引用", "基准", "实验",
+            ]
+        ):
+            return "academic"
+
+        if any(
+            token in lower
+            for token in [
+                "xiaohongshu", "zhihu", "weibo", "douyin", "bilibili", "tieba", "reddit", "twitter",
+                "小红书", "知乎", "微博", "抖音", "b站", "贴吧", "评论区", "弹幕", "话题",
+            ]
+        ):
+            return "social"
+
+        if any(
+            token in lower
+            for token in [
+                "taobao", "jd", "jingdong", "pinduoduo", "meituan", "dianping",
+                "淘宝", "京东", "拼多多", "美团", "点评", "价格", "促销", "购买", "比价",
+            ]
+        ):
+            return "commerce"
+
+        return "general"
+
+    @staticmethod
+    def _looks_like_url(text: str) -> bool:
+        normalized = str(text or "").strip().lower()
+        return normalized.startswith(("http://", "https://", "www."))
 
     # ==================== 学术模式搜索方法 ====================
 

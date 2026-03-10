@@ -813,6 +813,66 @@ class BrowserManager(BaseBrowserManager):
         self._start_lock = asyncio.Lock()
         self._auth_registry = get_auth_profile_registry()
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._active_operations: set[asyncio.Task[Any]] = set()
+        self._loop_with_handler: Optional[asyncio.AbstractEventLoop] = None
+        self._previous_loop_exception_handler = None
+
+    @staticmethod
+    def _is_ignorable_loop_exception(context: Dict[str, Any]) -> bool:
+        message = str(context.get("message", "")).lower()
+        exc = context.get("exception")
+        detail = str(exc).lower() if exc else ""
+        merged = f"{message} {detail}"
+        if (
+            "future exception was never retrieved" in message
+            and "timeout" in detail
+            and "waiting for locator(" in detail
+        ):
+            return True
+        close_race_markers = [
+            "future exception was never retrieved",
+            "target closed",
+            "target page, context or browser has been closed",
+            "err_aborted",
+            "frame was detached",
+            "navigating to ",
+        ]
+        marker_hits = sum(1 for marker in close_race_markers if marker in merged)
+        return marker_hits >= 2
+
+    def _install_loop_exception_handler(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        if self._loop_with_handler is loop:
+            return
+
+        self._loop_with_handler = loop
+        self._previous_loop_exception_handler = loop.get_exception_handler()
+
+        def _handler(current_loop: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
+            if self._is_ignorable_loop_exception(context):
+                logger.debug("Ignore loop close-race exception: %s", context.get("exception") or context.get("message"))
+                return
+            if self._previous_loop_exception_handler:
+                self._previous_loop_exception_handler(current_loop, context)
+            else:
+                current_loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_handler)
+
+    def _restore_loop_exception_handler(self) -> None:
+        loop = self._loop_with_handler
+        if not loop:
+            return
+        try:
+            loop.set_exception_handler(self._previous_loop_exception_handler)
+        except Exception:
+            pass
+        self._loop_with_handler = None
+        self._previous_loop_exception_handler = None
 
     def _track_background_task(self, task: asyncio.Task[Any]) -> None:
         """Track async callbacks and swallow close-race exceptions from detached tasks."""
@@ -826,12 +886,28 @@ class BrowserManager(BaseBrowserManager):
                 done.result()
             except Exception as exc:
                 msg = str(exc).lower()
-                if "target closed" in msg or "has been closed" in msg:
+                if (
+                    "target closed" in msg
+                    or "has been closed" in msg
+                    or "err_aborted" in msg
+                    or "frame was detached" in msg
+                ):
                     logger.debug("Ignore background task close race: %s", exc)
                     return
                 logger.debug("Background task failed: %s", exc)
 
         task.add_done_callback(_on_done)
+
+    def _track_active_operation_current_task(self) -> Optional[asyncio.Task[Any]]:
+        """Track current coroutine task as an active browser operation."""
+        task = asyncio.current_task()
+        if task:
+            self._active_operations.add(task)
+        return task
+
+    def _untrack_active_operation(self, task: Optional[asyncio.Task[Any]]) -> None:
+        if task:
+            self._active_operations.discard(task)
 
     @staticmethod
     def _build_local_storage_init_script(local_storage: Dict[str, Dict[str, str]]) -> str:
@@ -931,6 +1007,7 @@ class BrowserManager(BaseBrowserManager):
 
             if self._playwright is None:
                 self._playwright = await async_playwright().start()
+            self._install_loop_exception_handler()
 
             # 加载引擎状态
             engine_state = self.load_engine_state(engine_id)
@@ -1241,6 +1318,26 @@ class BrowserManager(BaseBrowserManager):
     async def close(self):
         """关闭浏览器"""
         async with self._start_lock:
+            current = asyncio.current_task()
+            pending_ops = [
+                task for task in self._active_operations
+                if task is not current and not task.done()
+            ]
+            if pending_ops:
+                done, still_pending = await asyncio.wait(
+                    pending_ops,
+                    timeout=float(os.getenv("WEB_ROOTER_BROWSER_CLOSE_GRACE_SEC", "2.5")),
+                )
+                for task in done:
+                    try:
+                        task.result()
+                    except Exception as exc:
+                        logger.debug("active operation finished with error during close: %s", exc)
+                if still_pending:
+                    for task in still_pending:
+                        task.cancel()
+                    await asyncio.gather(*still_pending, return_exceptions=True)
+
             if self._background_tasks:
                 pending = list(self._background_tasks)
                 for task in pending:
@@ -1274,6 +1371,7 @@ class BrowserManager(BaseBrowserManager):
                 except Exception as exc:
                     logger.debug(f"关闭 playwright 失败: {exc}")
             self._playwright = None
+            self._active_operations.clear()
         logger.info("Browser closed")
 
     async def __aenter__(self) -> "BrowserManager":
@@ -1324,6 +1422,7 @@ class BrowserManager(BaseBrowserManager):
 
         console_logs = []
         page: Optional[Page] = None
+        op_task = self._track_active_operation_current_task()
 
         try:
             page = await self._context.new_page()
@@ -1423,6 +1522,14 @@ class BrowserManager(BaseBrowserManager):
                 metadata=result_metadata,
             )
 
+        except asyncio.CancelledError:
+            logger.debug("Fetch cancelled for %s", url)
+            return BrowserResult(
+                url=url,
+                html="",
+                title="",
+                error="operation_cancelled",
+            )
         except Exception as e:
             logger.exception(f"Error fetching {url}")
             return BrowserResult(
@@ -1437,6 +1544,7 @@ class BrowserManager(BaseBrowserManager):
                     await page.close()
                 except Exception:
                     pass
+            self._untrack_active_operation(op_task)
 
     async def search(
         self,
@@ -1565,6 +1673,8 @@ class BrowserManager(BaseBrowserManager):
         if not self._browser:
             await self.start()
 
+        op_task = self._track_active_operation_current_task()
+        page: Optional[Page] = None
         try:
             page = await self._context.new_page()
             page.set_default_timeout(self.config.TIMEOUT)
@@ -1583,8 +1693,6 @@ class BrowserManager(BaseBrowserManager):
             html = await page.content()
             title = await page.title()
 
-            await page.close()
-
             return BrowserResult(
                 url=page.url,
                 html=html,
@@ -1599,6 +1707,13 @@ class BrowserManager(BaseBrowserManager):
                 title="",
                 error=str(e),
             )
+        finally:
+            if page and not page.is_closed():
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            self._untrack_active_operation(op_task)
 
     async def fill_and_submit(
         self,
@@ -1610,6 +1725,8 @@ class BrowserManager(BaseBrowserManager):
         if not self._browser:
             await self.start()
 
+        op_task = self._track_active_operation_current_task()
+        page: Optional[Page] = None
         try:
             page = await self._context.new_page()
             page.set_default_timeout(self.config.TIMEOUT)
@@ -1627,8 +1744,6 @@ class BrowserManager(BaseBrowserManager):
             html = await page.content()
             title = await page.title()
 
-            await page.close()
-
             return BrowserResult(
                 url=page.url,
                 html=html,
@@ -1643,6 +1758,13 @@ class BrowserManager(BaseBrowserManager):
                 title="",
                 error=str(e),
             )
+        finally:
+            if page and not page.is_closed():
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            self._untrack_active_operation(op_task)
 
     async def get_interactive(self, url: str) -> tuple[Page, BrowserResult]:
         """
@@ -1652,15 +1774,26 @@ class BrowserManager(BaseBrowserManager):
         if not self._browser:
             await self.start()
 
-        page = await self._context.new_page()
-        page.set_default_timeout(self.config.TIMEOUT)
+        op_task = self._track_active_operation_current_task()
+        page: Optional[Page] = None
+        try:
+            page = await self._context.new_page()
+            page.set_default_timeout(self.config.TIMEOUT)
 
-        await page.goto(url, wait_until="networkidle")
+            await page.goto(url, wait_until="networkidle")
 
-        result = BrowserResult(
-            url=page.url,
-            html=await page.content(),
-            title=await page.title(),
-        )
-
-        return page, result
+            result = BrowserResult(
+                url=page.url,
+                html=await page.content(),
+                title=await page.title(),
+            )
+            return page, result
+        except Exception:
+            if page and not page.is_closed():
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            raise
+        finally:
+            self._untrack_active_operation(op_task)

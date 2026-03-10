@@ -76,16 +76,58 @@ class WebRooterCLI:
             result = await self.agent.visit(url, use_browser=use_browser)
             self._print_result(result)
 
+        elif command in {"html", "dom"} and args:
+            url = args[0]
+            use_browser = "--js" in args
+            auto_fallback = "--no-fallback" not in args
+            max_chars = 80000
+            i = 1
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--max-chars="):
+                    max_chars = self._parse_option_int(arg.split("=", 1)[1], max_chars)
+                elif arg == "--max-chars" and i + 1 < len(args):
+                    i += 1
+                    max_chars = self._parse_option_int(args[i], max_chars)
+                i += 1
+            result = await self.agent.fetch_html(
+                url=url,
+                use_browser=use_browser,
+                auto_fallback=auto_fallback,
+                max_chars=max_chars,
+            )
+            self._print_result(result)
+
         elif command in {"quick", "q"} and args:
-            # 忘记具体命令时的一键入口：URL -> visit，其他 -> web search
+            # 默认入口：workflow 编排优先 + HTML-first 分析
             use_browser = "--js" in args
             crawl_pages = 3
+            top_results = 5
+            html_first = True
+            strict = False
+            crawl_assist = False
+            legacy = False
             input_parts = []
             i = 0
             while i < len(args):
                 arg = args[i]
                 if arg == "--js":
                     pass
+                elif arg == "--legacy":
+                    legacy = True
+                elif arg == "--strict":
+                    strict = True
+                elif arg == "--crawl-assist":
+                    crawl_assist = True
+                elif arg == "--no-html-first":
+                    html_first = False
+                elif arg == "--html-first":
+                    html_first = True
+                elif arg.startswith("--top="):
+                    top_results = self._parse_option_int(arg.split("=", 1)[1], top_results)
+                elif arg == "--top" and i + 1 < len(args):
+                    i += 1
+                    top_results = self._parse_option_int(args[i], top_results)
                 elif arg.startswith("--crawl-pages="):
                     crawl_pages = self._parse_option_int(arg.split("=", 1)[1], crawl_pages)
                 elif arg.startswith("--crawl="):
@@ -102,14 +144,75 @@ class WebRooterCLI:
 
             raw_input = " ".join(input_parts).strip()
             if not raw_input:
-                print("用法：quick <url|query> [--js] [--crawl-pages=N]")
+                print("用法：quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]")
                 return True
 
             await self._run_inferred_input(
                 raw_input,
                 use_browser=use_browser,
                 crawl_pages=crawl_pages,
+                top_results=top_results,
+                html_first=html_first,
+                strict=strict,
+                crawl_assist=crawl_assist,
+                legacy=legacy,
             )
+
+        elif command in {"task", "orchestrate", "auto"} and args:
+            use_browser = "--js" in args
+            crawl_pages = 2
+            top_results = 5
+            html_first = True
+            strict = False
+            crawl_assist = False
+            input_parts = []
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg == "--js":
+                    pass
+                elif arg == "--strict":
+                    strict = True
+                elif arg == "--crawl-assist":
+                    crawl_assist = True
+                elif arg == "--no-html-first":
+                    html_first = False
+                elif arg == "--html-first":
+                    html_first = True
+                elif arg.startswith("--top="):
+                    top_results = self._parse_option_int(arg.split("=", 1)[1], top_results)
+                elif arg == "--top" and i + 1 < len(args):
+                    i += 1
+                    top_results = self._parse_option_int(args[i], top_results)
+                elif arg.startswith("--crawl-pages="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], crawl_pages)
+                elif arg.startswith("--crawl="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], crawl_pages)
+                elif arg == "--crawl-pages" and i + 1 < len(args):
+                    i += 1
+                    crawl_pages = self._parse_option_int(args[i], crawl_pages)
+                elif arg == "--crawl" and i + 1 < len(args):
+                    i += 1
+                    crawl_pages = self._parse_option_int(args[i], crawl_pages)
+                else:
+                    input_parts.append(arg)
+                i += 1
+
+            task_input = " ".join(input_parts).strip()
+            if not task_input:
+                print("用法：task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]")
+                return True
+
+            result = await self.agent.orchestrate_task(
+                task=task_input,
+                html_first=html_first,
+                top_results=top_results,
+                use_browser=use_browser,
+                crawl_assist=crawl_assist,
+                crawl_pages=crawl_pages,
+                strict=strict,
+            )
+            self._print_result(result)
 
         elif command == "search" and args:
             url = None
@@ -815,16 +918,34 @@ class WebRooterCLI:
         raw_input: str,
         use_browser: bool = False,
         crawl_pages: int = 3,
+        top_results: int = 5,
+        html_first: bool = True,
+        strict: bool = False,
+        crawl_assist: bool = False,
+        legacy: bool = False,
     ):
-        """根据输入自动判定执行 visit 或 web 搜索。"""
-        if self._looks_like_url(raw_input):
-            result = await self.agent.visit(raw_input, use_browser=use_browser)
-        else:
-            result = await self.agent.search_internet(
-                raw_input,
-                auto_crawl=True,
-                crawl_pages=max(0, crawl_pages),
-            )
+        """根据输入自动判定执行方式（默认：workflow 编排 + HTML-first）。"""
+        if legacy:
+            if self._looks_like_url(raw_input):
+                result = await self.agent.visit(raw_input, use_browser=use_browser)
+            else:
+                result = await self.agent.search_internet(
+                    raw_input,
+                    auto_crawl=True,
+                    crawl_pages=max(0, crawl_pages),
+                )
+            self._print_result(result)
+            return
+
+        result = await self.agent.orchestrate_task(
+            task=raw_input,
+            html_first=html_first,
+            top_results=max(1, top_results),
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=max(1, crawl_pages),
+            strict=strict,
+        )
         self._print_result(result)
 
     @staticmethod
@@ -1078,7 +1199,12 @@ Web-Rooter 可用命令:
 
 【网页访问】
   visit <url> [--js]              - 访问网页 (--js 使用浏览器)
-  quick <url|query> [--js]        - 智能入口（URL 自动 visit，关键词自动 web）
+  html <url> [--js] [--max-chars=N] [--no-fallback]
+                                  - 获取原始 HTML（推荐 AI 做结构分析）
+  quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]
+                                  - 默认智能入口（workflow 编排优先；--legacy 回退旧逻辑）
+  task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]
+                                  - AI 默认任务入口（推荐）
   search <query> [url]            - 在已访问页面中搜索
   extract <url> <target>          - 提取特定信息
   crawl <url> [pages] [depth] [--pattern=REGEX] [--allow-external] [--no-subdomains]
@@ -1121,8 +1247,11 @@ Web-Rooter 可用命令:
 
 示例:
   visit https://example.com
+  html https://example.com --max-chars=100000
   quick https://example.com --js
   quick "WorldQuant alpha101 因子"
+  quick "RAG benchmark 2026" --top=6 --html-first
+  task "帮我分析这个主题的主流观点并给出处：AI Agent 工程实践" --top=8 --crawl-assist
   web AI 大模型 --no-crawl
   web AI 大模型 --crawl-pages=5
   deep "苹果发布会" --en --crawl=5 --num-results=20 --variants=3 --news

@@ -151,7 +151,7 @@ def build_workflow_template(scenario: str = "social_comments") -> Dict[str, Any]
                 },
                 {
                     "id": "visit_top_hits",
-                    "tool": "visit",
+                    "tool": "fetch_html",
                     "for_each": "${steps.social_search.results}",
                     "item_alias": "hit",
                     "max_items": "${vars.top_hits}",
@@ -159,6 +159,8 @@ def build_workflow_template(scenario: str = "social_comments") -> Dict[str, Any]
                     "args": {
                         "url": "${local.hit.url}",
                         "use_browser": "${vars.use_browser}",
+                        "auto_fallback": True,
+                        "max_chars": 60000,
                     },
                 },
                 {
@@ -214,7 +216,7 @@ def build_workflow_template(scenario: str = "social_comments") -> Dict[str, Any]
                 },
                 {
                     "id": "visit_top_papers",
-                    "tool": "visit",
+                    "tool": "fetch_html",
                     "for_each": "${steps.academic_search.data.papers}",
                     "item_alias": "paper",
                     "max_items": "${vars.crawl_top_papers}",
@@ -222,6 +224,8 @@ def build_workflow_template(scenario: str = "social_comments") -> Dict[str, Any]
                     "args": {
                         "url": "${local.paper.url}",
                         "use_browser": False,
+                        "auto_fallback": True,
+                        "max_chars": 60000,
                     },
                 },
             ],
@@ -255,6 +259,7 @@ def get_workflow_schema() -> Dict[str, Any]:
         },
         "tools": {
             "visit": {"args": ["url", "use_browser", "auto_fallback"]},
+            "fetch_html": {"args": ["url", "use_browser", "auto_fallback", "max_chars"]},
             "search_internet": {"args": ["query", "num_results", "auto_crawl", "crawl_pages"]},
             "deep_search": {"args": ["query", "num_results", "use_english", "crawl_top", "query_variants", "channel_profiles", "engines"]},
             "mindsearch": {"args": ["query", "max_turns", "max_branches", "num_results", "crawl_top", "use_english", "channel_profiles", "planner_name", "strict_expand"]},
@@ -519,6 +524,18 @@ class WorkflowRunner:
                 url=url,
                 use_browser=_as_bool(args.get("use_browser"), default=False),
                 auto_fallback=_as_bool(args.get("auto_fallback"), default=True),
+            )
+            return _normalize_result(result)
+
+        if name in {"fetch_html", "web_fetch_html", "html"}:
+            url = str(args.get("url") or "").strip()
+            if not url:
+                raise ValueError("fetch_html requires args.url")
+            result = await self._agent.fetch_html(
+                url=url,
+                use_browser=_as_bool(args.get("use_browser"), default=False),
+                auto_fallback=_as_bool(args.get("auto_fallback"), default=True),
+                max_chars=max(1000, _as_int(args.get("max_chars"), 80000)),
             )
             return _normalize_result(result)
 
