@@ -15,6 +15,7 @@ import logging
 
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext, TimeoutError as PlaywrightTimeoutError
 from config import browser_config, BrowserConfig, StealthConfig
+from core.challenge_workflow import get_challenge_workflow_runner
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -533,6 +534,7 @@ class AntiBotActions:
 
     def __init__(self, page: Page):
         self.page = page
+        self._challenge_runner = get_challenge_workflow_runner()
         self._challenge_keywords = [
             "captcha",
             "recaptcha",
@@ -587,7 +589,7 @@ class AntiBotActions:
             try:
                 count = await self.page.locator(selector).count()
                 if count > 0:
-                    element = self.page.locator(selector).first()
+                    element = self.page.locator(selector).first
                     is_visible = await element.is_visible(timeout=timeout)
                     if is_visible:
                         logger.warning(f"检测到反爬虫机制！匹配选择器：{selector}")
@@ -628,8 +630,35 @@ class AntiBotActions:
         - 尝试操作 reCAPTCHA/hCaptcha frame 内控件
         """
         detectors = list(detectors or [])
+        forced_profile = os.getenv("WEB_ROOTER_CHALLENGE_PROFILE", "").strip() or None
+        max_profiles = max(1, int(os.getenv("WEB_ROOTER_CHALLENGE_MAX_PROFILES", "3") or 3))
 
         for attempt in range(max(1, max_attempts)):
+            # 先走可编排 workflow，再走旧有硬编码动作，实现平滑兼容。
+            try:
+                workflow_report = await self._challenge_runner.run(
+                    page=self.page,
+                    url=self.page.url,
+                    detectors=detectors,
+                    profile_name=forced_profile,
+                    max_rounds=1,
+                    max_profiles=max_profiles,
+                )
+                if workflow_report.get("resolved"):
+                    logger.info(
+                        "Challenge workflow resolved: profile=%s attempt=%s",
+                        workflow_report.get("profile"),
+                        attempt + 1,
+                    )
+                    return True
+                if workflow_report.get("errors"):
+                    logger.debug(
+                        "Challenge workflow errors: %s",
+                        "; ".join(workflow_report.get("errors", [])[:2]),
+                    )
+            except Exception as workflow_exc:
+                logger.debug("Challenge workflow execution failed: %s", workflow_exc)
+
             await self._click_challenge_controls()
             await self.random_delay(900, 1700)
 

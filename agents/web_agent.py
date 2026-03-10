@@ -40,6 +40,11 @@ from core.citation import (
     build_comparison_summary,
     format_reference_block,
 )
+from core.search.mindsearch_pipeline import MindSearchPipeline
+from core.search.research_planner import get_research_planner_registry
+from core.global_context import get_global_deep_context
+from core.postprocess import get_post_processor_registry
+from core.challenge_workflow import get_challenge_workflow_runner
 from config import crawler_config
 
 logging.basicConfig(level=logging.INFO)
@@ -915,6 +920,105 @@ class WebAgent:
             urls=unique_urls[:max_pages] if max_pages > 0 else unique_urls,
         )
 
+    async def mindsearch_research(
+        self,
+        query: str,
+        max_turns: int = 3,
+        max_branches: int = 4,
+        num_results: int = 8,
+        crawl_top: int = 1,
+        use_english: bool = False,
+        channel_profiles: Optional[List[str]] = None,
+        planner_name: Optional[str] = None,
+        strict_expand: Optional[bool] = None,
+    ) -> AgentResponse:
+        """
+        MindSearch 风格研究（规划 + 图搜索 + 引用汇总）。
+        """
+        pipeline = MindSearchPipeline(
+            max_turns=max_turns,
+            max_branches=max_branches,
+            num_results=num_results,
+            crawl_top=crawl_top,
+            use_english=use_english,
+            channel_profiles=channel_profiles or None,
+            planner_name=planner_name,
+            strict_expand=strict_expand,
+        )
+        result = await pipeline.run(query)
+
+        stats = result.get("stats", {}) if isinstance(result, dict) else {}
+        merged_results = result.get("results", []) if isinstance(result, dict) else []
+        top_urls = [
+            item.get("url")
+            for item in merged_results[:20]
+            if isinstance(item, dict) and item.get("url")
+        ]
+
+        content = (
+            f"MindSearch 研究完成：{query}\n\n"
+            f"节点总数：{stats.get('total_nodes', 0)}\n"
+            f"完成节点：{stats.get('completed_nodes', 0)}\n"
+            f"失败节点：{stats.get('failed_nodes', 0)}\n"
+            f"聚合结果：{result.get('total_results', 0)}\n\n"
+            f"{result.get('references_text', '')}"
+        )
+
+        return AgentResponse(
+            success=True,
+            content=content,
+            data=result,
+            urls=top_urls,
+            metadata={
+                "mode": "mindsearch",
+                "query": query,
+                "planner": result.get("planner", {}),
+                "global_context_event_id": result.get("global_context_event_id"),
+            },
+        )
+
+    def get_global_context_snapshot(self, limit: int = 20, event_type: Optional[str] = None) -> Dict[str, Any]:
+        """获取全局深度抓取上下文快照。"""
+        store = get_global_deep_context()
+        return store.snapshot(limit=limit, event_type=event_type)
+
+    def register_post_processors(self, specs: Optional[List[str]] = None, force: bool = False) -> Dict[str, Any]:
+        """加载/查看结果后处理扩展。"""
+        registry = get_post_processor_registry()
+        loaded: List[str] = []
+        if specs:
+            loaded = registry.load_from_specs(specs, force=force)
+        else:
+            loaded = registry.load_from_env(force=force)
+
+        return {
+            "loaded": loaded,
+            "processors": registry.list_processors(),
+        }
+
+    def register_research_planners(self, specs: Optional[List[str]] = None, force: bool = False) -> Dict[str, Any]:
+        """加载/查看 MindSearch planner 扩展。"""
+        registry = get_research_planner_registry()
+        loaded: List[str] = []
+        if specs:
+            loaded = registry.load_from_specs(specs, force=force)
+        else:
+            loaded = registry.load_from_env(force=force)
+
+        active = registry.resolve().name
+        return {
+            "loaded": loaded,
+            "planners": registry.list_planners(),
+            "active": active,
+        }
+
+    def get_challenge_profiles(self) -> Dict[str, Any]:
+        """获取 challenge workflow profile 信息。"""
+        runner = get_challenge_workflow_runner()
+        return {
+            "profiles": runner.describe_profiles(),
+        }
+
     # ==================== 学术模式搜索方法 ====================
 
     async def search_academic(
@@ -1048,21 +1152,6 @@ class WebAgent:
 
         # 解析搜索结果
         if result.success:
-            # 尝试访问结果页获取额外上下文；失败不影响站内搜索主结果。
-            submitted_url = result.submitted_url or ""
-            should_visit_result = (
-                submitted_url.startswith(("http://", "https://"))
-                and "api.github.com/" not in submitted_url
-            )
-            if should_visit_result:
-                try:
-                    await asyncio.wait_for(
-                        self.visit(submitted_url),
-                        timeout=min(timeout_sec, 20),
-                    )
-                except Exception:
-                    pass
-
             content = f"搜索完成，找到 {result.result_count} 个结果\n\n"
             if result.extracted_results:
                 content += "搜索结果:\n"

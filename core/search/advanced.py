@@ -31,6 +31,8 @@ from core.memory_optimizer import (
     get_memory_optimizer
 )
 from core.citation import build_web_citations, build_comparison_summary, format_reference_block
+from core.global_context import get_global_deep_context
+from core.postprocess import PostProcessContext, run_post_processors
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1035,6 +1037,12 @@ class DeepSearchEngine:
                 f"共找到 {len(unique_results)} 条结果"
             ),
         }
+        final_result = _finalize_payload_with_extensions(
+            payload=final_result,
+            query=query,
+            mode="deep_search",
+            source="deep_search_engine",
+        )
 
         # 标记最终结果
         result_key = f"deep_search:{query}:{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -1428,6 +1436,54 @@ def _merge_search_payload(
     return merged
 
 
+def _finalize_payload_with_extensions(
+    payload: Dict[str, Any],
+    query: str,
+    mode: str,
+    source: str = "advanced_search",
+) -> Dict[str, Any]:
+    """
+    统一补充：
+    - postprocess 扩展
+    - 全局上下文事件
+    """
+    result = dict(payload or {})
+    result, post_report = run_post_processors(
+        result,
+        PostProcessContext(
+            query=query,
+            mode=mode,
+            metadata={
+                "total_results": int(result.get("total_results", 0) or 0),
+            },
+        ),
+    )
+    result["postprocess"] = post_report
+
+    try:
+        context_store = get_global_deep_context()
+        event = context_store.record(
+            event_type=f"{mode}_complete",
+            source=source,
+            payload={
+                "query": query,
+                "total_results": int(result.get("total_results", 0) or 0),
+                "errors": list(result.get("errors", []) or [])[:6],
+                "top_urls": [
+                    item.get("url")
+                    for item in (result.get("results", []) if isinstance(result.get("results"), list) else [])[:10]
+                    if isinstance(item, dict) and item.get("url")
+                ],
+            },
+        )
+        result["global_context_event_id"] = event.get("id")
+        result["global_context_size"] = context_store.size
+    except Exception as exc:
+        logger.debug("record global context failed: %s", exc)
+
+    return result
+
+
 async def _run_platform_backup_search(
     query: str,
     target_domains: List[str],
@@ -1602,7 +1658,12 @@ async def search_social_media(
         not force_low_signal_backup or primary_high_signal >= max(1, min_expected - 1)
     ):
         primary["success"] = True
-        return primary
+        return _finalize_payload_with_extensions(
+            payload=primary,
+            query=query,
+            mode="social_search",
+            source="advanced_search_social",
+        )
 
     backup = await _run_platform_backup_search(
         query=query,
@@ -1610,7 +1671,13 @@ async def search_social_media(
         profile="platforms",
         use_english=False,
     )
-    return _merge_search_payload(primary, backup, query=query)
+    merged = _merge_search_payload(primary, backup, query=query)
+    return _finalize_payload_with_extensions(
+        payload=merged,
+        query=query,
+        mode="social_search",
+        source="advanced_search_social",
+    )
 
 
 async def search_commerce(
@@ -1706,7 +1773,12 @@ async def search_commerce(
         not force_low_signal_backup or primary_high_signal >= max(1, min_expected - 1)
     ):
         primary["success"] = True
-        return primary
+        return _finalize_payload_with_extensions(
+            payload=primary,
+            query=query,
+            mode="commerce_search",
+            source="advanced_search_commerce",
+        )
 
     backup = await _run_platform_backup_search(
         query=query,
@@ -1714,7 +1786,13 @@ async def search_commerce(
         profile="commerce",
         use_english=False,
     )
-    return _merge_search_payload(primary, backup, query=query)
+    merged = _merge_search_payload(primary, backup, query=query)
+    return _finalize_payload_with_extensions(
+        payload=merged,
+        query=query,
+        mode="commerce_search",
+        source="advanced_search_commerce",
+    )
 
 
 async def search_tech(

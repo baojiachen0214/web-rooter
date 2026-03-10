@@ -15,10 +15,15 @@ python main.py quick <url|query> [--js] [--crawl-pages=N]
 python main.py visit <url> [--js]
 python main.py web <query> [--no-crawl] [--crawl-pages=N]
 python main.py deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--news] [--platforms] [--commerce] [--channel=x,y]
+python main.py mindsearch <query> [--turns=N] [--branches=N] [--num-results=N] [--crawl=N] [--planner=name] [--strict-expand] [--channel=x,y]
 python main.py social <query> [--platform=xiaohongshu|zhihu|tieba|douyin|bilibili|weibo]
 python main.py shopping <query> [--platform=taobao|jd|pinduoduo|meituan]
 python main.py crawl <url> [pages] [depth] [--pattern=REGEX] [--allow-external] [--no-subdomains]
 python main.py academic <query> [--papers-only|--with-code] [--no-abstracts] [--num-results=N] [--source=xxx]
+python main.py processors [--load=module:object] [--force]
+python main.py planners [--load=module:object] [--force]
+python main.py challenge-profiles
+python main.py context [--limit=N] [--event=type]
 ```
 
 ## Typical Workflows
@@ -56,7 +61,13 @@ python main.py deep "AI 芯片供应链" --channel=news,platforms,commerce
 python main.py crawl "https://docs.python.org/3/" 20 2 --pattern="/3/library/" --no-subdomains
 ```
 
-### 5) 学术模式（带出处）
+### 5) MindSearch 图研究
+
+```bash
+python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
+```
+
+### 6) 学术模式（带出处）
 
 ```bash
 python main.py academic "RAG benchmark" --papers-only --source=arxiv --source=semantic_scholar
@@ -67,6 +78,7 @@ python main.py academic "Agent eval framework" --with-code --num-results=15 --so
 
 - `deep --variants` 用于子查询分解，默认值为 `1`
 - `deep --news/--platforms/--commerce` 会自动扩展为 `site:domain` 查询，覆盖媒体、社交与电商站点
+- `mindsearch` 输出 `mindsearch_compat`，包含 `node` / `adjacency_list` / `ref2url`，便于外层 AI 直接消费
 - `crawl` 默认不跨站，`--allow-external` 才会跨域
 - 无法稳定用 HTTP 抓取时，优先 `visit --js` 或 `quick --js`
 - `web/deep/academic/research` 输出包含 `citations` 字段；`deep/research` 还包含 `comparison` 交叉来源统计

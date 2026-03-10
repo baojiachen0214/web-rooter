@@ -26,6 +26,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 仅在显式开启时才切换 SelectorEventLoop（默认保持系统策略，避免影响 Playwright 子进程）。
+if (
+    sys.platform.startswith("win")
+    and hasattr(asyncio, "WindowsSelectorEventLoopPolicy")
+    and str(os.getenv("WEB_ROOTER_WINDOWS_SELECTOR_LOOP", "0")).strip().lower() in {"1", "true", "yes", "on"}
+):
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 
 class WebRooterCLI:
     """命令行界面"""
@@ -225,6 +236,144 @@ class WebRooterCLI:
             topic = " ".join(args)
             result = await self.agent.research_topic(topic)
             self._print_result(result)
+
+        elif command in {"mindsearch", "ms"} and args:
+            use_en = False
+            crawl = 1
+            turns = 3
+            branches = 4
+            num_results = 8
+            planner_name: Optional[str] = None
+            strict_expand: Optional[bool] = None
+            channel_profiles: List[str] = []
+            query_parts = []
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg in {"--en", "--english"}:
+                    use_en = True
+                elif arg.startswith("--crawl="):
+                    crawl = self._parse_option_int(arg.split("=", 1)[1], crawl)
+                elif arg == "--crawl" and i + 1 < len(args):
+                    i += 1
+                    crawl = self._parse_option_int(args[i], crawl)
+                elif arg.startswith("--turns="):
+                    turns = self._parse_option_int(arg.split("=", 1)[1], turns)
+                elif arg == "--turns" and i + 1 < len(args):
+                    i += 1
+                    turns = self._parse_option_int(args[i], turns)
+                elif arg.startswith("--branches="):
+                    branches = self._parse_option_int(arg.split("=", 1)[1], branches)
+                elif arg == "--branches" and i + 1 < len(args):
+                    i += 1
+                    branches = self._parse_option_int(args[i], branches)
+                elif arg.startswith("--num-results="):
+                    num_results = self._parse_option_int(arg.split("=", 1)[1], num_results)
+                elif arg == "--num-results" and i + 1 < len(args):
+                    i += 1
+                    num_results = self._parse_option_int(args[i], num_results)
+                elif arg.startswith("--planner="):
+                    planner_name = arg.split("=", 1)[1].strip() or None
+                elif arg == "--planner" and i + 1 < len(args):
+                    i += 1
+                    planner_name = args[i].strip() or None
+                elif arg == "--strict-expand":
+                    strict_expand = True
+                elif arg == "--no-strict-expand":
+                    strict_expand = False
+                elif arg == "--news":
+                    channel_profiles.append("news")
+                elif arg in {"--platform", "--platforms"}:
+                    channel_profiles.append("platforms")
+                elif arg in {"--commerce", "--shopping"}:
+                    channel_profiles.append("commerce")
+                elif arg.startswith("--channel="):
+                    channel_profiles.extend([x.strip() for x in arg.split("=", 1)[1].split(",") if x.strip()])
+                elif arg == "--channel" and i + 1 < len(args):
+                    i += 1
+                    channel_profiles.extend([x.strip() for x in args[i].split(",") if x.strip()])
+                else:
+                    query_parts.append(arg)
+                i += 1
+
+            query = " ".join(query_parts).strip()
+            if not query:
+                print("用法：mindsearch <query> [--turns=N] [--branches=N] [--num-results=N] [--crawl=N] [--en] [--planner=name] [--strict-expand] [--news|--platforms|--commerce|--channel=x,y]")
+                return True
+
+            result = await self.agent.mindsearch_research(
+                query=query,
+                max_turns=turns,
+                max_branches=branches,
+                num_results=num_results,
+                crawl_top=crawl,
+                use_english=use_en,
+                channel_profiles=channel_profiles or None,
+                planner_name=planner_name,
+                strict_expand=strict_expand,
+            )
+            self._print_result(result)
+
+        elif command == "context":
+            limit = 20
+            event_type = None
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--limit="):
+                    limit = self._parse_option_int(arg.split("=", 1)[1], limit)
+                elif arg == "--limit" and i + 1 < len(args):
+                    i += 1
+                    limit = self._parse_option_int(args[i], limit)
+                elif arg.startswith("--event="):
+                    event_type = arg.split("=", 1)[1].strip() or None
+                elif arg == "--event" and i + 1 < len(args):
+                    i += 1
+                    event_type = args[i].strip() or None
+                i += 1
+
+            snapshot = self.agent.get_global_context_snapshot(limit=limit, event_type=event_type)
+            self._print_result({"success": True, "context": snapshot})
+
+        elif command in {"processors", "postprocessors"}:
+            specs: List[str] = []
+            force = False
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--load="):
+                    specs.extend([x.strip() for x in arg.split("=", 1)[1].split(",") if x.strip()])
+                elif arg == "--load" and i + 1 < len(args):
+                    i += 1
+                    specs.extend([x.strip() for x in args[i].split(",") if x.strip()])
+                elif arg == "--force":
+                    force = True
+                i += 1
+
+            data = self.agent.register_post_processors(specs=specs or None, force=force)
+            self._print_result({"success": True, **data})
+
+        elif command in {"planners", "planner"}:
+            specs: List[str] = []
+            force = False
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--load="):
+                    specs.extend([x.strip() for x in arg.split("=", 1)[1].split(",") if x.strip()])
+                elif arg == "--load" and i + 1 < len(args):
+                    i += 1
+                    specs.extend([x.strip() for x in args[i].split(",") if x.strip()])
+                elif arg == "--force":
+                    force = True
+                i += 1
+
+            data = self.agent.register_research_planners(specs=specs or None, force=force)
+            self._print_result({"success": True, **data})
+
+        elif command in {"challenge-profiles", "challenge_profiles", "challenges"}:
+            data = self.agent.get_challenge_profiles()
+            self._print_result({"success": True, **data})
 
         elif command == "academic" and args:
             include_code = True
@@ -576,12 +725,55 @@ class WebRooterCLI:
                 return message.splitlines()[0]
             return exc.__class__.__name__
 
+        def detect_local_recommended_python() -> Optional[str]:
+            candidates: List[Path] = []
+            if sys.platform.startswith("win"):
+                candidates.extend(
+                    [
+                        Path.cwd() / ".venv312" / "Scripts" / "python.exe",
+                        Path.cwd() / ".venv" / "Scripts" / "python.exe",
+                    ]
+                )
+            else:
+                candidates.extend(
+                    [
+                        Path.cwd() / ".venv312" / "bin" / "python",
+                        Path.cwd() / ".venv" / "bin" / "python",
+                    ]
+                )
+
+            for candidate in candidates:
+                if not candidate.exists():
+                    continue
+                try:
+                    probe = subprocess.run(
+                        [str(candidate), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if probe.returncode != 0:
+                        continue
+                    version_text = (probe.stdout or "").strip()
+                    major, minor = version_text.split(".", 1)
+                    if (int(major), int(minor)) >= (3, 10):
+                        return str(candidate)
+                except Exception:
+                    continue
+            return None
+
+        recommended_python = detect_local_recommended_python()
+
         python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         add_check(
             "Python",
             sys.version_info >= (3, 10),
             f"{python_version} ({sys.executable})",
-            "请升级到 Python 3.10 或更高版本",
+            (
+                f"请升级到 Python 3.10+，或改用: {recommended_python} main.py --doctor"
+                if recommended_python
+                else "请升级到 Python 3.10 或更高版本"
+            ),
         )
 
         for module_name in ("aiohttp", "playwright", "mcp"):
@@ -590,7 +782,11 @@ class WebRooterCLI:
                 f"依赖模块: {module_name}",
                 installed,
                 "已安装" if installed else "未安装",
-                f"执行: pip install {module_name}",
+                (
+                    f"执行: {recommended_python} -m pip install {module_name}"
+                    if recommended_python
+                    else f"执行: pip install {module_name}"
+                ),
             )
 
         playwright_cli = shutil.which("playwright")
@@ -708,6 +904,7 @@ Web-Rooter 可用命令:
   web <query> [--no-crawl] [--crawl-pages=N]
   deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--news] [--platforms] [--commerce] [--channel=x,y]
   research <topic>                - 深度研究主题
+  mindsearch <query> [--turns=N] [--branches=N] [--num-results=N] [--crawl=N] [--en] [--planner=name] [--strict-expand] [--channel=x,y]
 
 【垂直搜索】
   social <query> [--platform=xxx] - 平台：xiaohongshu/zhihu/tieba/douyin/bilibili/weibo/reddit/twitter
@@ -719,6 +916,10 @@ Web-Rooter 可用命令:
 【导出与诊断】
   export <query> <file>           - 导出深度搜索结果到 JSON
   doctor                          - 环境自检（依赖/浏览器/抓取链路）
+  context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
+  processors [--load=module:obj] [--force] - 查看/加载抓取后处理扩展
+  planners [--load=module:obj] [--force] - 查看/加载 MindSearch planner 扩展
+  challenge-profiles              - 查看 challenge workflow 路由档案
 
 【其他】
   help                            - 帮助信息
@@ -733,6 +934,7 @@ Web-Rooter 可用命令:
   deep "苹果发布会" --en --crawl=5 --num-results=20 --variants=3 --news
   deep "护肤品评测" --commerce
   deep "AI Agent 工程化" --platforms --channel=news,commerce
+  mindsearch "多模态大模型 工程落地" --turns=3 --branches=4 --crawl=1 --planner=heuristic --strict-expand --channel=news,platforms
   crawl https://docs.python.org 20 2 --pattern="/3/library/" --no-subdomains
   social "iPhone 17" --platform=xiaohongshu --platform=zhihu --platform=douyin
   shopping "羽绒服 轻量" --platform=taobao --platform=jd
@@ -740,6 +942,10 @@ Web-Rooter 可用命令:
   academic Transformer --papers-only --source=arxiv --source=semantic_scholar
   academic "RAG evaluation" --with-code --num-results=15 --source=github
   export "AI 新闻" ai_news.json
+  context --limit=30
+  processors --load=plugins/post_processors/my_proc.py:create_processor --force
+  planners --load=plugins/planners/my_planner.py:create_planner --force
+  challenge-profiles
   doctor
   # 也可直接输入 URL 或查询词（未知命令会自动转智能模式）
   python main.py "https://example.com"

@@ -13,9 +13,14 @@
 | `web_search_academic` | 学术搜索 |
 | `web_search_site` | 站内搜索 |
 | `web_deep_search` | 深度并行搜索（多引擎+多查询） |
+| `web_mindsearch` | MindSearch 图研究 |
 | `web_search_social` | 社交媒体搜索 |
 | `web_search_commerce` | 电商/本地生活平台搜索 |
 | `web_search_tech` | 技术社区搜索 |
+| `web_context_snapshot` | 全局深度抓取上下文快照 |
+| `web_postprocessors` | 抓取结果后处理扩展管理 |
+| `web_planners` | MindSearch planner 扩展管理 |
+| `web_challenge_profiles` | challenge workflow profile 列表 |
 | `web_extract` | 目标信息提取 |
 | `web_crawl` | 站点深度爬取 |
 | `parse_html` | HTML 解析 |
@@ -30,7 +35,8 @@
 
 ## Output Notes
 
-- `web_search_internet` / `web_deep_search` / `web_research` / `web_search_academic` 返回结构化 `citations` 与可直接引用的 `references_text`
+- `web_search_internet` / `web_deep_search` / `web_research` / `web_search_academic` / `web_mindsearch` 返回结构化 `citations` 与可直接引用的 `references_text`
 - `web_deep_search` / `web_research` 额外返回 `comparison`（来源交叉覆盖统计）
+- `web_mindsearch` 额外返回 `mindsearch_compat`（`node` / `adjacency_list` / `ref2url`）
 - `web_search_academic.sources` 支持：
   - `arxiv`, `google_scholar`, `semantic_scholar`, `pubmed`, `ieee`, `cnki`, `wanfang`, `paper_with_code`, `github`, `gitee`

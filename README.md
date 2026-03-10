@@ -52,6 +52,9 @@ AI 编程助手在解决实际问题时，常常面临以下痛点：
 5. **渠道扩展能力** - `--news/--platforms/--commerce` 一键扩展搜索渠道
 6. **学术模式增强** - 支持 10+ 学术数据库，论文+代码联合检索
 7. **MCP 原生集成** - Claude Code 即装即用，15+ 工具暴露给 AI
+8. **挑战页工作流路由** - 内置 `cloudflare_interstitial` / `cloudflare_turnstile` / `frame_checkbox`，支持 JSON 自定义 profile
+9. **MindSearch 图研究增强** - 产出 `mindsearch_compat`（`node`/`adjacency_list`/`ref2url`）兼容结构，便于外层 AI 推理
+10. **可插拔扩展接口** - 支持 `postprocessors`（结果后处理）与 `planners`（研究规划器）热加载
 
 ---
 
@@ -83,8 +86,16 @@ python main.py social "iPhone 17 评测" --platform=xiaohongshu --platform=zhihu
 # 5. 学术研究（带引用格式）
 python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
 
-# 6. 站点定向爬取
+# 6. MindSearch 图研究（可切换 planner）
+python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
+
+# 7. 站点定向爬取
 python main.py crawl "https://docs.python.org/3/" 20 2 --pattern="/3/library/" --no-subdomains
+
+# 8. 查看扩展与挑战页路由（不需要记住内部细节）
+python main.py planners
+python main.py challenge-profiles
+python main.py context --limit=20
 ```
 
 ---
@@ -186,11 +197,15 @@ chmod +x scripts/unix/setup-claude-mcp.sh
 | `web_search_internet` | 多引擎互联网搜索 |
 | `web_research` | 主题深度研究 |
 | `web_search_academic` | 学术文献搜索 |
+| `web_mindsearch` | MindSearch 图研究 |
 | `web_search_social` | 社交媒体搜索 |
 | `web_search_commerce` | 电商/本地生活搜索 |
 | `web_fetch` / `web_fetch_js` | HTTP / 浏览器页面获取 |
 | `web_crawl` | 站点深度爬取 |
 | `web_extract` | 目标信息提取 |
+| `web_context_snapshot` | 查看全局深度抓取上下文事件 |
+| `web_postprocessors` / `web_planners` | 加载后处理器 / 研究规划器扩展 |
+| `web_challenge_profiles` | 查看挑战页 workflow 路由档案 |
 
 ---
 
@@ -235,12 +250,20 @@ web-rooter/
 ├── core/
 │   ├── crawler.py          # HTTP 抓取核心
 │   ├── browser.py          # Playwright 浏览器管理
+│   ├── challenge_workflow.py # 挑战页 workflow 路由与动作编排
+│   ├── global_context.py   # 全局深度抓取事件存储
+│   ├── postprocess.py      # 抓取后处理扩展注册中心
 │   ├── search/             # 搜索引擎实现
 │   │   ├── engine_base.py  # 配置驱动搜索流程
 │   │   ├── advanced.py     # 多引擎与深度搜索聚合
+│   │   ├── mindsearch_pipeline.py # MindSearch 图研究管线
+│   │   ├── research_planner.py # MindSearch planner 注册中心
 │   │   └── universal_parser.py  # 搜索结果解析
 │   ├── academic_search.py  # 学术搜索实现
 │   └── citation.py         # 引用格式生成
+├── plugins/                # 用户扩展（示例）
+│   ├── post_processors/
+│   └── planners/
 ├── tools/
 │   └── mcp_tools.py        # MCP 协议适配
 ├── scripts/                # 跨平台安装脚本

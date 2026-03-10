@@ -52,6 +52,9 @@ AI coding assistants often face these challenges when solving real-world problem
 5. **Channel Expansion** - `--news/--platforms/--commerce` one-click channel expansion
 6. **Academic Mode** - 10+ academic databases, paper+code joint search
 7. **Native MCP Integration** - Claude Code ready out-of-box, 15+ tools exposed to AI
+8. **Challenge Workflow Routing** - Built-in Cloudflare/general challenge profiles with JSON-based custom routing
+9. **MindSearch Compatibility Output** - Includes `mindsearch_compat` (`node` / `adjacency_list` / `ref2url`) for external AI orchestration
+10. **Pluggable Extensions** - Hot-loadable `postprocessors` and `planners`
 
 ### Known Limitations
 
@@ -92,6 +95,14 @@ python main.py shopping "light down jacket" --platform=taobao --platform=jd
 
 # 6. Academic search (with citation format)
 python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
+
+# 7. MindSearch graph research (planner-aware)
+python main.py mindsearch "multimodal LLM production engineering" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
+
+# 8. Inspect extension and challenge routing state
+python main.py planners
+python main.py challenge-profiles
+python main.py context --limit=20
 ```
 
 ---
@@ -136,11 +147,15 @@ Add to your Claude config file (`~/Library/Application Support/Claude/config.jso
 | `web_search_internet` | Multi-engine web search |
 | `web_research` | Deep topic research |
 | `web_search_academic` | Academic paper search |
+| `web_mindsearch` | MindSearch graph research |
 | `web_search_social` | Social media search |
 | `web_search_commerce` | E-commerce/local service search |
 | `web_fetch` / `web_fetch_js` | HTTP / Browser page fetching |
 | `web_crawl` | Deep site crawling |
 | `web_extract` | Targeted information extraction |
+| `web_context_snapshot` | Global deep-crawl context snapshot |
+| `web_postprocessors` / `web_planners` | Post-process / planner extension management |
+| `web_challenge_profiles` | Challenge workflow profile listing |
 
 ---
 
@@ -172,12 +187,20 @@ web-rooter/
 ├── core/                   # Search, crawler, browser, parser core
 │   ├── crawler.py          # HTTP crawling
 │   ├── browser.py          # Playwright browser management
+│   ├── challenge_workflow.py # Challenge workflow routing/orchestration
+│   ├── global_context.py   # Global deep-crawl event store
+│   ├── postprocess.py      # Post-process extension registry
 │   ├── search/             # Search engines
 │   │   ├── engine_base.py
 │   │   ├── advanced.py
+│   │   ├── mindsearch_pipeline.py
+│   │   ├── research_planner.py
 │   │   └── universal_parser.py
 │   ├── academic_search.py  # Academic search
 │   └── citation.py         # Citation generation
+├── plugins/                # User extensions (examples)
+│   ├── post_processors/
+│   └── planners/
 ├── tools/                  # MCP adapter
 │   └── mcp_tools.py
 ├── scripts/                # Cross-platform install scripts

@@ -344,6 +344,91 @@ class WebTools:
         finally:
             await deep_search.close()
 
+    async def web_mindsearch(
+        self,
+        query: str,
+        max_turns: int = 3,
+        max_branches: int = 4,
+        num_results: int = 8,
+        crawl_top: int = 1,
+        use_english: bool = False,
+        channel_profiles: Optional[List[str]] = None,
+        planner_name: Optional[str] = None,
+        strict_expand: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        MindSearch 风格研究（图搜索 + 深度抓取 + 引用）。
+        """
+        await self._ensure_initialized()
+        result = await self._agent.mindsearch_research(
+            query=query,
+            max_turns=max_turns,
+            max_branches=max_branches,
+            num_results=num_results,
+            crawl_top=crawl_top,
+            use_english=use_english,
+            channel_profiles=channel_profiles,
+            planner_name=planner_name,
+            strict_expand=strict_expand,
+        )
+        return result.to_dict()
+
+    async def web_context_snapshot(
+        self,
+        limit: int = 20,
+        event_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取全局深度抓取上下文快照。
+        """
+        await self._ensure_initialized()
+        snapshot = self._agent.get_global_context_snapshot(limit=limit, event_type=event_type)
+        return {
+            "success": True,
+            "context": snapshot,
+        }
+
+    async def web_postprocessors(
+        self,
+        specs: Optional[List[str]] = None,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        加载/查看后处理扩展。
+        """
+        await self._ensure_initialized()
+        data = self._agent.register_post_processors(specs=specs, force=force)
+        return {
+            "success": True,
+            **data,
+        }
+
+    async def web_planners(
+        self,
+        specs: Optional[List[str]] = None,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        加载/查看 MindSearch planner 扩展。
+        """
+        await self._ensure_initialized()
+        data = self._agent.register_research_planners(specs=specs, force=force)
+        return {
+            "success": True,
+            **data,
+        }
+
+    async def web_challenge_profiles(self) -> Dict[str, Any]:
+        """
+        查看 challenge workflow profiles。
+        """
+        await self._ensure_initialized()
+        data = self._agent.get_challenge_profiles()
+        return {
+            "success": True,
+            **data,
+        }
+
     async def web_search_social(
         self,
         query: str,
@@ -548,6 +633,78 @@ async def setup_mcp_server():
                 },
             ),
             Tool(
+                name="web_mindsearch",
+                description="MindSearch-style graph research with planning, multi-node deep search, and citation graph output",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Research query"},
+                        "max_turns": {"type": "integer", "description": "Max graph depth/turns", "default": 3},
+                        "max_branches": {"type": "integer", "description": "Max branches per expansion", "default": 4},
+                        "num_results": {"type": "integer", "description": "Results per node", "default": 8},
+                        "crawl_top": {"type": "integer", "description": "Crawl top N per node", "default": 1},
+                        "use_english": {"type": "boolean", "description": "Enable English query variants", "default": False},
+                        "channel_profiles": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional channel profiles (news/platforms/commerce)"
+                        },
+                        "planner_name": {"type": "string", "description": "Optional planner name to use"},
+                        "strict_expand": {"type": "boolean", "description": "Force follow-up expansion for completed nodes"},
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="web_context_snapshot",
+                description="Get global deep-crawl context snapshot across commands/sessions in current process",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "Max events to return", "default": 20},
+                        "event_type": {"type": "string", "description": "Optional event type filter"},
+                    },
+                },
+            ),
+            Tool(
+                name="web_postprocessors",
+                description="List/load post-processors for custom data handling after crawl/search",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "specs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Processor specs: module:object or /path/file.py:object"
+                        },
+                        "force": {"type": "boolean", "description": "Force reload specs", "default": False},
+                    },
+                },
+            ),
+            Tool(
+                name="web_planners",
+                description="List/load MindSearch planners (module:path loaders) for custom planning strategy",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "specs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Planner specs: module:object or /path/file.py:object"
+                        },
+                        "force": {"type": "boolean", "description": "Force reload specs", "default": False},
+                    },
+                },
+            ),
+            Tool(
+                name="web_challenge_profiles",
+                description="List challenge workflow profiles used for anti-bot pages",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
                 name="web_search_social",
                 description="Search social media platforms (Xiaohongshu, Zhihu, Tieba, Douyin, Bilibili, Weibo, Reddit, Twitter)",
                 inputSchema={
@@ -722,6 +879,35 @@ async def setup_mcp_server():
                     crawl_top=arguments.get("crawl_top", 5),
                     channel_profiles=arguments.get("channel_profiles"),
                 )
+            elif name == "web_mindsearch":
+                result = await web_tools.web_mindsearch(
+                    arguments["query"],
+                    max_turns=arguments.get("max_turns", 3),
+                    max_branches=arguments.get("max_branches", 4),
+                    num_results=arguments.get("num_results", 8),
+                    crawl_top=arguments.get("crawl_top", 1),
+                    use_english=arguments.get("use_english", False),
+                    channel_profiles=arguments.get("channel_profiles"),
+                    planner_name=arguments.get("planner_name"),
+                    strict_expand=arguments.get("strict_expand"),
+                )
+            elif name == "web_context_snapshot":
+                result = await web_tools.web_context_snapshot(
+                    limit=arguments.get("limit", 20),
+                    event_type=arguments.get("event_type"),
+                )
+            elif name == "web_postprocessors":
+                result = await web_tools.web_postprocessors(
+                    specs=arguments.get("specs"),
+                    force=arguments.get("force", False),
+                )
+            elif name == "web_planners":
+                result = await web_tools.web_planners(
+                    specs=arguments.get("specs"),
+                    force=arguments.get("force", False),
+                )
+            elif name == "web_challenge_profiles":
+                result = await web_tools.web_challenge_profiles()
             elif name == "web_search_social":
                 result = await web_tools.web_search_social(
                     arguments["query"],

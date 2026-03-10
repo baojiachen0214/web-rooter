@@ -16,6 +16,12 @@ python main.py --doctor
 
 `--doctor` should pass before running deep crawling tasks.
 
+Windows note:
+
+- If your system `python` is below `3.10`, use the project venv directly:
+  - `.venv312\Scripts\python.exe main.py --doctor`
+  - `.venv312\Scripts\python.exe main.py quick "OpenAI Agents SDK"`
+
 ## 3. OS-Specific Helpers
 
 ### Windows
@@ -60,9 +66,11 @@ wr doctor
 
 - Playwright browser missing:
   - `python -m playwright install chromium`
+- Python version too low in doctor:
+  - Use `.venv312\Scripts\python.exe main.py --doctor` (Windows)
+  - Or create a fresh `python3.10+` virtualenv and reinstall requirements
 - Anti-bot or access challenges:
   - Prefer `visit <url> --js` or `quick --js`
 - MCP tools not showing up in Claude:
   - Re-run MCP setup script
   - Restart Claude client and run `/tools`
-
