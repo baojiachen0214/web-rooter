@@ -2,7 +2,8 @@
 
 ## Philosophy
 
-- `quick` 是默认入口：忘记命令细节时优先用它
+- `do` 是一号入口：先编译 IR，再 lint，再执行
+- `quick` 是兼容入口：内部仍走编排层
 - CLI 是一等接口：MCP 只是 CLI 能力的适配层
 - URL 访问优先 `visit`，跨站信息检索优先 `web/deep`
 - 深度搜索与深度爬取分离，避免默认过重
@@ -12,6 +13,9 @@
 ```bash
 python main.py help
 python main.py doctor
+python main.py do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
+python main.py skills [--resolve "<goal>"]
+python main.py ir-lint <ir-file|json|workflow-file|workflow-json>
 python main.py quick <url|query> [--js] [--crawl-pages=N]
 python main.py visit <url> [--js]
 python main.py web <query> [--no-crawl] [--crawl-pages=N]
@@ -29,31 +33,38 @@ python main.py auth-hint <url>
 python main.py auth-template [path] [--force]
 python main.py workflow-schema
 python main.py workflow-template [path] [--scenario=social_comments|academic_relations] [--force]
-python main.py workflow <spec-file|json> [--var key=value] [--set key=value] [--strict]
+python main.py workflow <spec-file|json> [--var key=value] [--set key=value] [--strict] [--dry-run]
 python main.py context [--limit=N] [--event=type]
 ```
 
 ## Typical Workflows
 
-### 1) 快速查资料
+### 1) 单入口执行（推荐）
+
+```bash
+python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-run
+python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
+```
+
+### 2) 快速查资料
 
 ```bash
 python main.py quick "OpenAI Agents SDK"
 ```
 
-### 2) 多引擎搜索 + 页面摘要
+### 3) 多引擎搜索 + 页面摘要
 
 ```bash
 python main.py web "RAG benchmark 2026" --crawl-pages=5
 ```
 
-### 3) 深度搜索（多查询变体）
+### 4) 深度搜索（多查询变体）
 
 ```bash
 python main.py deep "量化交易 因子" --variants=4 --crawl=5
 ```
 
-### 3.1) 渠道扩展（媒体/平台站点）
+### 4.1) 渠道扩展（媒体/平台站点）
 
 ```bash
 python main.py deep "OpenAI 最新动态" --news
@@ -62,26 +73,26 @@ python main.py deep "羽绒服选购" --commerce
 python main.py deep "AI 芯片供应链" --channel=news,platforms,commerce
 ```
 
-### 4) 站点定向爬取
+### 5) 站点定向爬取
 
 ```bash
 python main.py crawl "https://docs.python.org/3/" 20 2 --pattern="/3/library/" --no-subdomains
 ```
 
-### 5) MindSearch 图研究
+### 6) MindSearch 图研究
 
 ```bash
 python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
 ```
 
-### 6) 学术模式（带出处）
+### 7) 学术模式（带出处）
 
 ```bash
 python main.py academic "RAG benchmark" --papers-only --source=arxiv --source=semantic_scholar
 python main.py academic "Agent eval framework" --with-code --num-results=15 --source=github
 ```
 
-### 7) 需登录站点（本地登录态模板）
+### 8) 需登录站点（本地登录态模板）
 
 ```bash
 python main.py auth-template
@@ -91,12 +102,12 @@ python main.py auth-hint https://www.zhihu.com
 
 填写本地 `login_profiles.json` 后，Claude Code 可以继续调用 `social/site/deep/mindsearch`，避免反复询问登录细节。
 
-### 8) AI 可编排 Workflow（不写死爬虫流程）
+### 9) AI 可编排 Workflow（不写死爬虫流程）
 
 ```bash
 python main.py workflow-schema
 python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
-python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8
+python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8 --dry-run
 
 python main.py workflow-template .web-rooter/workflow.academic.json --scenario=academic_relations --force
 python main.py workflow .web-rooter/workflow.academic.json --var topic="RAG benchmark" --strict
@@ -112,6 +123,10 @@ Workflow 机制的意义：
 - `deep --variants` 用于子查询分解，默认值为 `1`
 - `deep --news/--platforms/--commerce` 会自动扩展为 `site:domain` 查询，覆盖媒体、社交与电商站点
 - `mindsearch` 输出 `mindsearch_compat`，包含 `node` / `adjacency_list` / `ref2url`，便于外层 AI 直接消费
+- `do` / `workflow` 在执行前都可 `--dry-run`，并输出 IR + lint 结果
+- `skills --resolve "<goal>"` 可检查路由是否命中预期 skill
+- `ir-lint` 可独立校验 AI 生成的 IR/workflow，防止错误命令直达执行
+- `python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining` 可做 skills A/B 回归（默认 compile-only）
 - `crawl` 默认不跨站，`--allow-external` 才会跨域
 - 无法稳定用 HTTP 抓取时，优先 `visit --js` 或 `quick --js`
 - `web/deep/academic/research` 输出包含 `citations` 字段；`deep/research` 还包含 `comparison` 交叉来源统计

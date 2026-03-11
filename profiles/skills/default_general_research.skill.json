@@ -1,0 +1,28 @@
+{
+  "name": "default_general_research",
+  "description": "General-purpose web research with HTML-first reading as default.",
+  "route": "general",
+  "aliases": [
+    "general",
+    "web_research"
+  ],
+  "intent_keywords": [
+    "research",
+    "analysis",
+    "总结",
+    "调研",
+    "趋势",
+    "latest"
+  ],
+  "priority": 30,
+  "default_variables": {},
+  "default_options": {
+    "html_first": true,
+    "crawl_assist": false,
+    "top_results": 6
+  },
+  "examples": [
+    "分析 AI Agent 工程实践趋势并给出处",
+    "总结某技术主题的主流观点和反方观点"
+  ]
+}

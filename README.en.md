@@ -1,8 +1,8 @@
 <div align="center">
   <img src="./LOGO.png" alt="Web-Rooter Logo" width="240" />
   <h1>Web-Rooter</h1>
-  <p><strong>AI-Native Web Search & Deep Crawling Infrastructure</strong></p>
-  <p>Providing verifiable internet information retrieval for Claude Code, Cursor, and AI coding assistants</p>
+  <p><strong>CLI-First Web Search + Deep Crawling Infrastructure</strong></p>
+  <p>One command surface for Claude Code, Cursor, and local AI agents</p>
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
@@ -30,7 +30,7 @@ AI coding assistants often face these challenges when solving real-world problem
 | Anti-bot page failures | HTTP + Browser dual-channel, auto-fallback to Playwright |
 | Single source of information | Multi-engine parallel + channel expansion (news/social/commerce/academic) |
 | Chaotic output formats | Unified structured output with `references_text` ready to cite |
-| Disconnected from AI toolchain | Native MCP protocol support, works out-of-box with Claude Code |
+| Disconnected from AI toolchain | CLI-first design works across any AI tool; MCP is optional |
 
 ---
 
@@ -40,18 +40,18 @@ AI coding assistants often face these challenges when solving real-world problem
 
 - **Python 3.10+** + **AsyncIO** - High-performance async crawling engine
 - **Playwright** - Browser automation & anti-detection
-- **MCP Protocol** - Native AI toolchain integration
+- **CLI Runtime** - AI-tool-agnostic execution layer
 - **Multi-Engine Search** - Google/Bing/Baidu/DuckDuckGo parallel
 
 ### Highlights
 
-1. **Unified Search & Crawl** - One-stop from retrieval to content extraction, no tool switching needed
+1. **Single-entry CLI + Multi-mode** - `do` for default orchestration, `quick/web/deep/...` for focused modes
 2. **Smart Anti-Bot** - HTTP first, auto-fallback to Playwright on challenge pages, 80%+ success rate
 3. **Citation-Ready Output** - Auto-generated reference format, AI-ready
 4. **Multi-Source Validation** - `comparison.corroborated_results` shows corroborated results count
 5. **Channel Expansion** - `--news/--platforms/--commerce` one-click channel expansion
 6. **Academic Mode** - 10+ academic databases, paper+code joint search
-7. **Native MCP Integration** - Claude Code ready out-of-box, 15+ tools exposed to AI
+7. **Intent -> Skill -> IR loop** - compile and lint before execution to reduce wrong CLI calls
 8. **Challenge Workflow Routing** - Built-in Cloudflare/general challenge profiles with JSON-based custom routing
 9. **MindSearch Compatibility Output** - Includes `mindsearch_compat` (`node` / `adjacency_list` / `ref2url`) for external AI orchestration
 10. **Platform Challenge Template Library** - Auto-loads `profiles/challenge_profiles/*.json` (Xiaohongshu/Zhihu/Weibo/Douyin/E-commerce templates included)
@@ -81,36 +81,45 @@ python main.py --doctor
 ### 5-Minute Walkthrough
 
 ```bash
-# 1. Quick lookup (use this when you forget commands)
+# 1. Single-entry default (recommended)
+python main.py do "Mine Zhihu/Xiaohongshu comments with citations" --dry-run
+python main.py do "Analyze RAG benchmark paper relations with citations" --skill=academic_relation_mining --strict
+
+# 2. Quick lookup (compat entry)
 python main.py quick "OpenAI Agents SDK best practices"
 
-# 2. Multi-engine search + auto crawling
+# 3. Multi-engine search + auto crawling
 python main.py web "RAG evaluation benchmark 2025" --crawl-pages=5
 
-# 3. Deep research (multi-query variants + channel expansion)
+# 4. Deep research (multi-query variants + channel expansion)
 python main.py deep "AI agent engineering" --variants=4 --crawl=5 --platforms --channel=news
 
-# 4. Social media search
+# 5. Social media search
 python main.py social "iPhone 17 review" --platform=reddit --platform=twitter
 
-# 5. E-commerce search
+# 6. E-commerce search
 python main.py shopping "light down jacket" --platform=taobao --platform=jd
 
-# 6. Academic search (with citation format)
+# 7. Academic search (with citation format)
 python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
 
-# 7. MindSearch graph research (planner-aware)
+# 8. MindSearch graph research (planner-aware)
 python main.py mindsearch "multimodal LLM production engineering" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
 
-# 8. Inspect extension and challenge routing state
+# 9. Inspect skill/extension/challenge routing state
+python main.py skills --resolve "Mine Zhihu comments and cite sources"
+python main.py ir-lint .web-rooter/workflow.social.json
 python main.py planners
 python main.py challenge-profiles
 python main.py auth-template
 python main.py auth-hint https://www.zhihu.com
 python main.py workflow-schema
 python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
-python main.py workflow .web-rooter/workflow.social.json --var topic="phone review" --var top_hits=8
+python main.py workflow .web-rooter/workflow.social.json --var topic="phone review" --var top_hits=8 --dry-run
 python main.py context --limit=20
+
+# 10. Skill A/B regression (compile+linter comparison by default)
+python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining
 ```
 
 ---
@@ -197,6 +206,9 @@ web-rooter/
 │   ├── crawler.py          # HTTP crawling
 │   ├── browser.py          # Playwright browser management
 │   ├── challenge_workflow.py # Challenge workflow routing/orchestration
+│   ├── command_ir.py       # Command IR and lint validation
+│   ├── skills.py           # Skill contract loading + intent routing
+│   ├── trace_distill.py    # Distilled execution traces for compact memory
 │   ├── global_context.py   # Global deep-crawl event store
 │   ├── postprocess.py      # Post-process extension registry
 │   ├── search/             # Search engines
@@ -212,10 +224,12 @@ web-rooter/
 │   └── planners/
 ├── profiles/               # Built-in configurable templates
 │   ├── challenge_profiles/ # Platform challenge profile JSONs
+│   ├── skills/             # AI skill contracts (intent -> strategy/template)
 │   └── auth/               # Local auth profile template JSON
 ├── tools/                  # MCP adapter
 │   └── mcp_tools.py
-├── scripts/                # Cross-platform install scripts
+├── scripts/                # Cross-platform install and regression scripts
+│   ├── regression/         # Real regression + skill A/B harness
 │   ├── windows/
 │   └── unix/
 ├── docs/                   # Documentation

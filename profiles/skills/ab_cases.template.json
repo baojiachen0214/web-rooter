@@ -1,0 +1,37 @@
+{
+  "cases": [
+    {
+      "id": "social_comments_cn",
+      "goal": "抓取小红书和知乎关于 iPhone 17 的评论区观点并给出处",
+      "options": {
+        "top_results": 6,
+        "use_browser": true,
+        "crawl_assist": true,
+        "html_first": true,
+        "strict": false
+      }
+    },
+    {
+      "id": "academic_relations_en",
+      "goal": "Analyze RAG benchmark papers and citation relations with source evidence",
+      "options": {
+        "top_results": 6,
+        "use_browser": false,
+        "crawl_assist": false,
+        "html_first": true,
+        "strict": true
+      }
+    },
+    {
+      "id": "commerce_reviews_cn",
+      "goal": "分析某款手机在淘宝京东拼多多的评价差异和价格区间",
+      "options": {
+        "top_results": 6,
+        "use_browser": true,
+        "crawl_assist": true,
+        "html_first": true,
+        "strict": false
+      }
+    }
+  ]
+}

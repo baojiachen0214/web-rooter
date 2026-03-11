@@ -1,0 +1,43 @@
+{
+  "name": "commerce_review_mining",
+  "description": "Collect product reviews/prices from commerce platforms.",
+  "route": "commerce",
+  "aliases": [
+    "commerce",
+    "shopping",
+    "reviews"
+  ],
+  "intent_keywords": [
+    "淘宝",
+    "京东",
+    "拼多多",
+    "美团",
+    "价格",
+    "评价",
+    "比价",
+    "购买",
+    "taobao",
+    "jd",
+    "pinduoduo",
+    "meituan"
+  ],
+  "priority": 84,
+  "default_variables": {
+    "platforms": [
+      "taobao",
+      "jd",
+      "pinduoduo",
+      "meituan"
+    ]
+  },
+  "default_options": {
+    "html_first": true,
+    "crawl_assist": true,
+    "use_browser": true,
+    "top_results": 6
+  },
+  "examples": [
+    "抓取 某型号 手机 在淘宝京东拼多多的评价差异",
+    "分析同款商品在不同平台价格波动"
+  ]
+}

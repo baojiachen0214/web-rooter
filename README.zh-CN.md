@@ -61,7 +61,7 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 
 ### 亮点与特色
 
-1. **CLI-First 统一入口** - `quick/web/deep/social/shopping/academic/mindsearch` 一套命令覆盖主流程
+1. **CLI-First 单入口 + 多模式** - `do` 统一入口，`quick/web/deep/...` 作为兼容与专项入口
 2. **智能反爬对抗** - HTTP 优先，遇挑战页自动切换 Playwright，成功率提升 80%+
 3. **引用溯源输出** - 自动生成可引用的参考文献格式，AI 直接可用
 4. **多源交叉验证** - `comparison.corroborated_results` 显示多源 corroborated 结果数
@@ -75,6 +75,7 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 12. **登录态本地模板** - `auth-template` / `auth-profiles` / `auth-hint` 支持需登录站点配置
 13. **AI 可编排 Workflow** - 用声明式 JSON 让 AI 动态决定每一步“搜什么、爬什么、怎么爬”
 14. **平台搜索模板 + Recovery 模式** - `profiles/search_templates/platform_profiles.json` 可配置平台入口与域名优先级，0 结果时可启用低置信兜底
+15. **Intent->Skill->IR 执行闭环** - 任务先编译成 IR，经 lint 校验后执行，减少 AI 误用 CLI 的概率
 
 ### 已知限制
 
@@ -98,36 +99,45 @@ python main.py --doctor
 ### 5 分钟体验
 
 ```bash
-# 1. 快速查资料（忘记命令时用这个）
+# 1. 单入口（推荐）
+python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-run
+python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
+
+# 2. 快速查资料（兼容入口）
 python main.py quick "OpenAI Agents SDK"
 
-# 2. 多引擎搜索 + 页面摘要
+# 3. 多引擎搜索 + 页面摘要
 python main.py web "RAG benchmark 2026" --crawl-pages=5
 
-# 3. 深度搜索（多查询变体 + 渠道扩展）
+# 4. 深度搜索（多查询变体 + 渠道扩展）
 python main.py deep "AI Agent 工程实践" --platforms --channel=news,commerce --crawl=5
 
-# 4. 社交媒体搜索
+# 5. 社交媒体搜索
 python main.py social "iPhone 17" --platform=xiaohongshu --platform=zhihu
 
-# 5. 电商搜索
+# 6. 电商搜索
 python main.py shopping "羽绒服 轻量" --platform=taobao --platform=jd
 
-# 6. 学术搜索（带引用格式）
+# 7. 学术搜索（带引用格式）
 python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
 
-# 7. MindSearch 图研究（可切换 planner）
+# 8. MindSearch 图研究（可切换 planner）
 python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
 
-# 8. 查看扩展与挑战页路由
+# 9. 查看扩展与挑战页路由
+python main.py skills --resolve "抓取知乎评论区观点并给出处"
+python main.py ir-lint .web-rooter/workflow.social.json
 python main.py planners
 python main.py challenge-profiles
 python main.py auth-template
 python main.py auth-hint https://www.zhihu.com
 python main.py workflow-schema
 python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
-python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8
+python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8 --dry-run
 python main.py context --limit=20
+
+# 10. skills A/B 回归（默认仅 compile+linter 对照）
+python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining
 ```
 
 ---
@@ -214,6 +224,9 @@ web-rooter/
 │   ├── crawler.py          # HTTP 抓取
 │   ├── browser.py          # Playwright 浏览器
 │   ├── challenge_workflow.py # 挑战页 workflow 路由与动作编排
+│   ├── command_ir.py       # 命令 IR 与 lint 校验
+│   ├── skills.py           # skill 契约加载与意图路由
+│   ├── trace_distill.py    # 执行轨迹蒸馏（紧凑记忆）
 │   ├── global_context.py   # 全局深度抓取事件存储
 │   ├── postprocess.py      # 抓取后处理扩展注册中心
 │   ├── search/             # 搜索引擎
@@ -229,11 +242,13 @@ web-rooter/
 │   └── planners/
 ├── profiles/               # 内置可配置模板
 │   ├── challenge_profiles/ # 平台级挑战页 profile JSON
+│   ├── skills/             # AI skills 契约（意图->模板/策略）
 │   ├── search_templates/   # 平台搜索入口/backup 优先级模板 JSON
 │   └── auth/               # 登录态模板 JSON
 ├── tools/                  # MCP 工具适配
 │   └── mcp_tools.py
-├── scripts/                # 跨平台安装与集成脚本
+├── scripts/                # 跨平台安装与回归脚本
+│   ├── regression/         # 真实回归与 skills A/B
 │   ├── windows/
 │   └── unix/
 ├── docs/                   # 当前有效文档

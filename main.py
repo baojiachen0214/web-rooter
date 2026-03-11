@@ -19,6 +19,7 @@ from agents.web_agent import WebAgent
 from tools.mcp_tools import WebTools, run_mcp_server
 from core.search.advanced import DeepSearchEngine, search_social_media, search_tech, search_commerce
 from core.academic_search import AcademicSource
+from core.command_ir import build_command_ir, lint_command_ir, summarize_lint, has_lint_errors
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,6 +98,154 @@ class WebRooterCLI:
                 max_chars=max_chars,
             )
             self._print_result(result)
+
+        elif command in {"do"}:
+            # CLI 单入口：先编译 IR + lint，再执行 workflow。
+            task_parts: List[str] = []
+            explicit_skill: Optional[str] = None
+            use_browser: Optional[bool] = None
+            html_first: Optional[bool] = None
+            crawl_assist: Optional[bool] = None
+            top_results: Optional[int] = None
+            crawl_pages: Optional[int] = None
+            strict = False
+            dry_run = False
+
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg == "--strict":
+                    strict = True
+                elif arg == "--dry-run":
+                    dry_run = True
+                elif arg == "--js":
+                    use_browser = True
+                elif arg == "--no-js":
+                    use_browser = False
+                elif arg == "--crawl-assist":
+                    crawl_assist = True
+                elif arg == "--no-crawl-assist":
+                    crawl_assist = False
+                elif arg == "--html-first":
+                    html_first = True
+                elif arg == "--no-html-first":
+                    html_first = False
+                elif arg.startswith("--top="):
+                    top_results = self._parse_option_int(arg.split("=", 1)[1], 5)
+                elif arg == "--top" and i + 1 < len(args):
+                    i += 1
+                    top_results = self._parse_option_int(args[i], 5)
+                elif arg.startswith("--crawl-pages="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], 2)
+                elif arg.startswith("--crawl="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], 2)
+                elif arg in {"--crawl-pages", "--crawl"} and i + 1 < len(args):
+                    i += 1
+                    crawl_pages = self._parse_option_int(args[i], 2)
+                elif arg.startswith("--skill="):
+                    explicit_skill = arg.split("=", 1)[1].strip() or None
+                elif arg == "--skill" and i + 1 < len(args):
+                    i += 1
+                    explicit_skill = args[i].strip() or None
+                else:
+                    task_parts.append(arg)
+                i += 1
+
+            task_text = " ".join(task_parts).strip()
+            if not task_text:
+                print("用法：do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
+                return True
+
+            result = await self.agent.run_do_task(
+                task=task_text,
+                html_first=html_first,
+                top_results=top_results,
+                use_browser=use_browser,
+                crawl_assist=crawl_assist,
+                crawl_pages=crawl_pages,
+                strict=strict,
+                dry_run=dry_run,
+                explicit_skill=explicit_skill,
+                command_name="do",
+            )
+            self._print_result(result)
+
+        elif command in {"skills", "skill-profiles", "skill_profiles"}:
+            resolve_text: Optional[str] = None
+            probe_parts: List[str] = []
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--resolve="):
+                    resolve_text = arg.split("=", 1)[1].strip() or None
+                elif arg == "--resolve" and i + 1 < len(args):
+                    i += 1
+                    resolve_text = args[i].strip() or None
+                elif not arg.startswith("--"):
+                    probe_parts.append(arg)
+                i += 1
+            if not resolve_text and probe_parts:
+                resolve_text = " ".join(probe_parts).strip() or None
+
+            catalog = self.agent.get_skill_profiles()
+            payload: Dict[str, Any] = {"success": True, **catalog}
+            if resolve_text:
+                compiled = self.agent.compile_task_ir(
+                    task=resolve_text,
+                    dry_run=True,
+                    command_name="skills_probe",
+                )
+                payload["probe"] = {
+                    "task": resolve_text,
+                    "selected_skill": ((compiled.get("ir") or {}).get("skill") if isinstance(compiled, dict) else None),
+                    "route": ((compiled.get("ir") or {}).get("route") if isinstance(compiled, dict) else None),
+                    "skill_resolution": (compiled.get("skill_resolution") if isinstance(compiled, dict) else None),
+                    "lint": (compiled.get("lint") if isinstance(compiled, dict) else None),
+                }
+            self._print_result(payload)
+
+        elif command in {"ir-lint", "ir_lint", "lint-ir", "lint_ir"} and args:
+            raw_input = " ".join(args).strip()
+            if not raw_input:
+                print("用法：ir-lint <ir-file|json|workflow-file|workflow-json>")
+                return True
+            try:
+                data = self._load_workflow_spec(raw_input)
+            except Exception as exc:
+                self._print_result({
+                    "success": False,
+                    "error": f"IR 解析失败: {exc}",
+                })
+                return True
+
+            if isinstance(data, dict) and "workflow" in data and "goal" in data:
+                ir_payload = data
+            elif isinstance(data, dict) and "steps" in data:
+                ir_payload = build_command_ir(
+                    command="ir-lint",
+                    goal="lint_workflow_only",
+                    route="general",
+                    workflow_spec=data,
+                    options={},
+                    dry_run=True,
+                )
+            else:
+                self._print_result({
+                    "success": False,
+                    "error": "输入必须是 command IR 或 workflow spec(JSON object)",
+                })
+                return True
+
+            issues = lint_command_ir(ir_payload, workflow_schema=self.agent.get_workflow_schema())
+            summary = summarize_lint(issues)
+            self._print_result({
+                "success": not has_lint_errors(issues),
+                "lint": {
+                    **summary,
+                    "issues": issues,
+                },
+                "ir": ir_payload,
+            })
 
         elif command in {"quick", "q"} and args:
             # 默认入口：workflow 编排优先 + HTML-first 分析
@@ -569,6 +718,7 @@ class WebRooterCLI:
 
         elif command in {"workflow", "flow"}:
             strict = False
+            dry_run = False
             spec_parts: List[str] = []
             overrides: Dict[str, Any] = {}
             i = 0
@@ -576,6 +726,8 @@ class WebRooterCLI:
                 arg = args[i]
                 if arg == "--strict":
                     strict = True
+                elif arg == "--dry-run":
+                    dry_run = True
                 elif arg.startswith("--var=") or arg.startswith("--set="):
                     raw_pair = arg.split("=", 1)[1]
                     key, value = self._parse_key_value_pair(raw_pair)
@@ -592,7 +744,7 @@ class WebRooterCLI:
 
             spec_input = " ".join(spec_parts).strip()
             if not spec_input:
-                print("用法：workflow <spec-file|json> [--var key=value] [--set key=value] [--strict]")
+                print("用法：workflow <spec-file|json> [--var key=value] [--set key=value] [--strict] [--dry-run]")
                 print("示例：workflow .web-rooter/workflow.social.json --var topic='AI Agent 评论' --var top_hits=8")
                 print("先生成模板：workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force")
                 return True
@@ -607,11 +759,46 @@ class WebRooterCLI:
                 })
                 return True
 
+            workflow_ir = build_command_ir(
+                command="workflow",
+                goal=f"workflow:{spec.get('name', 'adhoc')}",
+                route="auto",
+                workflow_spec=spec,
+                options={"variable_overrides": bool(overrides)},
+                strict=strict,
+                dry_run=dry_run,
+            )
+            workflow_issues = lint_command_ir(workflow_ir, workflow_schema=self.agent.get_workflow_schema())
+            workflow_lint = {
+                **summarize_lint(workflow_issues),
+                "issues": workflow_issues,
+            }
+            if has_lint_errors(workflow_issues):
+                self._print_result({
+                    "success": False,
+                    "error": "workflow_ir_lint_failed",
+                    "lint": workflow_lint,
+                    "ir": workflow_ir,
+                })
+                return True
+
+            if dry_run:
+                self._print_result({
+                    "success": True,
+                    "message": "workflow dry-run only, not executed",
+                    "lint": workflow_lint,
+                    "ir": workflow_ir,
+                })
+                return True
+
             result = await self.agent.run_workflow_spec(
                 spec=spec,
                 variable_overrides=overrides or None,
                 strict=strict,
             )
+            if isinstance(result.data, dict):
+                result.data["ir"] = workflow_ir
+                result.data["lint"] = workflow_lint
             self._print_result(result)
 
         elif command == "academic" and args:
@@ -1201,6 +1388,8 @@ Web-Rooter 可用命令:
   visit <url> [--js]              - 访问网页 (--js 使用浏览器)
   html <url> [--js] [--max-chars=N] [--no-fallback]
                                   - 获取原始 HTML（推荐 AI 做结构分析）
+  do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
+                                  - 单入口：Intent -> Skill -> IR -> Lint -> Execute
   quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]
                                   - 默认智能入口（workflow 编排优先；--legacy 回退旧逻辑）
   task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]
@@ -1230,8 +1419,11 @@ Web-Rooter 可用命令:
   workflow-schema                 - 查看 AI 可编排 workflow schema
   workflow-template [path] [--scenario=social_comments|academic_relations] [--force]
                                   - 导出 workflow 模板（本地改造后可直接运行）
-  workflow <spec-file|json> [--var key=value] [--set key=value] [--strict]
+  workflow <spec-file|json> [--var key=value] [--set key=value] [--strict] [--dry-run]
                                   - 运行声明式工作流（AI 可自主决策每一步）
+  skills [--resolve "<goal>"]     - 查看 skills 契约，并可探测某任务会命中哪个 skill
+  ir-lint <ir-file|json|workflow-file|workflow-json>
+                                  - 对 command IR / workflow 进行 lint（执行前校验）
   doctor                          - 环境自检（依赖/浏览器/抓取链路）
   context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
   processors [--load=module:obj] [--force] - 查看/加载抓取后处理扩展
@@ -1248,6 +1440,8 @@ Web-Rooter 可用命令:
 示例:
   visit https://example.com
   html https://example.com --max-chars=100000
+  do "抓取小红书和知乎关于 iPhone 17 的评论观点并给出处" --dry-run
+  do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
   quick https://example.com --js
   quick "WorldQuant alpha101 因子"
   quick "RAG benchmark 2026" --top=6 --html-first

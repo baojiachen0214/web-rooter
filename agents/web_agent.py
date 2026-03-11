@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
@@ -54,6 +55,14 @@ from core.workflow import (
     get_workflow_schema,
     available_workflow_templates,
 )
+from core.skills import get_skill_registry, SkillProfile
+from core.command_ir import (
+    build_command_ir,
+    lint_command_ir,
+    summarize_lint,
+    has_lint_errors,
+)
+from core.trace_distill import distill_workflow_trace
 from config import crawler_config
 
 logging.basicConfig(level=logging.INFO)
@@ -1173,6 +1182,20 @@ class WebAgent:
             variable_overrides=variable_overrides,
             strict=strict,
         )
+        trace = distill_workflow_trace(payload)
+        payload["trace_distilled"] = trace
+        try:
+            store = get_global_deep_context()
+            event = store.record(
+                event_type="workflow_trace",
+                source="workflow_runner",
+                payload=trace,
+            )
+            payload["trace_event_id"] = event.get("id")
+            payload["global_context_size"] = store.size
+        except Exception as exc:
+            logger.debug("record workflow trace failed: %s", exc)
+
         reports = payload.get("reports", []) if isinstance(payload, dict) else []
         completed = sum(
             1
@@ -1239,6 +1262,215 @@ class WebAgent:
             "templates": available_workflow_templates(),
         }
 
+    def get_skill_profiles(self) -> Dict[str, Any]:
+        """返回可用 skill 契约，用于 AI 阶段性唤醒。"""
+        registry = get_skill_registry()
+        return {
+            "skills": registry.describe_profiles(),
+            "default": registry.default_profile_name,
+        }
+
+    async def run_do_task(
+        self,
+        task: str,
+        html_first: Optional[bool] = None,
+        top_results: Optional[int] = None,
+        use_browser: Optional[bool] = None,
+        crawl_assist: Optional[bool] = None,
+        crawl_pages: Optional[int] = None,
+        strict: bool = False,
+        dry_run: bool = False,
+        explicit_skill: Optional[str] = None,
+        command_name: str = "do",
+    ) -> AgentResponse:
+        """CLI 单入口：task -> IR -> lint -> workflow。"""
+        compiled = self.compile_task_ir(
+            task=task,
+            html_first=html_first,
+            top_results=top_results,
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=crawl_pages,
+            strict=strict,
+            dry_run=dry_run,
+            explicit_skill=explicit_skill,
+            command_name=command_name,
+        )
+        if not compiled.get("success"):
+            return AgentResponse(
+                success=False,
+                content=f"IR 编译失败：{compiled.get('error')}",
+                error=str(compiled.get("error") or "compile_failed"),
+                data=compiled,
+                metadata={"mode": "do", "command": command_name},
+            )
+
+        if dry_run or not compiled.get("valid"):
+            return AgentResponse(
+                success=bool(compiled.get("valid")),
+                content=(
+                    f"IR dry-run 完成：goal={task}\n"
+                    f"skill={compiled.get('ir', {}).get('skill')}\n"
+                    f"route={compiled.get('ir', {}).get('route')}\n"
+                    f"lint={compiled.get('lint', {}).get('error_count', 0)} errors / "
+                    f"{compiled.get('lint', {}).get('warning_count', 0)} warnings"
+                ),
+                data=compiled,
+                error=(None if compiled.get("valid") else "ir_lint_failed"),
+                metadata={"mode": "do_dry_run", "command": command_name},
+            )
+
+        spec = compiled["ir"]["workflow"]["spec"]
+        response = await self.run_workflow_spec(spec=spec, strict=strict)
+        response.metadata.update(
+            {
+                "mode": "do",
+                "command": command_name,
+                "route": compiled["ir"].get("route"),
+                "skill": compiled["ir"].get("skill"),
+            }
+        )
+        if isinstance(response.data, dict):
+            response.data["ir"] = compiled.get("ir")
+            response.data["lint"] = compiled.get("lint")
+            response.data["skill_resolution"] = compiled.get("skill_resolution")
+        response.content = (
+            f"do 执行完成：{task}\n"
+            f"skill={compiled['ir'].get('skill')} route={compiled['ir'].get('route')}\n\n"
+            f"{response.content}"
+        )
+        return response
+
+    def compile_task_ir(
+        self,
+        task: str,
+        html_first: Optional[bool] = None,
+        top_results: Optional[int] = None,
+        use_browser: Optional[bool] = None,
+        crawl_assist: Optional[bool] = None,
+        crawl_pages: Optional[int] = None,
+        strict: bool = False,
+        dry_run: bool = False,
+        explicit_skill: Optional[str] = None,
+        command_name: str = "do",
+    ) -> Dict[str, Any]:
+        """将任务编译为稳定 IR，并执行 lint。"""
+        task_text = str(task or "").strip()
+        if not task_text:
+            return {
+                "success": False,
+                "error": "empty_task",
+            }
+
+        registry = get_skill_registry()
+        profile, skill_resolution = registry.resolve(task_text, explicit_skill=explicit_skill)
+        if explicit_skill and profile is None:
+            return {
+                "success": False,
+                "error": f"skill_not_found:{explicit_skill}",
+                "skill_resolution": skill_resolution,
+            }
+
+        skill_defaults = profile.default_options if isinstance(profile, SkillProfile) else {}
+        resolved_html_first = (
+            self._coerce_bool(html_first, True)
+            if html_first is not None
+            else self._coerce_bool(skill_defaults.get("html_first"), True)
+        )
+        resolved_top_results = (
+            self._coerce_int(top_results, 5)
+            if top_results is not None
+            else self._coerce_int(skill_defaults.get("top_results"), 5)
+        )
+        resolved_use_browser = (
+            self._coerce_bool(use_browser, False)
+            if use_browser is not None
+            else self._coerce_bool(skill_defaults.get("use_browser"), False)
+        )
+        resolved_crawl_assist = (
+            self._coerce_bool(crawl_assist, False)
+            if crawl_assist is not None
+            else self._coerce_bool(skill_defaults.get("crawl_assist"), False)
+        )
+        resolved_crawl_pages = (
+            self._coerce_int(crawl_pages, 2)
+            if crawl_pages is not None
+            else self._coerce_int(skill_defaults.get("crawl_pages"), 2)
+        )
+
+        route_override: Optional[str] = None
+        if profile and str(profile.route).strip().lower() not in {"", "auto"}:
+            route_override = str(profile.route).strip().lower()
+
+        try:
+            if profile and profile.workflow_template:
+                route, spec = self._build_skill_template_spec(
+                    task=task_text,
+                    profile=profile,
+                    html_first=resolved_html_first,
+                    top_results=resolved_top_results,
+                    use_browser=resolved_use_browser,
+                    crawl_assist=resolved_crawl_assist,
+                    crawl_pages=resolved_crawl_pages,
+                    route_override=route_override,
+                )
+            else:
+                route, spec = self._build_default_orchestration_spec(
+                    task=task_text,
+                    html_first=resolved_html_first,
+                    top_results=resolved_top_results,
+                    use_browser=resolved_use_browser,
+                    crawl_assist=resolved_crawl_assist,
+                    crawl_pages=resolved_crawl_pages,
+                    route_override=route_override,
+                )
+                if profile:
+                    self._merge_skill_variables(spec, profile.default_variables)
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"build_spec_failed:{exc}",
+                "skill_resolution": skill_resolution,
+                "skill": (profile.to_dict() if profile else None),
+            }
+
+        options = {
+            "html_first": resolved_html_first,
+            "top_results": resolved_top_results,
+            "use_browser": resolved_use_browser,
+            "crawl_assist": resolved_crawl_assist,
+            "crawl_pages": resolved_crawl_pages,
+        }
+        ir = build_command_ir(
+            command=command_name,
+            goal=task_text,
+            route=route,
+            workflow_spec=spec,
+            options=options,
+            skill=(profile.name if profile else "default_general_research"),
+            strict=strict,
+            dry_run=dry_run,
+            metadata={
+                "skill_source": (profile.source if profile else "fallback"),
+                "skill_resolution_mode": skill_resolution.get("mode"),
+            },
+        )
+        issues = lint_command_ir(ir, workflow_schema=get_workflow_schema())
+        lint_summary = summarize_lint(issues)
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "valid": not has_lint_errors(issues),
+            "ir": ir,
+            "lint": {
+                **lint_summary,
+                "issues": issues,
+            },
+            "skill_resolution": skill_resolution,
+            "skill": (profile.to_dict() if profile else None),
+        }
+        return result
+
     async def orchestrate_task(
         self,
         task: str,
@@ -1254,40 +1486,18 @@ class WebAgent:
         - 以 workflow 编排层为主
         - 以 HTML-first 分析为主（非必要不深爬）
         """
-        task_text = str(task or "").strip()
-        if not task_text:
-            return AgentResponse(
-                success=False,
-                content="任务为空",
-                error="empty_task",
-            )
-
-        route, spec = self._build_default_orchestration_spec(
-            task=task_text,
+        return await self.run_do_task(
+            task=task,
             html_first=html_first,
             top_results=top_results,
             use_browser=use_browser,
             crawl_assist=crawl_assist,
             crawl_pages=crawl_pages,
+            strict=strict,
+            dry_run=False,
+            explicit_skill=None,
+            command_name="task",
         )
-        response = await self.run_workflow_spec(spec=spec, strict=strict)
-        response.metadata.update(
-            {
-                "mode": "workflow_default",
-                "route": route,
-                "html_first": html_first,
-                "crawl_assist": crawl_assist,
-                "top_results": top_results,
-            }
-        )
-        response.content = (
-            f"默认编排执行完成：{task_text}\n"
-            f"路由：{route}\n"
-            f"策略：{'HTML-first' if html_first else 'visit-first'} / "
-            f"{'crawl-assist on' if crawl_assist else 'crawl-assist off'}\n\n"
-            f"{response.content}"
-        )
-        return response
 
     def _build_default_orchestration_spec(
         self,
@@ -1297,8 +1507,9 @@ class WebAgent:
         use_browser: bool,
         crawl_assist: bool,
         crawl_pages: int,
+        route_override: Optional[str] = None,
     ) -> tuple[str, Dict[str, Any]]:
-        route = self._classify_task_route(task)
+        route = str(route_override or self._classify_task_route(task)).strip().lower()
         top_hits = max(1, min(int(top_results), 20))
         assist_pages = max(1, min(int(crawl_pages), 10))
 
@@ -1535,6 +1746,131 @@ class WebAgent:
                 }
             )
         return route, spec
+
+    def _build_skill_template_spec(
+        self,
+        task: str,
+        profile: SkillProfile,
+        html_first: bool,
+        top_results: int,
+        use_browser: bool,
+        crawl_assist: bool,
+        crawl_pages: int,
+        route_override: Optional[str] = None,
+    ) -> tuple[str, Dict[str, Any]]:
+        """按 skill 模板构建编排 spec。"""
+        spec = deepcopy(build_workflow_template(profile.workflow_template or "social_comments"))
+        self._merge_skill_variables(spec, profile.default_variables)
+
+        variables = spec.setdefault("variables", {})
+        if isinstance(variables, dict):
+            if "topic" in variables:
+                variables["topic"] = task
+            if "query" in variables:
+                variables["query"] = task
+            if "top_hits" in variables:
+                variables["top_hits"] = max(1, min(int(top_results), 20))
+            if "crawl_top_papers" in variables:
+                variables["crawl_top_papers"] = max(1, min(int(top_results), 20))
+            if "use_browser" in variables:
+                variables["use_browser"] = bool(use_browser)
+
+        if html_first:
+            self._upgrade_template_to_html_first(spec, default_use_browser=use_browser)
+        if crawl_assist:
+            self._append_template_crawl_assist(spec, crawl_pages=max(1, min(int(crawl_pages), 10)))
+
+        route = str(route_override or profile.route or self._classify_task_route(task)).strip().lower()
+        if route in {"", "auto"}:
+            route = self._classify_task_route(task)
+        return route, spec
+
+    @staticmethod
+    def _merge_skill_variables(spec: Dict[str, Any], default_variables: Optional[Dict[str, Any]]) -> None:
+        if not isinstance(spec, dict) or not isinstance(default_variables, dict):
+            return
+        variables = spec.setdefault("variables", {})
+        if not isinstance(variables, dict):
+            return
+        for key, value in default_variables.items():
+            variables.setdefault(str(key), deepcopy(value))
+
+    @staticmethod
+    def _upgrade_template_to_html_first(spec: Dict[str, Any], default_use_browser: bool) -> None:
+        steps = spec.get("steps")
+        if not isinstance(steps, list):
+            return
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            tool = str(step.get("tool") or "").strip().lower()
+            if tool not in {"visit", "fetch_html"}:
+                continue
+            args = step.get("args")
+            if not isinstance(args, dict):
+                args = {}
+                step["args"] = args
+            if tool == "visit":
+                step["tool"] = "fetch_html"
+            args.setdefault("use_browser", default_use_browser)
+            args.setdefault("auto_fallback", True)
+            args.setdefault("max_chars", 60000)
+
+    @staticmethod
+    def _append_template_crawl_assist(spec: Dict[str, Any], crawl_pages: int) -> None:
+        steps = spec.get("steps")
+        if not isinstance(steps, list):
+            return
+        if any(isinstance(item, dict) and item.get("id") == "crawl_assist" for item in steps):
+            return
+
+        source_step_id = ""
+        for candidate in ("read_top_pages", "visit_top_hits", "read_top_papers_html", "visit_top_papers"):
+            if any(isinstance(item, dict) and str(item.get("id")) == candidate for item in steps):
+                source_step_id = candidate
+                break
+        if not source_step_id:
+            return
+
+        steps.append(
+            {
+                "id": "crawl_assist",
+                "tool": "crawl",
+                "for_each": f"${{steps.{source_step_id}.items}}",
+                "item_alias": "page",
+                "max_items": 1,
+                "continue_on_error": True,
+                "args": {
+                    "url": "${local.page.input.url}",
+                    "max_pages": max(1, crawl_pages),
+                    "max_depth": 2,
+                    "allow_external": False,
+                    "allow_subdomains": True,
+                },
+            }
+        )
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _classify_task_route(self, task: str) -> str:
         value = str(task or "").strip()

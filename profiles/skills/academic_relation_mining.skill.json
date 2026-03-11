@@ -1,0 +1,43 @@
+{
+  "name": "academic_relation_mining",
+  "description": "Search papers and analyze relation graph with web-discussion evidence.",
+  "route": "academic",
+  "workflow_template": "academic_relations",
+  "aliases": [
+    "academic",
+    "papers",
+    "paper_relations",
+    "mindsearch_academic"
+  ],
+  "intent_keywords": [
+    "论文",
+    "文献",
+    "citation",
+    "arxiv",
+    "doi",
+    "benchmark",
+    "ablation",
+    "scholar",
+    "paper"
+  ],
+  "priority": 92,
+  "default_variables": {
+    "paper_sources": [
+      "arxiv",
+      "semantic_scholar",
+      "google_scholar"
+    ],
+    "num_results": 10,
+    "crawl_top_papers": 5
+  },
+  "default_options": {
+    "html_first": true,
+    "crawl_assist": false,
+    "use_browser": false,
+    "top_results": 8
+  },
+  "examples": [
+    "查询 RAG benchmark 论文关系并联动网上讨论",
+    "对比两篇论文的引用网络和观点冲突"
+  ]
+}
