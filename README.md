@@ -119,7 +119,8 @@ python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branc
 python main.py crawl "https://docs.python.org/3/" 20 2 --pattern="/3/library/" --no-subdomains
 
 # 9. 查看扩展与挑战页路由（不需要记住内部细节）
-python main.py skills --resolve "抓取知乎评论区观点并给出处"
+python main.py skills --resolve "抓取知乎评论区观点并给出处" --compact
+python main.py skills --resolve "抓取知乎评论区观点并给出处" --full
 python main.py ir-lint .web-rooter/workflow.social.json
 python main.py planners
 python main.py challenge-profiles

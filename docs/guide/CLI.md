@@ -20,7 +20,7 @@ python main.py jobs [--limit=N] [--status=queued|running|completed|failed]
 python main.py job-status <job_id> [--with-result]
 python main.py job-result <job_id>
 python main.py safe-mode [status|on|off] [--policy=strict]
-python main.py skills [--resolve "<goal>"]
+python main.py skills [--resolve "<goal>"] [--compact|--full]
 python main.py ir-lint <ir-file|json|workflow-file|workflow-json>
 python main.py quick <url|query> [--js] [--crawl-pages=N]
 python main.py visit <url> [--js]
@@ -52,6 +52,8 @@ python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-ru
 python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
 python main.py do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
 python main.py do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
+python main.py skills --resolve "抓取知乎评论区观点并给出处" --compact
+python main.py skills --resolve "抓取知乎评论区观点并给出处" --full
 python main.py jobs --status=running
 python main.py safe-mode on --policy=strict
 ```
@@ -142,8 +144,8 @@ Workflow 机制的意义：
 - `do-submit` 将长任务放到后台执行，避免 CLI 阻塞超时；用 `jobs/job-status/job-result` 轮询
 - `do-submit --timeout-sec=N` 可显式设置后台任务超时时间（默认 `900` 秒）
 - `safe-mode strict` 会拦截低层命令，强制外层 AI 优先走 `do-plan`/`do`
-- 未知命令若疑似拼写错误会直接报错并给建议，避免误当查询执行
-- `skills --resolve "<goal>"` 可检查路由是否命中预期 skill（含 `fallback_reason` / `activation_hits`）
+- 未知命令若疑似拼写错误，会附带自动 skill 路由修复建议（`do-plan`/`do --dry-run`）
+- `skills --resolve "<goal>"` 默认返回紧凑 probe（低上下文），加 `--full` 返回完整技能目录
 - `WEB_ROOTER_SKILL_MIN_MARGIN` 可调技能判定的最小分差（默认 `0.35`）
 - `ir-lint` 可独立校验 AI 生成的 IR/workflow，防止错误命令直达执行
 - `python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining` 可做 skills A/B 回归（默认 compile-only）

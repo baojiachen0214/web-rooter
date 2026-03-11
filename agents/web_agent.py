@@ -1303,6 +1303,146 @@ class WebAgent:
             }
         return self._compose_playbook_from_compiled(task=task, compiled=compiled, strict=strict)
 
+    def build_skill_probe(
+        self,
+        task: str,
+        explicit_skill: Optional[str] = None,
+        html_first: Optional[bool] = None,
+        top_results: Optional[int] = None,
+        use_browser: Optional[bool] = None,
+        crawl_assist: Optional[bool] = None,
+        crawl_pages: Optional[int] = None,
+        strict: bool = False,
+        command_name: str = "skills_probe",
+    ) -> Dict[str, Any]:
+        """
+        生成紧凑的 skill 路由探针结果，供 CLI/外层 AI 低上下文决策。
+        """
+        task_text = str(task or "").strip()
+        if not task_text:
+            return {
+                "success": False,
+                "error": "empty_task",
+            }
+
+        compiled = self.compile_task_ir(
+            task=task_text,
+            explicit_skill=explicit_skill,
+            html_first=html_first,
+            top_results=top_results,
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=crawl_pages,
+            strict=strict,
+            dry_run=True,
+            command_name=command_name,
+        )
+        if not compiled.get("success"):
+            return {
+                "success": False,
+                "error": compiled.get("error"),
+                "compiled": compiled,
+            }
+
+        ir = compiled.get("ir") if isinstance(compiled.get("ir"), dict) else {}
+        lint = compiled.get("lint") if isinstance(compiled.get("lint"), dict) else {}
+        profile = compiled.get("skill") if isinstance(compiled.get("skill"), dict) else {}
+        skill_resolution = (
+            compiled.get("skill_resolution")
+            if isinstance(compiled.get("skill_resolution"), dict)
+            else {}
+        )
+        selected_detail = (
+            skill_resolution.get("selected_detail")
+            if isinstance(skill_resolution.get("selected_detail"), dict)
+            else {}
+        )
+
+        playbook = self._compose_playbook_from_compiled(
+            task=task_text,
+            compiled=compiled,
+            strict=strict,
+        )
+        if not isinstance(playbook, dict):
+            playbook = {}
+
+        top_candidates: List[Dict[str, Any]] = []
+        raw_top_scores = skill_resolution.get("top_scores")
+        if isinstance(raw_top_scores, list):
+            for item in raw_top_scores[:3]:
+                if not isinstance(item, dict):
+                    continue
+                top_candidates.append(
+                    {
+                        "name": item.get("name"),
+                        "score": item.get("score"),
+                        "eligible": item.get("eligible"),
+                    }
+                )
+
+        compact_resolution = {
+            "mode": skill_resolution.get("mode"),
+            "selected": skill_resolution.get("selected"),
+            "min_margin": skill_resolution.get("min_margin"),
+            "score_margin": skill_resolution.get("score_margin"),
+            "fallback_reason": skill_resolution.get("fallback_reason"),
+            "selected_detail": {
+                "name": selected_detail.get("name"),
+                "score": selected_detail.get("score"),
+                "eligible": selected_detail.get("eligible"),
+                "matched_keywords": selected_detail.get("matched_keywords", []),
+                "activation_hits": selected_detail.get("activation_hits", []),
+            },
+            "top_candidates": top_candidates,
+        }
+
+        return {
+            "success": True,
+            "task": task_text,
+            "selected_skill": str(ir.get("skill") or "default_general_research"),
+            "route": str(ir.get("route") or "general"),
+            "confidence": {
+                "min_margin": skill_resolution.get("min_margin"),
+                "score_margin": skill_resolution.get("score_margin"),
+                "fallback_reason": skill_resolution.get("fallback_reason"),
+                "eligible": selected_detail.get("eligible"),
+                "matched_keywords": selected_detail.get("matched_keywords", []),
+                "activation_hits": selected_detail.get("activation_hits", []),
+            },
+            "lint": {
+                "valid": bool(lint.get("valid", False)),
+                "error_count": int(lint.get("error_count", 0)),
+                "warning_count": int(lint.get("warning_count", 0)),
+                "issue_count": int(lint.get("issue_count", 0)),
+            },
+            "skill_profile": {
+                "name": profile.get("name"),
+                "description": profile.get("description"),
+                "route": profile.get("route"),
+                "workflow_template": profile.get("workflow_template"),
+                "default_options": profile.get("default_options", {}),
+                "phases": profile.get("phases", []),
+            },
+            "playbook": {
+                "recommended_cli_sequence": (
+                    playbook.get("recommended_cli_sequence")
+                    if isinstance(playbook.get("recommended_cli_sequence"), list)
+                    else []
+                ),
+                "phase_wakeup": (
+                    playbook.get("phase_wakeup")
+                    if isinstance(playbook.get("phase_wakeup"), list)
+                    else []
+                ),
+                "ai_contract": (
+                    playbook.get("ai_contract")
+                    if isinstance(playbook.get("ai_contract"), dict)
+                    else {}
+                ),
+            },
+            "skill_resolution": compact_resolution,
+        }
+
     async def run_do_task(
         self,
         task: str,
@@ -1574,7 +1714,7 @@ class WebAgent:
     ) -> List[str]:
         task_text = str(task or "").replace('"', '\\"')
         commands: List[str] = []
-        commands.append(f'python main.py skills --resolve "{task_text}"')
+        commands.append(f'python main.py skills --resolve "{task_text}" --compact')
         if route in {"social", "commerce", "url"}:
             commands.append("python main.py challenge-profiles")
             commands.append("python main.py auth-template")

@@ -109,6 +109,24 @@ def test_web_agent_build_skill_playbook() -> None:
     assert contract.get("mode") == "phase_serial"
 
 
+def test_web_agent_build_skill_probe() -> None:
+    agent = WebAgent()
+    payload = agent.build_skill_probe(
+        task="抓取知乎评论区观点并给出处",
+        command_name="skills_probe_test",
+    )
+    assert payload.get("success") is True
+    assert payload.get("selected_skill") == "social_comment_mining"
+    assert payload.get("route") in {"social", "general"}
+    playbook = payload.get("playbook")
+    assert isinstance(playbook, dict)
+    commands = playbook.get("recommended_cli_sequence")
+    assert isinstance(commands, list) and len(commands) >= 3
+    confidence = payload.get("confidence")
+    assert isinstance(confidence, dict)
+    assert isinstance(confidence.get("activation_hits"), list)
+
+
 def test_quark_engine_config_and_templates() -> None:
     loader = ConfigLoader.get_instance()
     loader.load_configs(force=True)

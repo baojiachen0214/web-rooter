@@ -526,6 +526,8 @@ class WebRooterCLI:
         elif command in {"skills", "skill-profiles", "skill_profiles"}:
             resolve_text: Optional[str] = None
             probe_parts: List[str] = []
+            compact_mode = False
+            full_catalog = False
             i = 0
             while i < len(args):
                 arg = args[i]
@@ -534,27 +536,35 @@ class WebRooterCLI:
                 elif arg == "--resolve" and i + 1 < len(args):
                     i += 1
                     resolve_text = args[i].strip() or None
+                elif arg in {"--compact", "--brief"}:
+                    compact_mode = True
+                elif arg == "--full":
+                    full_catalog = True
                 elif not arg.startswith("--"):
                     probe_parts.append(arg)
                 i += 1
             if not resolve_text and probe_parts:
                 resolve_text = " ".join(probe_parts).strip() or None
 
-            catalog = self.agent.get_skill_profiles()
-            payload: Dict[str, Any] = {"success": True, **catalog}
             if resolve_text:
-                compiled = self.agent.compile_task_ir(
+                probe = self.agent.build_skill_probe(
                     task=resolve_text,
-                    dry_run=True,
                     command_name="skills_probe",
                 )
-                payload["probe"] = {
-                    "task": resolve_text,
-                    "selected_skill": ((compiled.get("ir") or {}).get("skill") if isinstance(compiled, dict) else None),
-                    "route": ((compiled.get("ir") or {}).get("route") if isinstance(compiled, dict) else None),
-                    "skill_resolution": (compiled.get("skill_resolution") if isinstance(compiled, dict) else None),
-                    "lint": (compiled.get("lint") if isinstance(compiled, dict) else None),
+                use_compact = compact_mode or not full_catalog
+                payload = {
+                    "success": bool(probe.get("success")),
+                    "probe": probe,
                 }
+                if use_compact:
+                    payload["mode"] = "compact_probe"
+                    payload["hint"] = "Use `skills --resolve \"<goal>\" --full` to include full catalog."
+                else:
+                    catalog = self.agent.get_skill_profiles()
+                    payload.update(catalog)
+            else:
+                catalog = self.agent.get_skill_profiles()
+                payload = {"success": True, **catalog}
             self._print_result(payload)
 
         elif command in {"ir-lint", "ir_lint", "lint-ir", "lint_ir"} and args:
@@ -1493,7 +1503,7 @@ class WebRooterCLI:
                 print(f"[提示] 未识别命令 '{command}'，检测为 URL，按 visit 执行。")
                 await self._run_inferred_input(url, use_browser=use_browser)
             else:
-                unknown_payload = self._build_unknown_command_payload(command)
+                unknown_payload = self._build_unknown_command_payload(command, args=args)
                 if unknown_payload:
                     self._print_result(unknown_payload)
                     return True
@@ -1714,11 +1724,11 @@ class WebRooterCLI:
             return False
         return bool(re.match(r"^[a-z][a-z0-9_-]{1,31}$", token))
 
-    def _build_unknown_command_payload(self, command: str) -> Optional[Dict[str, Any]]:
+    def _build_unknown_command_payload(self, command: str, args: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         suggestions = self._command_suggestions(command)
         if not suggestions or not self._looks_like_command_typo(command):
             return None
-        return {
+        payload: Dict[str, Any] = {
             "success": False,
             "error": f"unknown_command:{command}",
             "hint": "Possible command typo. Use suggested commands, or use `quick`/`do` for free-form goals.",
@@ -1729,6 +1739,41 @@ class WebRooterCLI:
                 "python main.py do \"<goal>\"",
             ],
         }
+
+        arg_tokens: List[str] = []
+        if args:
+            arg_tokens = [
+                str(item).strip()
+                for item in args
+                if str(item).strip() and not str(item).strip().startswith("--")
+            ]
+        goal_text = " ".join(arg_tokens).strip() if arg_tokens else str(command or "").strip()
+
+        if self.agent and goal_text:
+            try:
+                probe = self.agent.build_skill_probe(
+                    task=goal_text,
+                    command_name="unknown_command_recover",
+                )
+            except Exception:
+                probe = {}
+            if isinstance(probe, dict) and probe.get("success"):
+                selected_skill = str(probe.get("selected_skill") or "").strip()
+                route = str(probe.get("route") or "").strip()
+                escaped_goal = goal_text.replace('"', '\\"')
+                if selected_skill:
+                    payload["recommended"] = [
+                        f'python main.py do-plan "{escaped_goal}" --skill={selected_skill}',
+                        f'python main.py do "{escaped_goal}" --skill={selected_skill} --dry-run',
+                        f'python main.py do "{escaped_goal}" --skill={selected_skill}',
+                    ]
+                payload["auto_resolution"] = {
+                    "goal": goal_text,
+                    "selected_skill": (selected_skill or None),
+                    "route": (route or None),
+                    "confidence": probe.get("confidence"),
+                }
+        return payload
 
     @classmethod
     def _advanced_engine_alias_map(cls) -> Dict[str, AdvancedSearchEngine]:
@@ -2073,7 +2118,8 @@ Web-Rooter 可用命令:
                                   - 导出 workflow 模板（本地改造后可直接运行）
   workflow <spec-file|json> [--var key=value] [--set key=value] [--strict] [--dry-run]
                                   - 运行声明式工作流（AI 可自主决策每一步）
-  skills [--resolve "<goal>"]     - 查看 skills 契约，并可探测某任务会命中哪个 skill
+  skills [--resolve "<goal>"] [--compact|--full]
+                                  - skills 探针（默认紧凑模式，可切换完整目录）
   ir-lint <ir-file|json|workflow-file|workflow-json>
                                   - 对 command IR / workflow 进行 lint（执行前校验）
   jobs [--limit=N] [--status=queued|running|completed|failed]
@@ -2103,6 +2149,8 @@ Web-Rooter 可用命令:
   do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
   do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
   do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
+  skills --resolve "抓取知乎评论区观点并给出处" --compact
+  skills --resolve "抓取知乎评论区观点并给出处" --full
   jobs --status=running
   job-status <job_id>
   job-result <job_id>
