@@ -84,6 +84,7 @@ python main.py --doctor
 # 1. Single-entry default (recommended)
 python main.py do "Mine Zhihu/Xiaohongshu comments with citations" --dry-run
 python main.py do "Analyze RAG benchmark paper relations with citations" --skill=academic_relation_mining --strict
+python main.py do-plan "Mine Zhihu comments with citations" --skill=social_comment_mining
 
 # 2. Quick lookup (compat entry)
 python main.py quick "OpenAI Agents SDK best practices"

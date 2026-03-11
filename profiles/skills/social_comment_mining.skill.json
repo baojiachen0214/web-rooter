@@ -45,5 +45,27 @@
   "examples": [
     "爬取 iPhone 17 在小红书和知乎评论区的观点分歧",
     "分析 某品牌 舆情反馈并保留原文出处"
+  ],
+  "phases": [
+    {
+      "id": "intent",
+      "title": "Intent Resolve",
+      "goal": "识别平台、评论目标与证据颗粒度"
+    },
+    {
+      "id": "auth",
+      "title": "Auth/Challenge Check",
+      "goal": "先检查登录态与挑战页策略是否就绪"
+    },
+    {
+      "id": "dry_run",
+      "title": "Compile & Lint",
+      "goal": "dry-run 确认 steps/vars/platforms"
+    },
+    {
+      "id": "execute",
+      "title": "Execute",
+      "goal": "执行抓取并产出 citation 对照"
+    }
   ]
 }

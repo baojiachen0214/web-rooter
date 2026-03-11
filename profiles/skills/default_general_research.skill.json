@@ -24,5 +24,22 @@
   "examples": [
     "分析 AI Agent 工程实践趋势并给出处",
     "总结某技术主题的主流观点和反方观点"
+  ],
+  "phases": [
+    {
+      "id": "intent",
+      "title": "Intent Resolve",
+      "goal": "确认任务目标、输出格式与证据要求"
+    },
+    {
+      "id": "dry_run",
+      "title": "Compile & Lint",
+      "goal": "先 dry-run 生成 IR 并校验 lint"
+    },
+    {
+      "id": "execute",
+      "title": "Execute",
+      "goal": "执行 workflow 并回收 citations/references"
+    }
   ]
 }

@@ -170,6 +170,73 @@ class WebRooterCLI:
             )
             self._print_result(result)
 
+        elif command in {"do-plan", "do_plan", "plan"}:
+            # 阶段化技能剧本：先给 AI 一组稳定的 CLI 步骤，再决定执行。
+            task_parts: List[str] = []
+            explicit_skill: Optional[str] = None
+            use_browser: Optional[bool] = None
+            html_first: Optional[bool] = None
+            crawl_assist: Optional[bool] = None
+            top_results: Optional[int] = None
+            crawl_pages: Optional[int] = None
+            strict = False
+
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg == "--strict":
+                    strict = True
+                elif arg == "--js":
+                    use_browser = True
+                elif arg == "--no-js":
+                    use_browser = False
+                elif arg == "--crawl-assist":
+                    crawl_assist = True
+                elif arg == "--no-crawl-assist":
+                    crawl_assist = False
+                elif arg == "--html-first":
+                    html_first = True
+                elif arg == "--no-html-first":
+                    html_first = False
+                elif arg.startswith("--top="):
+                    top_results = self._parse_option_int(arg.split("=", 1)[1], 5)
+                elif arg == "--top" and i + 1 < len(args):
+                    i += 1
+                    top_results = self._parse_option_int(args[i], 5)
+                elif arg.startswith("--crawl-pages="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], 2)
+                elif arg.startswith("--crawl="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], 2)
+                elif arg in {"--crawl-pages", "--crawl"} and i + 1 < len(args):
+                    i += 1
+                    crawl_pages = self._parse_option_int(args[i], 2)
+                elif arg.startswith("--skill="):
+                    explicit_skill = arg.split("=", 1)[1].strip() or None
+                elif arg == "--skill" and i + 1 < len(args):
+                    i += 1
+                    explicit_skill = args[i].strip() or None
+                else:
+                    task_parts.append(arg)
+                i += 1
+
+            task_text = " ".join(task_parts).strip()
+            if not task_text:
+                print("用法：do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
+                return True
+
+            payload = self.agent.build_skill_playbook(
+                task=task_text,
+                explicit_skill=explicit_skill,
+                html_first=html_first,
+                top_results=top_results,
+                use_browser=use_browser,
+                crawl_assist=crawl_assist,
+                crawl_pages=crawl_pages,
+                strict=strict,
+                command_name="do-plan",
+            )
+            self._print_result(payload)
+
         elif command in {"skills", "skill-profiles", "skill_profiles"}:
             resolve_text: Optional[str] = None
             probe_parts: List[str] = []
@@ -1390,6 +1457,8 @@ Web-Rooter 可用命令:
                                   - 获取原始 HTML（推荐 AI 做结构分析）
   do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
                                   - 单入口：Intent -> Skill -> IR -> Lint -> Execute
+  do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
+                                  - 先输出阶段化 skills 剧本与推荐 CLI 序列
   quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]
                                   - 默认智能入口（workflow 编排优先；--legacy 回退旧逻辑）
   task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]
@@ -1442,6 +1511,7 @@ Web-Rooter 可用命令:
   html https://example.com --max-chars=100000
   do "抓取小红书和知乎关于 iPhone 17 的评论观点并给出处" --dry-run
   do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
+  do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
   quick https://example.com --js
   quick "WorldQuant alpha101 因子"
   quick "RAG benchmark 2026" --top=6 --html-first

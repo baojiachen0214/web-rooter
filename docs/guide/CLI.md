@@ -14,6 +14,7 @@
 python main.py help
 python main.py doctor
 python main.py do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
+python main.py do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
 python main.py skills [--resolve "<goal>"]
 python main.py ir-lint <ir-file|json|workflow-file|workflow-json>
 python main.py quick <url|query> [--js] [--crawl-pages=N]
@@ -44,6 +45,7 @@ python main.py context [--limit=N] [--event=type]
 ```bash
 python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-run
 python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
+python main.py do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
 ```
 
 ### 2) 快速查资料
@@ -124,6 +126,7 @@ Workflow 机制的意义：
 - `deep --news/--platforms/--commerce` 会自动扩展为 `site:domain` 查询，覆盖媒体、社交与电商站点
 - `mindsearch` 输出 `mindsearch_compat`，包含 `node` / `adjacency_list` / `ref2url`，便于外层 AI 直接消费
 - `do` / `workflow` 在执行前都可 `--dry-run`，并输出 IR + lint 结果
+- `do-plan` 会返回阶段化 skills 剧本（phases + recommended_cli_sequence），给外层 AI 作短上下文执行清单
 - `skills --resolve "<goal>"` 可检查路由是否命中预期 skill
 - `ir-lint` 可独立校验 AI 生成的 IR/workflow，防止错误命令直达执行
 - `python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining` 可做 skills A/B 回归（默认 compile-only）

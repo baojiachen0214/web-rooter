@@ -1270,6 +1270,39 @@ class WebAgent:
             "default": registry.default_profile_name,
         }
 
+    def build_skill_playbook(
+        self,
+        task: str,
+        explicit_skill: Optional[str] = None,
+        html_first: Optional[bool] = None,
+        top_results: Optional[int] = None,
+        use_browser: Optional[bool] = None,
+        crawl_assist: Optional[bool] = None,
+        crawl_pages: Optional[int] = None,
+        strict: bool = False,
+        command_name: str = "do-plan",
+    ) -> Dict[str, Any]:
+        """构建阶段化执行剧本，供外层 AI 短上下文稳定调用。"""
+        compiled = self.compile_task_ir(
+            task=task,
+            explicit_skill=explicit_skill,
+            html_first=html_first,
+            top_results=top_results,
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=crawl_pages,
+            strict=strict,
+            dry_run=True,
+            command_name=command_name,
+        )
+        if not compiled.get("success"):
+            return {
+                "success": False,
+                "error": compiled.get("error"),
+                "compiled": compiled,
+            }
+        return self._compose_playbook_from_compiled(task=task, compiled=compiled, strict=strict)
+
     async def run_do_task(
         self,
         task: str,
@@ -1306,6 +1339,9 @@ class WebAgent:
             )
 
         if dry_run or not compiled.get("valid"):
+            playbook = self._compose_playbook_from_compiled(task=task, compiled=compiled, strict=strict)
+            if isinstance(compiled, dict):
+                compiled["playbook"] = playbook
             return AgentResponse(
                 success=bool(compiled.get("valid")),
                 content=(
@@ -1470,6 +1506,67 @@ class WebAgent:
             "skill": (profile.to_dict() if profile else None),
         }
         return result
+
+    def _compose_playbook_from_compiled(
+        self,
+        task: str,
+        compiled: Dict[str, Any],
+        strict: bool,
+    ) -> Dict[str, Any]:
+        """将编译结果转成阶段化技能剧本与推荐 CLI 序列。"""
+        ir = compiled.get("ir") if isinstance(compiled.get("ir"), dict) else {}
+        skill = compiled.get("skill") if isinstance(compiled.get("skill"), dict) else {}
+        lint = compiled.get("lint") if isinstance(compiled.get("lint"), dict) else {}
+
+        selected_skill = str(ir.get("skill") or "default_general_research")
+        route = str(ir.get("route") or "general")
+        phases = skill.get("phases") if isinstance(skill.get("phases"), list) else []
+        if not phases:
+            phases = [
+                {"id": "intent", "title": "Intent Resolve", "goal": "确认任务目标与输出格式"},
+                {"id": "dry_run", "title": "Compile & Lint", "goal": "dry-run 检查 IR 与 lint"},
+                {"id": "execute", "title": "Execute", "goal": "执行并产出引用证据"},
+            ]
+
+        commands = self._build_recommended_cli_sequence(
+            task=task,
+            selected_skill=selected_skill,
+            route=route,
+            strict=strict,
+        )
+
+        return {
+            "success": True,
+            "selected_skill": selected_skill,
+            "route": route,
+            "lint_valid": bool(lint.get("valid")),
+            "phases": phases,
+            "recommended_cli_sequence": commands,
+        }
+
+    def _build_recommended_cli_sequence(
+        self,
+        task: str,
+        selected_skill: str,
+        route: str,
+        strict: bool,
+    ) -> List[str]:
+        task_text = str(task or "").replace('"', '\\"')
+        commands: List[str] = []
+        commands.append(f'python main.py skills --resolve "{task_text}"')
+        if route in {"social", "commerce", "url"}:
+            commands.append("python main.py challenge-profiles")
+            commands.append("python main.py auth-template")
+        do_dry = f'python main.py do "{task_text}" --skill={selected_skill} --dry-run'
+        if strict:
+            do_dry += " --strict"
+        commands.append(do_dry)
+        do_exec = f'python main.py do "{task_text}" --skill={selected_skill}'
+        if strict:
+            do_exec += " --strict"
+        commands.append(do_exec)
+        commands.append("python main.py context --event=workflow_trace --limit=10")
+        return commands
 
     async def orchestrate_task(
         self,

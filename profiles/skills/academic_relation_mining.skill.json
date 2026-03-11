@@ -39,5 +39,27 @@
   "examples": [
     "查询 RAG benchmark 论文关系并联动网上讨论",
     "对比两篇论文的引用网络和观点冲突"
+  ],
+  "phases": [
+    {
+      "id": "intent",
+      "title": "Intent Resolve",
+      "goal": "明确论文主题、关系图和引用范围"
+    },
+    {
+      "id": "dry_run",
+      "title": "Compile & Lint",
+      "goal": "dry-run 检查 workflow 与变量注入"
+    },
+    {
+      "id": "execute",
+      "title": "Execute",
+      "goal": "执行论文检索+关系挖掘并输出 references"
+    },
+    {
+      "id": "verify",
+      "title": "Cross Verify",
+      "goal": "检查引用覆盖度与关系边质量"
+    }
   ]
 }

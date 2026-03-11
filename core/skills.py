@@ -35,6 +35,7 @@ class SkillProfile:
     default_variables: Dict[str, Any] = field(default_factory=dict)
     default_options: Dict[str, Any] = field(default_factory=dict)
     examples: List[str] = field(default_factory=list)
+    phases: List[Dict[str, Any]] = field(default_factory=list)
     source: str = "builtin"
 
     @classmethod
@@ -49,6 +50,7 @@ class SkillProfile:
         aliases = [str(item).strip() for item in (data.get("aliases") or []) if str(item).strip()]
         keywords = [str(item).strip().lower() for item in (data.get("intent_keywords") or []) if str(item).strip()]
         examples = [str(item).strip() for item in (data.get("examples") or []) if str(item).strip()]
+        phases = data.get("phases") if isinstance(data.get("phases"), list) else []
         default_variables = data.get("default_variables") if isinstance(data.get("default_variables"), dict) else {}
         default_options = data.get("default_options") if isinstance(data.get("default_options"), dict) else {}
         try:
@@ -70,6 +72,7 @@ class SkillProfile:
             default_variables=default_variables,
             default_options=default_options,
             examples=examples,
+            phases=[item for item in phases if isinstance(item, dict)],
             source=source,
         )
 
@@ -105,6 +108,7 @@ class SkillProfile:
             "default_variables": self.default_variables,
             "default_options": self.default_options,
             "examples": self.examples,
+            "phases": self.phases,
             "source": self.source,
         }
 
@@ -232,6 +236,11 @@ class SkillRegistry:
                 priority=30,
                 intent_keywords=["研究", "research", "analysis", "总结", "trend"],
                 default_options={"html_first": True, "crawl_assist": False},
+                phases=[
+                    {"id": "intent", "title": "Intent Resolve", "goal": "确认任务边界与期望输出"},
+                    {"id": "dry_run", "title": "Compile & Lint", "goal": "先 dry-run 产出 IR 并检查 lint"},
+                    {"id": "execute", "title": "Execute", "goal": "执行 workflow 并提取出处"},
+                ],
                 source="builtin",
             )
         )
@@ -244,6 +253,12 @@ class SkillRegistry:
                 priority=80,
                 intent_keywords=["评论", "评论区", "小红书", "知乎", "微博", "抖音", "弹幕", "discussion", "feedback"],
                 default_options={"html_first": True, "crawl_assist": True},
+                phases=[
+                    {"id": "intent", "title": "Intent Resolve", "goal": "识别平台、主题与评论信号"},
+                    {"id": "auth", "title": "Auth/Challenge Check", "goal": "先检查登录门槛与挑战页策略"},
+                    {"id": "dry_run", "title": "Compile & Lint", "goal": "dry-run 并确认 steps/vars"},
+                    {"id": "execute", "title": "Execute", "goal": "执行抓取并输出 citations"},
+                ],
                 source="builtin",
             )
         )
@@ -256,6 +271,11 @@ class SkillRegistry:
                 priority=85,
                 intent_keywords=["论文", "文献", "arxiv", "citation", "benchmark", "scholar", "paper"],
                 default_options={"html_first": True, "crawl_assist": False},
+                phases=[
+                    {"id": "intent", "title": "Intent Resolve", "goal": "识别论文主题、关系挖掘目标"},
+                    {"id": "dry_run", "title": "Compile & Lint", "goal": "先 dry-run 确认学术 workflow"},
+                    {"id": "execute", "title": "Execute", "goal": "执行并输出 references_text"},
+                ],
                 source="builtin",
             )
         )

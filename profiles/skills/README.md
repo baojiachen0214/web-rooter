@@ -14,6 +14,7 @@
 - `intent_keywords`: 意图匹配关键词（用于自动路由）
 - `default_variables`: 注入 workflow 变量默认值
 - `default_options`: 执行选项默认值（如 `html_first`/`crawl_assist`/`top_results`）
+- `phases`: 阶段化执行剧本（供 `do-plan` 返回给 AI）
 
 可选实践：
 - 为每个 skill 维护最少 2 条 `examples`，作为外层 AI 提示样例

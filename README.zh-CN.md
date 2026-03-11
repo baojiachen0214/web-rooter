@@ -102,6 +102,7 @@ python main.py --doctor
 # 1. 单入口（推荐）
 python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-run
 python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
+python main.py do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
 
 # 2. 快速查资料（兼容入口）
 python main.py quick "OpenAI Agents SDK"
