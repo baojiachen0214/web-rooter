@@ -21,6 +21,24 @@
     "pinduoduo",
     "meituan"
   ],
+  "activation_keywords": [
+    "淘宝",
+    "京东",
+    "拼多多",
+    "美团",
+    "taobao",
+    "jd",
+    "pinduoduo",
+    "meituan",
+    "价格",
+    "评价",
+    "比价",
+    "购买",
+    "review",
+    "price"
+  ],
+  "min_activation_hits": 1,
+  "min_score": 1.0,
   "priority": 84,
   "default_variables": {
     "platforms": [

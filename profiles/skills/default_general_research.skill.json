@@ -14,6 +14,9 @@
     "趋势",
     "latest"
   ],
+  "activation_keywords": [],
+  "min_activation_hits": 0,
+  "min_score": 0.0,
   "priority": 30,
   "default_variables": {},
   "default_options": {

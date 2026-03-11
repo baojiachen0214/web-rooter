@@ -20,6 +20,19 @@
     "scholar",
     "paper"
   ],
+  "activation_keywords": [
+    "论文",
+    "文献",
+    "citation",
+    "arxiv",
+    "doi",
+    "benchmark",
+    "ablation",
+    "scholar",
+    "paper"
+  ],
+  "min_activation_hits": 1,
+  "min_score": 1.0,
   "priority": 92,
   "default_variables": {
     "paper_sources": [

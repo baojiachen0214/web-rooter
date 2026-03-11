@@ -12,6 +12,9 @@
 - `route`: `auto|general|url|social|commerce|academic`
 - `workflow_template`: 可选，映射到 `core.workflow.build_workflow_template`
 - `intent_keywords`: 意图匹配关键词（用于自动路由）
+- `activation_keywords`: 激活关键词（命中不足时即使有分数也不会选中该 skill）
+- `min_activation_hits`: 最小激活命中数（默认 `0`）
+- `min_score`: 最小分数阈值（默认 `0.0`）
 - `default_variables`: 注入 workflow 变量默认值
 - `default_options`: 执行选项默认值（如 `html_first`/`crawl_assist`/`top_results`）
 - `phases`: 阶段化执行剧本（供 `do-plan` 返回给 AI）
@@ -19,3 +22,4 @@
 可选实践：
 - 为每个 skill 维护最少 2 条 `examples`，作为外层 AI 提示样例
 - 对登录门槛站点，配合 `auth-hint`/`auth-template` 提供前置提示
+- 对“泛词高频误判”场景（如“讨论”“趋势”），尽量放在 `intent_keywords` 而非 `activation_keywords`

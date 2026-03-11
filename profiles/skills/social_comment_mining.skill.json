@@ -24,6 +24,27 @@
     "zhihu",
     "xiaohongshu"
   ],
+  "activation_keywords": [
+    "评论",
+    "评论区",
+    "用户反馈",
+    "小红书",
+    "知乎",
+    "微博",
+    "抖音",
+    "贴吧",
+    "b站",
+    "bilibili",
+    "weibo",
+    "zhihu",
+    "xiaohongshu",
+    "douyin",
+    "tieba",
+    "reddit",
+    "twitter"
+  ],
+  "min_activation_hits": 1,
+  "min_score": 1.0,
   "priority": 90,
   "default_variables": {
     "platforms": [

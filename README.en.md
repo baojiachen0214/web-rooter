@@ -62,6 +62,7 @@ AI coding assistants often face these challenges when solving real-world problem
 15. **Async Job Runtime** - `do-submit/jobs/job-status/job-result` for long-running tasks
 16. **Typo Guard for Commands** - suspicious unknown commands are rejected with suggestions instead of being executed as queries
 17. **Phase Wake-up Skill Contract** - `do-plan` now returns `phase_wakeup + ai_contract` for staged AI execution
+18. **Skill Misrouting Guard** - `activation_keywords + min_score + min_margin` reduce broad-keyword false routing
 
 ### Known Limitations
 

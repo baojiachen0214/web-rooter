@@ -68,6 +68,26 @@ def test_skill_registry_resolve_social_route() -> None:
     assert resolution.get("selected")
 
 
+def test_skill_registry_ambiguous_query_falls_back_default() -> None:
+    registry = SkillRegistry()
+    profile, resolution = registry.resolve("量化交易 因子 最新讨论")
+    assert profile is not None
+    assert profile.name == "default_general_research"
+    assert resolution.get("selected") == "default_general_research"
+    assert resolution.get("fallback_reason")
+
+
+def test_skill_registry_social_activation_selected() -> None:
+    registry = SkillRegistry()
+    profile, resolution = registry.resolve("抓取知乎评论区对 iPhone 17 的观点并给出处")
+    assert profile is not None
+    assert profile.name == "social_comment_mining"
+    detail = resolution.get("selected_detail")
+    assert isinstance(detail, dict)
+    hits = detail.get("activation_hits")
+    assert isinstance(hits, list) and len(hits) >= 1
+
+
 def test_web_agent_build_skill_playbook() -> None:
     agent = WebAgent()
     payload = agent.build_skill_playbook(

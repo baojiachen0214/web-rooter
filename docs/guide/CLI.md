@@ -140,7 +140,8 @@ Workflow 机制的意义：
 - `do-submit --timeout-sec=N` 可显式设置后台任务超时时间（默认 `900` 秒）
 - `safe-mode strict` 会拦截低层命令，强制外层 AI 优先走 `do-plan`/`do`
 - 未知命令若疑似拼写错误会直接报错并给建议，避免误当查询执行
-- `skills --resolve "<goal>"` 可检查路由是否命中预期 skill
+- `skills --resolve "<goal>"` 可检查路由是否命中预期 skill（含 `fallback_reason` / `activation_hits`）
+- `WEB_ROOTER_SKILL_MIN_MARGIN` 可调技能判定的最小分差（默认 `0.35`）
 - `ir-lint` 可独立校验 AI 生成的 IR/workflow，防止错误命令直达执行
 - `python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining` 可做 skills A/B 回归（默认 compile-only）
 - `crawl` 默认不跨站，`--allow-external` 才会跨域

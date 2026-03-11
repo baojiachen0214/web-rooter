@@ -74,6 +74,7 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 17. **长任务后台作业系统** - `do-submit/jobs/job-status/job-result` 让长链路异步执行、可轮询
 18. **错命令防误触** - 未知命令若疑似拼写错误会直接给建议，不再误当查询执行
 19. **阶段唤醒 Skills 契约** - `do-plan` 输出 `phase_wakeup + ai_contract`，帮助 AI 分阶段稳定执行
+20. **Skill 路由防误判** - `activation_keywords + min_score + min_margin` 抑制泛词误路由
 
 ---
 
