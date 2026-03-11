@@ -24,8 +24,8 @@ python main.py skills [--resolve "<goal>"]
 python main.py ir-lint <ir-file|json|workflow-file|workflow-json>
 python main.py quick <url|query> [--js] [--crawl-pages=N]
 python main.py visit <url> [--js]
-python main.py web <query> [--no-crawl] [--crawl-pages=N]
-python main.py deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--news] [--platforms] [--commerce] [--channel=x,y]
+python main.py web <query> [--no-crawl] [--crawl-pages=N] [--num-results=N] [--engine=name|a,b]
+python main.py deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--engine=name|a,b] [--news] [--platforms] [--commerce] [--channel=x,y]
 python main.py mindsearch <query> [--turns=N] [--branches=N] [--num-results=N] [--crawl=N] [--planner=name] [--strict-expand] [--channel=x,y]
 python main.py social <query> [--platform=xiaohongshu|zhihu|tieba|douyin|bilibili|weibo]
 python main.py shopping <query> [--platform=taobao|jd|pinduoduo|meituan]
@@ -66,12 +66,14 @@ python main.py quick "OpenAI Agents SDK"
 
 ```bash
 python main.py web "RAG benchmark 2026" --crawl-pages=5
+python main.py web "RAG benchmark" --engine=quark --num-results=6 --no-crawl
 ```
 
 ### 4) 深度搜索（多查询变体）
 
 ```bash
 python main.py deep "量化交易 因子" --variants=4 --crawl=5
+python main.py deep "RAG benchmark" --engine=quark --num-results=8 --crawl=0
 ```
 
 ### 4.1) 渠道扩展（媒体/平台站点）
