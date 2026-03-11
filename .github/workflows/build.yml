@@ -73,10 +73,10 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.platform }}" = "windows-x64" ]; then
-            dist/web-rooter.exe --help
+            dist/web-rooter.exe --version
           else
             chmod +x dist/web-rooter
-            dist/web-rooter --help
+            dist/web-rooter --version
           fi
 
       - name: Package binary (Unix)
