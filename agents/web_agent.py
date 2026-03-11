@@ -1435,8 +1435,16 @@ class WebAgent:
         )
 
         route_override: Optional[str] = None
+        inferred_route = self._classify_task_route(task_text)
         if profile and str(profile.route).strip().lower() not in {"", "auto"}:
-            route_override = str(profile.route).strip().lower()
+            candidate_route = str(profile.route).strip().lower()
+            # First-principles guard:
+            # - explicit skill can always override route
+            # - inferred/default skill should not downgrade URL tasks to general search
+            if explicit_skill:
+                route_override = candidate_route
+            elif inferred_route != "url" and profile.name != "default_general_research":
+                route_override = candidate_route
 
         try:
             if profile and profile.workflow_template:

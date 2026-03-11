@@ -58,6 +58,9 @@ AI coding assistants often face these challenges when solving real-world problem
 11. **Pluggable Extensions** - Hot-loadable `postprocessors` and `planners`
 12. **Local Auth Template Flow** - `auth-template` / `auth-profiles` / `auth-hint` for login-required sites
 13. **AI-Orchestrated Workflow** - Declarative JSON flow lets AI decide each crawl/search step dynamically
+14. **Safe Mode Firewall** - strict mode blocks low-level commands and forces `do-plan`/`do`
+15. **Async Job Runtime** - `do-submit/jobs/job-status/job-result` for long-running tasks
+16. **Typo Guard for Commands** - suspicious unknown commands are rejected with suggestions instead of being executed as queries
 
 ### Known Limitations
 
@@ -85,6 +88,7 @@ python main.py --doctor
 python main.py do "Mine Zhihu/Xiaohongshu comments with citations" --dry-run
 python main.py do "Analyze RAG benchmark paper relations with citations" --skill=academic_relation_mining --strict
 python main.py do-plan "Mine Zhihu comments with citations" --skill=social_comment_mining
+python main.py safe-mode on --policy=strict
 
 # 2. Quick lookup (compat entry)
 python main.py quick "OpenAI Agents SDK best practices"
@@ -121,6 +125,12 @@ python main.py context --limit=20
 
 # 10. Skill A/B regression (compile+linter comparison by default)
 python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining
+
+# 11. Async long-task execution (non-blocking)
+python main.py do-submit "Analyze RAG benchmark paper relations with citations" --skill=academic_relation_mining --strict --timeout-sec=1200
+python main.py jobs --status=running
+python main.py job-status <job_id>
+python main.py job-result <job_id>
 ```
 
 ---

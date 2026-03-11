@@ -11,6 +11,9 @@ import shutil
 import os
 import subprocess
 import importlib.util
+import difflib
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import logging
@@ -20,6 +23,8 @@ from tools.mcp_tools import WebTools, run_mcp_server
 from core.search.advanced import DeepSearchEngine, search_social_media, search_tech, search_commerce
 from core.academic_search import AcademicSource
 from core.command_ir import build_command_ir, lint_command_ir, summarize_lint, has_lint_errors
+from core.safe_mode import get_safe_mode_manager, evaluate_safe_mode_command
+from core.job_system import get_job_store, spawn_job_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,10 +46,100 @@ if (
 
 class WebRooterCLI:
     """命令行界面"""
+    _KNOWN_COMMAND_ALIASES = {
+        "visit",
+        "html",
+        "dom",
+        "do",
+        "do-plan",
+        "do_plan",
+        "plan",
+        "do-submit",
+        "do_submit",
+        "jobs",
+        "job-status",
+        "job_status",
+        "job-result",
+        "job_result",
+        "job-worker",
+        "job_worker",
+        "quick",
+        "q",
+        "task",
+        "orchestrate",
+        "auto",
+        "search",
+        "extract",
+        "crawl",
+        "links",
+        "kb",
+        "knowledge",
+        "fetch",
+        "web",
+        "research",
+        "mindsearch",
+        "ms",
+        "context",
+        "processors",
+        "postprocessors",
+        "planners",
+        "planner",
+        "challenge-profiles",
+        "challenge_profiles",
+        "challenges",
+        "auth-profiles",
+        "auth_profiles",
+        "login-profiles",
+        "login_profiles",
+        "auth-hint",
+        "auth_hint",
+        "login-hint",
+        "login_hint",
+        "auth-template",
+        "auth_template",
+        "login-template",
+        "login_template",
+        "workflow-schema",
+        "workflow_schema",
+        "flow-schema",
+        "flow_schema",
+        "workflow-template",
+        "workflow_template",
+        "flow-template",
+        "flow_template",
+        "workflow",
+        "flow",
+        "skills",
+        "skill-profiles",
+        "skill_profiles",
+        "ir-lint",
+        "ir_lint",
+        "lint-ir",
+        "lint_ir",
+        "academic",
+        "site",
+        "deep",
+        "deepsearch",
+        "social",
+        "shopping",
+        "shop",
+        "commerce",
+        "tech",
+        "export",
+        "doctor",
+        "help",
+        "quit",
+        "exit",
+        "safe-mode",
+        "safe_mode",
+        "guard",
+    }
 
     def __init__(self):
         self.agent: Optional[WebAgent] = None
         self.tools: Optional[WebTools] = None
+        self._safe_mode = get_safe_mode_manager()
+        self._job_store = get_job_store()
 
     async def start(self):
         """启动"""
@@ -71,6 +166,22 @@ class WebRooterCLI:
 
     async def run_command(self, command: str, args: list[str]) -> bool:
         """运行命令"""
+        if command in {"safe-mode", "safe_mode", "guard"}:
+            payload = self._handle_safe_mode_command(args)
+            self._print_result(payload)
+            return True
+
+        guard = self._evaluate_safe_mode_guard(command, args)
+        if not guard.get("allowed", True):
+            self._print_result(
+                {
+                    "success": False,
+                    "error": "safe_mode_blocked",
+                    "guard": guard,
+                }
+            )
+            return True
+
         if command == "visit" and args:
             url = args[0]
             use_browser = "--js" in args
@@ -235,6 +346,175 @@ class WebRooterCLI:
                 strict=strict,
                 command_name="do-plan",
             )
+            self._print_result(payload)
+
+        elif command in {"do-submit", "do_submit"}:
+            # 长任务异步提交：创建本地作业并后台执行。
+            task_parts: List[str] = []
+            explicit_skill: Optional[str] = None
+            use_browser: Optional[bool] = None
+            html_first: Optional[bool] = None
+            crawl_assist: Optional[bool] = None
+            top_results: Optional[int] = None
+            crawl_pages: Optional[int] = None
+            timeout_sec: Optional[int] = None
+            strict = False
+
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg == "--strict":
+                    strict = True
+                elif arg == "--js":
+                    use_browser = True
+                elif arg == "--no-js":
+                    use_browser = False
+                elif arg == "--crawl-assist":
+                    crawl_assist = True
+                elif arg == "--no-crawl-assist":
+                    crawl_assist = False
+                elif arg == "--html-first":
+                    html_first = True
+                elif arg == "--no-html-first":
+                    html_first = False
+                elif arg.startswith("--top="):
+                    top_results = self._parse_option_int(arg.split("=", 1)[1], 5)
+                elif arg == "--top" and i + 1 < len(args):
+                    i += 1
+                    top_results = self._parse_option_int(args[i], 5)
+                elif arg.startswith("--crawl-pages="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], 2)
+                elif arg.startswith("--crawl="):
+                    crawl_pages = self._parse_option_int(arg.split("=", 1)[1], 2)
+                elif arg in {"--crawl-pages", "--crawl"} and i + 1 < len(args):
+                    i += 1
+                    crawl_pages = self._parse_option_int(args[i], 2)
+                elif arg.startswith("--timeout-sec="):
+                    timeout_sec = self._parse_option_int(arg.split("=", 1)[1], 900)
+                elif arg == "--timeout-sec" and i + 1 < len(args):
+                    i += 1
+                    timeout_sec = self._parse_option_int(args[i], 900)
+                elif arg.startswith("--skill="):
+                    explicit_skill = arg.split("=", 1)[1].strip() or None
+                elif arg == "--skill" and i + 1 < len(args):
+                    i += 1
+                    explicit_skill = args[i].strip() or None
+                else:
+                    task_parts.append(arg)
+                i += 1
+
+            task_text = " ".join(task_parts).strip()
+            if not task_text:
+                print("用法：do-submit <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--timeout-sec=N] [--html-first|--no-html-first]")
+                return True
+
+            options = {
+                "html_first": html_first,
+                "top_results": top_results,
+                "use_browser": use_browser,
+                "crawl_assist": crawl_assist,
+                "crawl_pages": crawl_pages,
+                "timeout_sec": timeout_sec,
+            }
+            job = self._job_store.create_do_job(
+                task=task_text,
+                options=options,
+                skill=explicit_skill,
+                strict=strict,
+                source="cli_do_submit",
+            )
+            spawned = spawn_job_worker(
+                job_id=job["id"],
+                python_executable=sys.executable,
+                main_script=Path(__file__).resolve(),
+            )
+            updated = self._job_store.update_job(
+                job["id"],
+                pid=spawned.get("pid"),
+                worker_command=spawned.get("cmd"),
+                status="queued",
+            )
+            self._print_result(
+                {
+                    "success": True,
+                    "job": updated or job,
+                    "next": [
+                        f"python main.py job-status {job['id']}",
+                        f"python main.py job-result {job['id']}",
+                    ],
+                }
+            )
+
+        elif command in {"jobs"}:
+            limit = 20
+            status_filter: Optional[str] = None
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--limit="):
+                    limit = self._parse_option_int(arg.split("=", 1)[1], limit)
+                elif arg == "--limit" and i + 1 < len(args):
+                    i += 1
+                    limit = self._parse_option_int(args[i], limit)
+                elif arg.startswith("--status="):
+                    status_filter = arg.split("=", 1)[1].strip() or None
+                elif arg == "--status" and i + 1 < len(args):
+                    i += 1
+                    status_filter = args[i].strip() or None
+                i += 1
+            items = self._job_store.list_jobs(limit=limit, status=status_filter)
+            self._print_result(
+                {
+                    "success": True,
+                    "count": len(items),
+                    "jobs": items,
+                }
+            )
+
+        elif command in {"job-status", "job_status"} and args:
+            job_id = str(args[0]).strip()
+            include_result = "--with-result" in args
+            meta = self._job_store.get_job(job_id)
+            if not meta:
+                self._print_result(
+                    {
+                        "success": False,
+                        "error": f"job_not_found:{job_id}",
+                    }
+                )
+                return True
+            payload: Dict[str, Any] = {
+                "success": True,
+                "job": meta,
+            }
+            if include_result:
+                payload["result"] = self._job_store.read_result(job_id)
+            self._print_result(payload)
+
+        elif command in {"job-result", "job_result"} and args:
+            job_id = str(args[0]).strip()
+            result_payload = self._job_store.read_result(job_id)
+            meta = self._job_store.get_job(job_id)
+            if result_payload is None:
+                self._print_result(
+                    {
+                        "success": False,
+                        "error": f"job_result_not_found:{job_id}",
+                        "job": meta,
+                    }
+                )
+                return True
+            self._print_result(
+                {
+                    "success": True,
+                    "job": meta,
+                    "result": result_payload,
+                }
+            )
+
+        elif command in {"job-worker", "job_worker"} and args:
+            job_id = str(args[0]).strip()
+            payload = await self._run_job_worker(job_id)
             self._print_result(payload)
 
         elif command in {"skills", "skill-profiles", "skill_profiles"}:
@@ -1137,6 +1417,11 @@ class WebRooterCLI:
                 print(f"[提示] 未识别命令 '{command}'，检测为 URL，按 visit 执行。")
                 await self._run_inferred_input(url, use_browser=use_browser)
             else:
+                unknown_payload = self._build_unknown_command_payload(command)
+                if unknown_payload:
+                    self._print_result(unknown_payload)
+                    return True
+
                 crawl_pages = 3
                 query_parts = []
                 i = 0
@@ -1202,10 +1487,172 @@ class WebRooterCLI:
         )
         self._print_result(result)
 
+    def _evaluate_safe_mode_guard(self, command: str, args: List[str]) -> Dict[str, Any]:
+        state = self._safe_mode.get_state()
+        decision = evaluate_safe_mode_command(command=command, args=args, state=state)
+        decision["state"] = self._safe_mode.describe()
+        decision["command"] = command
+        return decision
+
+    def _handle_safe_mode_command(self, args: List[str]) -> Dict[str, Any]:
+        action = "status"
+        policy: Optional[str] = None
+        i = 0
+        while i < len(args):
+            arg = str(args[i]).strip().lower()
+            if arg in {"on", "off", "status"}:
+                action = arg
+            elif arg.startswith("--policy="):
+                policy = arg.split("=", 1)[1].strip() or None
+            elif arg == "--policy" and i + 1 < len(args):
+                i += 1
+                policy = str(args[i]).strip().lower() or None
+            i += 1
+
+        if action == "status":
+            return {"success": True, "safe_mode": self._safe_mode.describe()}
+        if action == "on":
+            return {
+                "success": True,
+                "safe_mode": self._safe_mode.set_enabled(True, policy=policy),
+                "message": "safe mode enabled",
+            }
+        if action == "off":
+            return {
+                "success": True,
+                "safe_mode": self._safe_mode.set_enabled(False, policy=policy),
+                "message": "safe mode disabled",
+            }
+        return {
+            "success": False,
+            "error": f"unknown_safe_mode_action:{action}",
+        }
+
+    async def _run_job_worker(self, job_id: str) -> Dict[str, Any]:
+        record = self._job_store.get_job(job_id)
+        if not record:
+            return {
+                "success": False,
+                "error": f"job_not_found:{job_id}",
+            }
+
+        status = str(record.get("status") or "").strip().lower()
+        if status in {"completed", "failed", "cancelled"}:
+            return {
+                "success": status == "completed",
+                "job": record,
+                "result": self._job_store.read_result(job_id),
+            }
+
+        self._job_store.update_job(
+            job_id,
+            status="running",
+            pid=os.getpid(),
+            started_at=record.get("started_at") or datetime.utcnow().isoformat() + "Z",
+            error=None,
+        )
+        current = self._job_store.get_job(job_id) or record
+        options = current.get("options") if isinstance(current.get("options"), dict) else {}
+        task_text = str(current.get("task") or "").strip()
+        skill = str(current.get("skill") or "").strip() or None
+        strict = bool(current.get("strict", False))
+        timeout_sec = max(30, self._parse_option_int(str(options.get("timeout_sec") or 0), 900))
+
+        try:
+            response = await asyncio.wait_for(
+                self.agent.run_do_task(
+                    task=task_text,
+                    explicit_skill=skill,
+                    strict=strict,
+                    dry_run=False,
+                    command_name="job-worker",
+                    html_first=options.get("html_first"),
+                    top_results=options.get("top_results"),
+                    use_browser=options.get("use_browser"),
+                    crawl_assist=options.get("crawl_assist"),
+                    crawl_pages=options.get("crawl_pages"),
+                ),
+                timeout=float(timeout_sec),
+            )
+            payload = response.to_dict() if hasattr(response, "to_dict") else response
+            result_path = self._job_store.write_result(job_id, payload if isinstance(payload, dict) else {"result": payload})
+            next_status = "completed" if bool(response.success) else "failed"
+            updated = self._job_store.update_job(
+                job_id,
+                status=next_status,
+                finished_at=datetime.utcnow().isoformat() + "Z",
+                error=(None if response.success else response.error),
+                result_path=result_path,
+            )
+            return {
+                "success": bool(response.success),
+                "job": updated,
+                "result": payload,
+            }
+        except asyncio.TimeoutError:
+            updated = self._job_store.update_job(
+                job_id,
+                status="failed",
+                finished_at=datetime.utcnow().isoformat() + "Z",
+                error=f"job_timeout:{timeout_sec}s",
+            )
+            return {
+                "success": False,
+                "job": updated,
+                "error": f"job_timeout:{timeout_sec}s",
+            }
+        except Exception as exc:
+            updated = self._job_store.update_job(
+                job_id,
+                status="failed",
+                finished_at=datetime.utcnow().isoformat() + "Z",
+                error=str(exc),
+            )
+            return {
+                "success": False,
+                "job": updated,
+                "error": str(exc),
+            }
+
     @staticmethod
     def _looks_like_url(text: str) -> bool:
         value = text.strip().lower()
         return value.startswith(("http://", "https://", "www."))
+
+    @classmethod
+    def _command_suggestions(cls, command: str, limit: int = 3) -> List[str]:
+        token = str(command or "").strip().lower()
+        if not token:
+            return []
+        return difflib.get_close_matches(
+            token,
+            sorted(cls._KNOWN_COMMAND_ALIASES),
+            n=max(1, int(limit)),
+            cutoff=0.74,
+        )
+
+    @staticmethod
+    def _looks_like_command_typo(command: str) -> bool:
+        token = str(command or "").strip().lower()
+        if not token:
+            return False
+        return bool(re.match(r"^[a-z][a-z0-9_-]{1,31}$", token))
+
+    def _build_unknown_command_payload(self, command: str) -> Optional[Dict[str, Any]]:
+        suggestions = self._command_suggestions(command)
+        if not suggestions or not self._looks_like_command_typo(command):
+            return None
+        return {
+            "success": False,
+            "error": f"unknown_command:{command}",
+            "hint": "Possible command typo. Use suggested commands, or use `quick`/`do` for free-form goals.",
+            "suggestions": suggestions,
+            "recommended": [
+                f"python main.py {suggestions[0]} ...",
+                "python main.py do-plan \"<goal>\"",
+                "python main.py do \"<goal>\"",
+            ],
+        }
 
     @staticmethod
     def _parse_option_int(value: str, default: int) -> int:
@@ -1459,6 +1906,8 @@ Web-Rooter 可用命令:
                                   - 单入口：Intent -> Skill -> IR -> Lint -> Execute
   do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
                                   - 先输出阶段化 skills 剧本与推荐 CLI 序列
+  do-submit <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--timeout-sec=N] [--html-first|--no-html-first]
+                                  - 提交长任务到后台作业系统（非阻塞）
   quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]
                                   - 默认智能入口（workflow 编排优先；--legacy 回退旧逻辑）
   task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]
@@ -1493,6 +1942,13 @@ Web-Rooter 可用命令:
   skills [--resolve "<goal>"]     - 查看 skills 契约，并可探测某任务会命中哪个 skill
   ir-lint <ir-file|json|workflow-file|workflow-json>
                                   - 对 command IR / workflow 进行 lint（执行前校验）
+  jobs [--limit=N] [--status=queued|running|completed|failed]
+                                  - 查看后台作业列表
+  job-status <job_id> [--with-result]
+                                  - 查看作业状态（可附带结果）
+  job-result <job_id>             - 读取作业结果
+  safe-mode [status|on|off] [--policy=strict]
+                                  - AI 命令防火墙（strict 模式只允许高层命令）
   doctor                          - 环境自检（依赖/浏览器/抓取链路）
   context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
   processors [--load=module:obj] [--force] - 查看/加载抓取后处理扩展
@@ -1512,6 +1968,11 @@ Web-Rooter 可用命令:
   do "抓取小红书和知乎关于 iPhone 17 的评论观点并给出处" --dry-run
   do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
   do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
+  do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
+  jobs --status=running
+  job-status <job_id>
+  job-result <job_id>
+  safe-mode on --policy=strict
   quick https://example.com --js
   quick "WorldQuant alpha101 因子"
   quick "RAG benchmark 2026" --top=6 --html-first
@@ -1542,7 +2003,7 @@ Web-Rooter 可用命令:
   workflow-template .web-rooter/workflow.academic.json --scenario=academic_relations --force
   workflow .web-rooter/workflow.academic.json --var topic=\"RAG evaluation benchmark\" --strict
   doctor
-  # 也可直接输入 URL 或查询词（未知命令会自动转智能模式）
+  # 也可直接输入 URL 或查询词（可疑命令拼写会先拦截并给建议）
   python main.py "https://example.com"
   python main.py "量化交易 因子 最新讨论"
 """

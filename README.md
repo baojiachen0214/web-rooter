@@ -70,6 +70,9 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 13. **AI 可编排 Workflow** - 用声明式 JSON 让 AI 动态决定每一步“搜什么、爬什么、怎么爬”
 14. **平台搜索模板 + Recovery 模式** - `profiles/search_templates/platform_profiles.json` 可配置平台入口与域名优先级，0 结果时可启用低置信兜底
 15. **Intent->Skill->IR 执行闭环** - 任务先编译成 IR，经 lint 校验后执行，减少 AI 误用 CLI 的概率
+16. **Safe Mode 命令防火墙** - strict 模式拦截低层命令，强制 AI 优先走 `do-plan`/`do`
+17. **长任务后台作业系统** - `do-submit/jobs/job-status/job-result` 让长链路异步执行、可轮询
+18. **错命令防误触** - 未知命令若疑似拼写错误会直接给建议，不再误当查询执行
 
 ---
 
@@ -90,6 +93,7 @@ python main.py --doctor
 python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-run
 python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
 python main.py do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
+python main.py safe-mode on --policy=strict
 
 # 2. 快速查资料（兼容入口）
 python main.py quick "OpenAI Agents SDK 最佳实践"
@@ -126,6 +130,12 @@ python main.py context --limit=20
 
 # 10. skills A/B 回归（默认只做 compile+linter 对照）
 python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining
+
+# 11. 长任务异步执行（避免阻塞超时）
+python main.py do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
+python main.py jobs --status=running
+python main.py job-status <job_id>
+python main.py job-result <job_id>
 ```
 
 ---
