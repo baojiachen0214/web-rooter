@@ -132,7 +132,8 @@ python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=s
 python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
 
 # 9. 查看扩展与挑战页路由
-python main.py skills --resolve "抓取知乎评论区观点并给出处"
+python main.py skills --resolve "抓取知乎评论区观点并给出处" --compact
+python main.py skills --resolve "抓取知乎评论区观点并给出处" --full
 python main.py ir-lint .web-rooter/workflow.social.json
 python main.py planners
 python main.py challenge-profiles
