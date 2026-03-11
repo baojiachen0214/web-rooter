@@ -3,6 +3,8 @@
     {
       "id": "social_comments_cn",
       "goal": "抓取小红书和知乎关于 iPhone 17 的评论区观点并给出处",
+      "expected_skill": "social_comment_mining",
+      "expected_route": "social",
       "options": {
         "top_results": 6,
         "use_browser": true,
@@ -14,6 +16,8 @@
     {
       "id": "academic_relations_en",
       "goal": "Analyze RAG benchmark papers and citation relations with source evidence",
+      "expected_skill": "academic_relation_mining",
+      "expected_route": "academic",
       "options": {
         "top_results": 6,
         "use_browser": false,
@@ -25,6 +29,8 @@
     {
       "id": "commerce_reviews_cn",
       "goal": "分析某款手机在淘宝京东拼多多的评价差异和价格区间",
+      "expected_skill": "commerce_review_mining",
+      "expected_route": "commerce",
       "options": {
         "top_results": 6,
         "use_browser": true,
