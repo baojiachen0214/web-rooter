@@ -61,6 +61,7 @@ AI coding assistants often face these challenges when solving real-world problem
 14. **Safe Mode Firewall** - strict mode blocks low-level commands and forces `do-plan`/`do`
 15. **Async Job Runtime** - `do-submit/jobs/job-status/job-result` for long-running tasks
 16. **Typo Guard for Commands** - suspicious unknown commands are rejected with suggestions instead of being executed as queries
+17. **Phase Wake-up Skill Contract** - `do-plan` now returns `phase_wakeup + ai_contract` for staged AI execution
 
 ### Known Limitations
 

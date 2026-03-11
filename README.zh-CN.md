@@ -79,6 +79,7 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 16. **Safe Mode 命令防火墙** - strict 模式拦截低层命令，强制 AI 优先走 `do-plan`/`do`
 17. **长任务后台作业系统** - `do-submit/jobs/job-status/job-result` 支持异步执行与轮询
 18. **错命令防误触** - 疑似命令拼写错误会直接给建议，不再被误当查询执行
+19. **阶段唤醒 Skills 契约** - `do-plan` 输出 `phase_wakeup + ai_contract`，指导 AI 分阶段执行
 
 ### 已知限制
 

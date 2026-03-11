@@ -135,6 +135,7 @@ Workflow 机制的意义：
 - `mindsearch` 输出 `mindsearch_compat`，包含 `node` / `adjacency_list` / `ref2url`，便于外层 AI 直接消费
 - `do` / `workflow` 在执行前都可 `--dry-run`，并输出 IR + lint 结果
 - `do-plan` 会返回阶段化 skills 剧本（phases + recommended_cli_sequence），给外层 AI 作短上下文执行清单
+- `do-plan` 还会返回 `phase_wakeup` 与 `ai_contract`，用于阶段唤醒与执行校验
 - `do-submit` 将长任务放到后台执行，避免 CLI 阻塞超时；用 `jobs/job-status/job-result` 轮询
 - `do-submit --timeout-sec=N` 可显式设置后台任务超时时间（默认 `900` 秒）
 - `safe-mode strict` 会拦截低层命令，强制外层 AI 优先走 `do-plan`/`do`

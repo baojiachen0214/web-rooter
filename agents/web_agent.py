@@ -1542,6 +1542,10 @@ class WebAgent:
             route=route,
             strict=strict,
         )
+        phase_wakeup = self._build_phase_wakeup(
+            phases=phases,
+            commands=commands,
+        )
 
         return {
             "success": True,
@@ -1550,6 +1554,15 @@ class WebAgent:
             "lint_valid": bool(lint.get("valid")),
             "phases": phases,
             "recommended_cli_sequence": commands,
+            "phase_wakeup": phase_wakeup,
+            "ai_contract": {
+                "mode": "phase_serial",
+                "rules": [
+                    "Run phases in order and do not skip dry-run checks.",
+                    "Prefer `do-plan`/`do` over low-level commands for unstable sites.",
+                    "When auth/challenge hints exist, surface them before execution.",
+                ],
+            },
         }
 
     def _build_recommended_cli_sequence(
@@ -1575,6 +1588,63 @@ class WebAgent:
         commands.append(do_exec)
         commands.append("python main.py context --event=workflow_trace --limit=10")
         return commands
+
+    @staticmethod
+    def _build_phase_wakeup(
+        phases: List[Dict[str, Any]],
+        commands: List[str],
+    ) -> List[Dict[str, Any]]:
+        wakeup: List[Dict[str, Any]] = []
+        command_map: Dict[str, List[str]] = {
+            "intent": [cmd for cmd in commands if "skills --resolve" in cmd][:1],
+            "auth": [cmd for cmd in commands if ("challenge-profiles" in cmd or "auth-template" in cmd)],
+            "dry_run": [cmd for cmd in commands if "--dry-run" in cmd][:1],
+            "execute": [cmd for cmd in commands if (" do \"" in cmd and "--dry-run" not in cmd)][:1],
+            "verify": [cmd for cmd in commands if "context --event=workflow_trace" in cmd][:1],
+        }
+
+        for phase in phases:
+            if not isinstance(phase, dict):
+                continue
+            phase_id = str(phase.get("id") or "").strip().lower() or "phase"
+            title = str(phase.get("title") or phase_id).strip()
+            goal = str(phase.get("goal") or "").strip()
+            if phase_id in {"intent", "intention"}:
+                checks = ["Skill selected", "Route selected"]
+                cmds = command_map["intent"]
+            elif phase_id in {"auth", "challenge", "auth_check"}:
+                checks = ["Auth profile reviewed", "Challenge profile reviewed"]
+                cmds = command_map["auth"]
+            elif phase_id in {"dry_run", "compile", "lint"}:
+                checks = ["IR generated", "Lint has no errors"]
+                cmds = command_map["dry_run"]
+            elif phase_id in {"execute", "run"}:
+                checks = ["Execution completed", "Citations or evidence produced"]
+                cmds = command_map["execute"]
+            else:
+                checks = ["Phase output captured"]
+                cmds = []
+            wakeup.append(
+                {
+                    "id": phase_id,
+                    "title": title,
+                    "goal": goal,
+                    "checks": checks,
+                    "recommended_commands": cmds,
+                }
+            )
+
+        if wakeup and command_map["verify"]:
+            wakeup.append(
+                {
+                    "id": "verify",
+                    "title": "Trace Verify",
+                    "goal": "Read workflow trace from global context for post-check.",
+                    "checks": ["Trace event exists"],
+                    "recommended_commands": command_map["verify"],
+                }
+            )
+        return wakeup
 
     async def orchestrate_task(
         self,

@@ -79,3 +79,9 @@ def test_web_agent_build_skill_playbook() -> None:
     assert payload.get("selected_skill") == "social_comment_mining"
     commands = payload.get("recommended_cli_sequence")
     assert isinstance(commands, list) and len(commands) >= 3
+    phase_wakeup = payload.get("phase_wakeup")
+    assert isinstance(phase_wakeup, list) and len(phase_wakeup) >= 2
+    assert any(isinstance(item, dict) and item.get("id") == "dry_run" for item in phase_wakeup)
+    contract = payload.get("ai_contract")
+    assert isinstance(contract, dict)
+    assert contract.get("mode") == "phase_serial"
