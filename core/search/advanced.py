@@ -46,6 +46,7 @@ class AdvancedSearchEngine(Enum):
     GOOGLE = "google"
     BING = "bing"
     BAIDU = "baidu"
+    QUARK = "quark"
     DUCKDUCKGO = "duckduckgo"
     SOGOU = "sogou"
     YANDEX = "yandex"  # 俄罗斯搜索引擎，适合英文和俄文
@@ -142,6 +143,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.GOOGLE: "https://www.google.com/search?q={query}&num={count}&hl=zh-CN",
         AdvancedSearchEngine.BING: "https://cn.bing.com/search?q={query}&first={count}&cc=cn&setlang=zh-CN",
         AdvancedSearchEngine.BAIDU: "https://www.baidu.com/s?wd={query}&rn={count}&ie=utf-8",
+        AdvancedSearchEngine.QUARK: "https://www.quark.cn/s?q={query}",
         AdvancedSearchEngine.DUCKDUCKGO: "https://html.duckduckgo.com/html/?q={query}&kl=cn",
         AdvancedSearchEngine.SOGOU: "https://www.sogou.com/web?query={query}&num={count}",
 
@@ -183,6 +185,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.GOOGLE: "div.g, div.tF2Cxc",
         AdvancedSearchEngine.BING: "li.b_algo",
         AdvancedSearchEngine.BAIDU: "div.c-container, div.result-op",
+        AdvancedSearchEngine.QUARK: "div[class*='result'], div[class*='result-item'], .search-content .pc-s-grid-content-left-content",
         AdvancedSearchEngine.DUCKDUCKGO: "div.result",
         AdvancedSearchEngine.SOGOU: "div.fb-hint, div.vmid",
         AdvancedSearchEngine.YANDEX: "li.serp-item",
@@ -220,6 +223,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.GOOGLE: "h3",
         AdvancedSearchEngine.BING: "h2 a",
         AdvancedSearchEngine.BAIDU: "h3 a, c-title a",
+        AdvancedSearchEngine.QUARK: "a.qk-link-wrapper.qk-link-action-hover, a.qk-link-wrapper, a[href^='http']",
         AdvancedSearchEngine.DUCKDUCKGO: "a.result__title",
         AdvancedSearchEngine.SOGOU: "h3 a, a[href*='wenwen']",
         AdvancedSearchEngine.YANDEX: "h2 a",
@@ -254,6 +258,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.GOOGLE: "a",
         AdvancedSearchEngine.BING: "a",
         AdvancedSearchEngine.BAIDU: "a",
+        AdvancedSearchEngine.QUARK: "a.qk-link-wrapper.qk-link-action-hover[href], a.qk-link-wrapper[href], a[href^='http']",
         AdvancedSearchEngine.DUCKDUCKGO: "a.result__url",
         AdvancedSearchEngine.SOGOU: "a",
         AdvancedSearchEngine.YANDEX: "a",
@@ -288,6 +293,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.GOOGLE: "span.aCOpRe, div.VwiC3b",
         AdvancedSearchEngine.BING: "p.b_algoSlug",
         AdvancedSearchEngine.BAIDU: "span.c-color-gray2",
+        AdvancedSearchEngine.QUARK: "div[class*='desc'], p",
         AdvancedSearchEngine.DUCKDUCKGO: "a.result__snippet",
         AdvancedSearchEngine.SOGOU: "p.txt-info",
         AdvancedSearchEngine.YANDEX: "div.Path",
@@ -480,6 +486,7 @@ class AdvancedSearchEngineClient:
             AdvancedSearchEngine.BING: "bing",
             AdvancedSearchEngine.BING_US: "bing",
             AdvancedSearchEngine.BAIDU: "baidu",
+            AdvancedSearchEngine.QUARK: "quark",
             AdvancedSearchEngine.DUCKDUCKGO: "duckduckgo",
             AdvancedSearchEngine.ZHIHU: "zhihu",
         }
@@ -697,6 +704,7 @@ class AdvancedSearchEngineClient:
                 AdvancedSearchEngine.BING: "https://www.bing.com",
                 AdvancedSearchEngine.BING_US: "https://www.bing.com",
                 AdvancedSearchEngine.BAIDU: "https://www.baidu.com",
+                AdvancedSearchEngine.QUARK: "https://www.quark.cn",
                 AdvancedSearchEngine.DUCKDUCKGO: "https://duckduckgo.com",
                 AdvancedSearchEngine.SOGOU: "https://www.sogou.com",
                 AdvancedSearchEngine.YANDEX: "https://yandex.com",
@@ -912,6 +920,7 @@ class DeepSearchEngine:
             engines = [
                 AdvancedSearchEngine.GOOGLE,
                 AdvancedSearchEngine.BING,
+                AdvancedSearchEngine.QUARK,
                 AdvancedSearchEngine.BAIDU,
                 AdvancedSearchEngine.DUCKDUCKGO,
             ]
@@ -1452,6 +1461,11 @@ _BACKUP_DOMAIN_QUERY_HINTS: Dict[str, str] = {
 
 _ENGINE_URL_FALLBACK_TEMPLATES: Dict[str, List[str]] = {
     # 主入口常见 404/跳转时尝试备用网址
+    "quark": [
+        "https://www.quark.cn/s?q={query}",
+        "https://www.quark.cn/s?wd={query}",
+        "https://quark.sm.cn/s?wd={query}",
+    ],
     "meituan": [
         "https://i.meituan.com/s/{query}",
         "https://www.dianping.com/search/keyword/1/0_{query}",
@@ -2208,11 +2222,12 @@ async def _run_platform_backup_search(
         [
             AdvancedSearchEngine.GOOGLE,
             AdvancedSearchEngine.BING,
+            AdvancedSearchEngine.QUARK,
             AdvancedSearchEngine.BAIDU,
             AdvancedSearchEngine.DUCKDUCKGO,
         ]
         if use_english
-        else [AdvancedSearchEngine.BAIDU]
+        else [AdvancedSearchEngine.QUARK, AdvancedSearchEngine.BAIDU]
     )
     max_domains = max(2, int(os.getenv("WEB_ROOTER_PLATFORM_BACKUP_DOMAINS", "6")))
     task_timeout = max(25, int(os.getenv("WEB_ROOTER_PLATFORM_BACKUP_TIMEOUT_SEC", "80")))

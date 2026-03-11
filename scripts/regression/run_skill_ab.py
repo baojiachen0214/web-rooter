@@ -68,6 +68,8 @@ def _load_cases(path: Path) -> List[Dict[str, Any]]:
                 "id": str(item.get("id") or f"case_{idx + 1}"),
                 "goal": goal,
                 "options": options,
+                "expected_skill": (str(item.get("expected_skill")).strip() if str(item.get("expected_skill") or "").strip() else None),
+                "expected_route": (str(item.get("expected_route")).strip() if str(item.get("expected_route") or "").strip() else None),
             }
         )
     if not normalized:
@@ -106,6 +108,32 @@ def _score_execute(metrics: Dict[str, Any]) -> float:
     score += min(url_count, 20)
     score -= min(duration_ms / 1000.0, 60.0) * 0.7
     return score
+
+
+def _apply_expectation_bonus(
+    result: ArmResult,
+    expected_skill: Optional[str],
+    expected_route: Optional[str],
+) -> ArmResult:
+    skill = str((result.metrics or {}).get("skill") or "")
+    route = str((result.metrics or {}).get("route") or "")
+    expected_skill_norm = str(expected_skill or "").strip()
+    expected_route_norm = str(expected_route or "").strip()
+
+    skill_match = True
+    route_match = True
+    if expected_skill_norm:
+        skill_match = skill == expected_skill_norm
+        result.score += 30.0 if skill_match else -30.0
+    if expected_route_norm:
+        route_match = route == expected_route_norm
+        result.score += 20.0 if route_match else -20.0
+
+    result.metrics["expected_skill"] = expected_skill_norm or None
+    result.metrics["expected_route"] = expected_route_norm or None
+    result.metrics["skill_match"] = skill_match
+    result.metrics["route_match"] = route_match
+    return result
 
 
 async def _run_arm_compile(
@@ -190,10 +218,42 @@ async def run(
     arm_a: str,
     arm_b: str,
     execute: bool,
+    max_cases: Optional[int],
+    case_timeout_sec: float,
     json_out: Path,
     md_out: Path,
 ) -> Dict[str, Any]:
     cases = _load_cases(cases_path)
+    if isinstance(max_cases, int) and max_cases > 0:
+        cases = cases[: max_cases]
+
+    timeout_value = float(case_timeout_sec or 0.0)
+    timeout_enabled = timeout_value > 0.0
+
+    async def run_arm_with_timeout(coro, arm_name: str) -> ArmResult:
+        if not timeout_enabled:
+            return await coro
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout_value)
+        except asyncio.TimeoutError:
+            return ArmResult(
+                arm=arm_name,
+                score=-999.0,
+                success=False,
+                error=f"timeout>{timeout_value:.1f}s",
+                metrics={
+                    "timeout_sec": timeout_value,
+                    "valid": False,
+                    "error_count": 1,
+                    "warning_count": 0,
+                    "success": False,
+                    "completed_steps": 0,
+                    "failed_steps": 1,
+                    "url_count": 0,
+                    "duration_ms": int(timeout_value * 1000),
+                },
+            )
+
     agent = WebAgent()
     await agent._init()
     try:
@@ -203,13 +263,29 @@ async def run(
         for case in cases:
             goal = case["goal"]
             options = case.get("options") if isinstance(case.get("options"), dict) else {}
+            expected_skill = case.get("expected_skill")
+            expected_route = case.get("expected_route")
 
             if execute:
-                res_a = await _run_arm_execute(agent, goal, None if arm_a == "auto" else arm_a, options, "A")
-                res_b = await _run_arm_execute(agent, goal, None if arm_b == "auto" else arm_b, options, "B")
+                res_a = await run_arm_with_timeout(
+                    _run_arm_execute(agent, goal, None if arm_a == "auto" else arm_a, options, "A"),
+                    "A",
+                )
+                res_b = await run_arm_with_timeout(
+                    _run_arm_execute(agent, goal, None if arm_b == "auto" else arm_b, options, "B"),
+                    "B",
+                )
             else:
-                res_a = await _run_arm_compile(agent, goal, None if arm_a == "auto" else arm_a, options, "A")
-                res_b = await _run_arm_compile(agent, goal, None if arm_b == "auto" else arm_b, options, "B")
+                res_a = await run_arm_with_timeout(
+                    _run_arm_compile(agent, goal, None if arm_a == "auto" else arm_a, options, "A"),
+                    "A",
+                )
+                res_b = await run_arm_with_timeout(
+                    _run_arm_compile(agent, goal, None if arm_b == "auto" else arm_b, options, "B"),
+                    "B",
+                )
+            res_a = _apply_expectation_bonus(res_a, expected_skill=expected_skill, expected_route=expected_route)
+            res_b = _apply_expectation_bonus(res_b, expected_skill=expected_skill, expected_route=expected_route)
 
             if abs(res_a.score - res_b.score) <= 1e-8:
                 winner = "tie"
@@ -224,6 +300,8 @@ async def run(
                     "id": case["id"],
                     "goal": goal,
                     "options": options,
+                    "expected_skill": expected_skill,
+                    "expected_route": expected_route,
                     "winner": winner,
                     "A": res_a.to_dict(),
                     "B": res_b.to_dict(),
@@ -244,6 +322,8 @@ async def run(
         "platform": f"{platform.system()} {platform.release()}",
         "mode": ("execute" if execute else "compile"),
         "arms": {"A": arm_a, "B": arm_b},
+        "max_cases": (max_cases if isinstance(max_cases, int) and max_cases > 0 else None),
+        "case_timeout_sec": (timeout_value if timeout_enabled else None),
         "wins": wins,
         "overall_winner": overall,
         "cases": case_reports,
@@ -264,6 +344,10 @@ def _to_markdown(report: Dict[str, Any]) -> str:
     lines.append(f"- Mode: {report.get('mode')}")
     lines.append(f"- Arm A: {report.get('arms', {}).get('A')}")
     lines.append(f"- Arm B: {report.get('arms', {}).get('B')}")
+    if report.get("max_cases"):
+        lines.append(f"- Max Cases: {report.get('max_cases')}")
+    if report.get("case_timeout_sec"):
+        lines.append(f"- Case Timeout Sec: {report.get('case_timeout_sec')}")
     lines.append(f"- Wins: {report.get('wins')}")
     lines.append(f"- Overall Winner: **{report.get('overall_winner')}**")
     lines.append("")
@@ -272,6 +356,10 @@ def _to_markdown(report: Dict[str, Any]) -> str:
         lines.append(f"## {case.get('id')}")
         lines.append("")
         lines.append(f"- Goal: {case.get('goal')}")
+        if case.get("expected_skill"):
+            lines.append(f"- Expected Skill: `{case.get('expected_skill')}`")
+        if case.get("expected_route"):
+            lines.append(f"- Expected Route: `{case.get('expected_route')}`")
         lines.append(f"- Winner: **{case.get('winner')}**")
         lines.append(f"- A: score={case.get('A', {}).get('score')} success={case.get('A', {}).get('success')}")
         lines.append(f"- B: score={case.get('B', {}).get('score')} success={case.get('B', {}).get('success')}")
@@ -289,6 +377,8 @@ def main() -> int:
     parser.add_argument("--arm-a", default="auto", help="Skill name for arm A, or 'auto'")
     parser.add_argument("--arm-b", default="social_comment_mining", help="Skill name for arm B, or 'auto'")
     parser.add_argument("--execute", action="store_true", help="Run real execution instead of compile-only")
+    parser.add_argument("--max-cases", type=int, default=0, help="Max number of cases to run (0 means all)")
+    parser.add_argument("--case-timeout-sec", type=float, default=0.0, help="Per-arm timeout seconds (0 disables timeout)")
     parser.add_argument(
         "--json-out",
         default=f"temp/skill_ab_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
@@ -307,6 +397,8 @@ def main() -> int:
             arm_a=args.arm_a,
             arm_b=args.arm_b,
             execute=bool(args.execute),
+            max_cases=(args.max_cases if int(args.max_cases or 0) > 0 else None),
+            case_timeout_sec=float(args.case_timeout_sec or 0.0),
             json_out=Path(args.json_out).resolve(),
             md_out=Path(args.md_out).resolve(),
         )

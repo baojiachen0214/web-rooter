@@ -131,6 +131,7 @@ Workflow 机制的意义：
 ## Notes
 
 - `deep --variants` 用于子查询分解，默认值为 `1`
+- `deep` 默认通用引擎已包含 `quark`（与 `google/bing/baidu/duckduckgo` 并行）
 - `deep --news/--platforms/--commerce` 会自动扩展为 `site:domain` 查询，覆盖媒体、社交与电商站点
 - `mindsearch` 输出 `mindsearch_compat`，包含 `node` / `adjacency_list` / `ref2url`，便于外层 AI 直接消费
 - `do` / `workflow` 在执行前都可 `--dry-run`，并输出 IR + lint 结果
@@ -144,6 +145,7 @@ Workflow 机制的意义：
 - `WEB_ROOTER_SKILL_MIN_MARGIN` 可调技能判定的最小分差（默认 `0.35`）
 - `ir-lint` 可独立校验 AI 生成的 IR/workflow，防止错误命令直达执行
 - `python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining` 可做 skills A/B 回归（默认 compile-only）
+- `python scripts/regression/run_skill_ab.py --execute --max-cases=2 --case-timeout-sec=180` 可跑真实执行回归并避免长时间卡住
 - `crawl` 默认不跨站，`--allow-external` 才会跨域
 - 无法稳定用 HTTP 抓取时，优先 `visit --js` 或 `quick --js`
 - `web/deep/academic/research` 输出包含 `citations` 字段；`deep/research` 还包含 `comparison` 交叉来源统计

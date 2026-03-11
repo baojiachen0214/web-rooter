@@ -23,3 +23,7 @@
 - 为每个 skill 维护最少 2 条 `examples`，作为外层 AI 提示样例
 - 对登录门槛站点，配合 `auth-hint`/`auth-template` 提供前置提示
 - 对“泛词高频误判”场景（如“讨论”“趋势”），尽量放在 `intent_keywords` 而非 `activation_keywords`
+
+A/B 回归建议：
+- `profiles/skills/ab_cases.template.json` 支持 `expected_skill` 和 `expected_route`
+- `scripts/regression/run_skill_ab.py` 会把技能/路由命中奖励计入评分，直接量化“路由是否选对”

@@ -1,0 +1,41 @@
+{
+  "_comment": "夸克搜索引擎配置",
+  "id": "quark",
+  "name": "夸克",
+  "baseUrl": "https://www.quark.cn",
+  "searchPath": "/s?q=",
+  "selectors": {
+    "resultContainer": "div[class*='result'], div[class*='result-item'], .search-content .pc-s-grid-content-left-content, .search-content .results",
+    "title": "a.qk-link-wrapper.qk-link-action-hover, a.qk-link-wrapper, a[href^='http']",
+    "link": "a.qk-link-wrapper.qk-link-action-hover, a.qk-link-wrapper, a[href^='http']",
+    "snippet": "div[class*='desc'], p"
+  },
+  "headers": {
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+  },
+  "antiBot": {
+    "enabled": true,
+    "detectors": [
+      "iframe[src*='captcha']",
+      "[class*='captcha']",
+      "[id*='captcha']"
+    ],
+    "errorMessage": "夸克检测到验证机制，需要手动完成验证后重试。"
+  },
+  "customDelay": {
+    "min": 1200,
+    "max": 2600
+  },
+  "fallbackSelector": "a.qk-link-wrapper[href^='http'], .search-content a[href^='http'], a[href^='http']",
+  "linkValidation": [
+    "http"
+  ],
+  "maxResultsPerPage": 10,
+  "timezoneList": [
+    "Asia/Shanghai"
+  ],
+  "localeList": [
+    "zh-CN",
+    "en-US"
+  ]
+}

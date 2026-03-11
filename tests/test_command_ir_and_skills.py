@@ -3,6 +3,8 @@ from __future__ import annotations
 from core.command_ir import build_command_ir, lint_command_ir, summarize_lint, has_lint_errors
 from core.workflow import get_workflow_schema
 from core.skills import SkillRegistry
+from core.search.engine_config import ConfigLoader
+from core.search.advanced import AdvancedSearchEngine, _get_engine_search_url_templates
 from agents.web_agent import WebAgent
 
 
@@ -105,3 +107,17 @@ def test_web_agent_build_skill_playbook() -> None:
     contract = payload.get("ai_contract")
     assert isinstance(contract, dict)
     assert contract.get("mode") == "phase_serial"
+
+
+def test_quark_engine_config_and_templates() -> None:
+    loader = ConfigLoader.get_instance()
+    loader.load_configs(force=True)
+    cfg = loader.get_engine_config("quark")
+    assert cfg is not None
+    assert cfg.baseUrl.startswith("https://www.quark.cn")
+    assert cfg.searchPath == "/s?q="
+
+    templates = _get_engine_search_url_templates(AdvancedSearchEngine.QUARK)
+    assert isinstance(templates, list) and len(templates) >= 1
+    assert any("quark" in item for item in templates)
+    assert all("{query}" in item for item in templates)
