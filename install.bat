@@ -1,61 +1,130 @@
 @echo off
 chcp 65001 >nul
+setlocal enabledelayedexpansion
+
+set WITH_MCP=0
+set NO_PAUSE=0
+
+for %%A in (%*) do (
+    if /I "%%~A"=="--with-mcp" set WITH_MCP=1
+    if /I "%%~A"=="--no-pause" set NO_PAUSE=1
+)
+
 echo ========================================
-echo Web-Rooter 安装脚本
+echo Web-Rooter 一键安装（CLI First）
 echo ========================================
 echo.
 
 set SCRIPT_DIR=%~dp0
 set SCRIPT_DIR=%SCRIPT_DIR:~0,-1%
 set MAIN_PY=%SCRIPT_DIR%\main.py
-set PYTHON_CMD=python
+set VENV_DIR=%SCRIPT_DIR%\.venv312
+set PYTHON_CMD=
+set BOOTSTRAP_CMD=
 
-if exist "%SCRIPT_DIR%\.venv312\Scripts\python.exe" (
-    set PYTHON_CMD=%SCRIPT_DIR%\.venv312\Scripts\python.exe
-) else if exist "%SCRIPT_DIR%\.venv\Scripts\python.exe" (
-    set PYTHON_CMD=%SCRIPT_DIR%\.venv\Scripts\python.exe
+if not exist "%MAIN_PY%" (
+    echo [ERROR] 未找到 main.py: %MAIN_PY%
+    goto :failed
 )
 
-echo [INFO] 使用 Python: %PYTHON_CMD%
-%PYTHON_CMD% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
-if errorlevel 1 (
-    echo 错误：当前 Python 版本低于 3.10
-    echo 建议：安装 Python 3.10+ 或使用项目内 .venv/.venv312
-    pause
-    exit /b 1
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    set BOOTSTRAP_CMD="%VENV_DIR%\Scripts\python.exe"
+) else (
+    where python >nul 2>&1
+    if %errorlevel% equ 0 (
+        set BOOTSTRAP_CMD=python
+    ) else (
+        where py >nul 2>&1
+        if %errorlevel% equ 0 (
+            set BOOTSTRAP_CMD=py -3
+        ) else (
+            echo [ERROR] 未找到 python 或 py，请先安装 Python 3.10+
+            goto :failed
+        )
+    )
 )
 
-echo [1/3] 安装 Python 依赖...
-%PYTHON_CMD% -m pip install -r "%SCRIPT_DIR%\requirements.txt"
+echo [INFO] Bootstrap Python: %BOOTSTRAP_CMD%
+call %BOOTSTRAP_CMD% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
 if errorlevel 1 (
-    echo 错误：依赖安装失败
-    pause
-    exit /b 1
+    echo [ERROR] 当前 Python 版本低于 3.10
+    goto :failed
 )
 
-echo.
-echo [2/3] 安装 Playwright 浏览器...
-%PYTHON_CMD% -m playwright install chromium
-if errorlevel 1 (
-    echo 警告：浏览器安装失败，可以稍后手动安装
+if not exist "%VENV_DIR%\Scripts\python.exe" (
+    echo [1/6] 创建虚拟环境: %VENV_DIR%
+    call %BOOTSTRAP_CMD% -m venv "%VENV_DIR%"
+    if errorlevel 1 (
+        echo [ERROR] 创建虚拟环境失败
+        goto :failed
+    )
+) else (
+    echo [1/6] 复用已有虚拟环境: %VENV_DIR%
 )
 
-echo.
-echo [3/3] 验证安装...
-%PYTHON_CMD% "%MAIN_PY%" --doctor
+set PYTHON_CMD=%VENV_DIR%\Scripts\python.exe
+echo [INFO] Runtime Python: "%PYTHON_CMD%"
+
+echo [2/6] 升级 pip...
+"%PYTHON_CMD%" -m pip install --upgrade pip
 if errorlevel 1 (
-    echo 警告：验证失败，请检查错误信息
+    echo [ERROR] pip 升级失败
+    goto :failed
+)
+
+echo [3/6] 安装依赖...
+"%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%\requirements.txt"
+if errorlevel 1 (
+    echo [ERROR] 依赖安装失败
+    goto :failed
+)
+
+echo [4/6] 安装 Playwright Chromium...
+"%PYTHON_CMD%" -m playwright install chromium
+if errorlevel 1 (
+    echo [WARN] Playwright 浏览器安装失败，可稍后手动执行:
+    echo        "%PYTHON_CMD%" -m playwright install chromium
+)
+
+echo [5/6] 环境自检...
+"%PYTHON_CMD%" "%MAIN_PY%" --doctor
+if errorlevel 1 (
+    echo [WARN] doctor 发现异常，请阅读上方输出
+)
+
+echo [6/6] 安装全局 wr 命令（用户级）...
+call "%SCRIPT_DIR%\scripts\windows\install-system-cli.bat" --no-pause
+if errorlevel 1 (
+    echo [WARN] 全局 wr 安装失败，可稍后手动执行:
+    echo        scripts\windows\install-system-cli.bat
+)
+
+if "%WITH_MCP%"=="1" (
+    echo [EXTRA] 配置 Claude MCP...
+    call "%SCRIPT_DIR%\scripts\windows\setup-claude-mcp.bat"
 )
 
 echo.
 echo ========================================
-echo 安装完成!
+echo 安装完成
 echo ========================================
 echo.
-echo 使用方法:
-echo   - 交互模式：%PYTHON_CMD% main.py
-echo   - MCP 模式：%PYTHON_CMD% main.py --mcp
-echo   - HTTP 服务：%PYTHON_CMD% main.py --server
-echo   - 快速入口：%PYTHON_CMD% main.py quick "OpenAI Agents SDK"
+echo 推荐命令:
+echo   wr doctor
+echo   wr do "抓取知乎评论区观点并给出处" --dry-run
+echo   wr skills --resolve "抓取知乎评论区观点并给出处" --compact
 echo.
-pause
+echo 如需 MCP，再执行:
+echo   scripts\windows\setup-claude-mcp.bat
+echo.
+goto :end
+
+:failed
+echo.
+echo 安装失败，请先修复上方错误后重试。
+echo.
+
+:end
+if "%NO_PAUSE%"=="0" pause
+endlocal
+

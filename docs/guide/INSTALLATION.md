@@ -6,7 +6,34 @@
 - Network access (for Playwright browser runtime download)
 - Recommended: Git
 
-## 2. Basic Install (All Platforms)
+## 2. One-Click Install (CLI First)
+
+Windows:
+
+```bat
+install.bat
+```
+
+macOS / Linux:
+
+```bash
+bash install.sh
+```
+
+What the one-click installer does:
+
+- create/reuse `.venv312`
+- install `requirements.txt`
+- install Playwright Chromium runtime
+- run `python main.py --doctor`
+- install user-level global CLI command `wr`
+
+Optional MCP setup:
+
+- Windows: `install.bat --with-mcp`
+- macOS/Linux: `bash install.sh --with-mcp`
+
+## 3. Manual Install (All Platforms)
 
 ```bash
 pip install -r requirements.txt
@@ -22,11 +49,11 @@ Windows note:
   - `.venv312\Scripts\python.exe main.py --doctor`
   - `.venv312\Scripts\python.exe main.py quick "OpenAI Agents SDK"`
 
-## 3. OS-Specific Helpers
+## 4. OS-Specific Helpers
 
 ### Windows
 
-- Basic installer: `install.bat`
+- One-click installer: `install.bat`
 - Install global CLI (`wr`): `scripts\windows\install-system-cli.bat`
 - Uninstall global CLI: `scripts\windows\uninstall-system-cli.bat`
 - Setup Claude MCP: `scripts\windows\setup-claude-mcp.bat`
@@ -47,7 +74,7 @@ Uninstall:
 ./scripts/unix/uninstall-claude-mcp.sh
 ```
 
-## 4. Verify
+## 5. Verify
 
 ```bash
 python main.py help
@@ -62,7 +89,7 @@ wr help
 wr doctor
 ```
 
-## 5. Troubleshooting
+## 6. Troubleshooting
 
 - Playwright browser missing:
   - `python -m playwright install chromium`

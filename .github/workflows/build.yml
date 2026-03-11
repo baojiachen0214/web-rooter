@@ -140,9 +140,9 @@ jobs:
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           generate_release_notes: true
           body: |
-            ## Web-Rooter MCP Server - 预编译二进制
+            ## Web-Rooter CLI-First - 预编译二进制
 
-            无需安装 Python 环境，下载对应平台的二进制文件即可直接使用。
+            无需安装 Python 环境，下载对应平台的二进制后可直接使用 CLI。
 
             ### 下载
 
@@ -157,7 +157,14 @@ jobs:
 
             1. 下载并解压对应平台的文件
             2. 首次运行会自动安装 Chromium 浏览器（需要网络）
-            3. 配置 Claude Desktop / Claude Code MCP:
+            3. 直接使用 CLI:
+
+            ```bash
+            web-rooter --doctor
+            web-rooter do "Analyze RAG benchmark paper relations with citations" --dry-run
+            ```
+
+            4. 如需 MCP，再配置 Claude Desktop / Claude Code:
 
             **Claude Code (`.mcp.json`)**:
             ```json

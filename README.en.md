@@ -6,6 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
+    <img src="https://img.shields.io/badge/version-v0.9.0--beta-yellow.svg" alt="Version v0.9.0-beta">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
     <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP%20%7C%20HTTP-orange.svg" alt="Interfaces">
@@ -73,14 +74,28 @@ AI coding assistants often face these challenges when solving real-world problem
 
 ---
 
+## Versioning Policy
+
+- We intentionally stay on `v0.x.x` while hardening stability and UX.
+- `v1.0.0` will be released only after broader community validation and compatibility confidence.
+- Current baseline: `v0.9.0`.
+
+---
+
 ## Quick Start
 
 ### Installation
 
 ```bash
-pip install -r requirements.txt
-python -m playwright install chromium
-python main.py --doctor
+# Windows (one-click)
+install.bat
+
+# macOS / Linux (one-click)
+bash install.sh
+
+# Optional: include MCP setup
+install.bat --with-mcp
+bash install.sh --with-mcp
 ```
 
 ### 5-Minute Walkthrough
@@ -114,7 +129,8 @@ python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=s
 python main.py mindsearch "multimodal LLM production engineering" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
 
 # 9. Inspect skill/extension/challenge routing state
-python main.py skills --resolve "Mine Zhihu comments and cite sources"
+python main.py skills --resolve "Mine Zhihu comments and cite sources" --compact
+python main.py skills --resolve "Mine Zhihu comments and cite sources" --full
 python main.py ir-lint .web-rooter/workflow.social.json
 python main.py planners
 python main.py challenge-profiles
@@ -194,16 +210,17 @@ Add to your Claude config file (`~/Library/Application Support/Claude/config.jso
 
 ### Windows
 
-- Basic install: `install.bat`
+- One-click install (CLI-first): `install.bat`
 - Install global `wr` command: `scripts\windows\install-system-cli.bat`
 - Claude MCP setup: `scripts\windows\setup-claude-mcp.bat`
 
 ### macOS / Linux
 
 ```bash
-chmod +x scripts/unix/*.sh
-./scripts/unix/install-system-cli.sh
-./scripts/unix/setup-claude-mcp.sh
+bash install.sh
+
+# Optional MCP setup
+bash install.sh --with-mcp
 ```
 
 ---

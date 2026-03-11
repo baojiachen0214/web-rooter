@@ -2,6 +2,11 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 
+set NO_PAUSE=0
+for %%A in (%*) do (
+    if /I "%%~A"=="--no-pause" set NO_PAUSE=1
+)
+
 set SCRIPT_DIR=%~dp0
 set SCRIPT_DIR=%SCRIPT_DIR:~0,-1%
 for %%I in ("%SCRIPT_DIR%\..\..") do set REPO_ROOT=%%~fI
@@ -14,26 +19,31 @@ echo.
 
 if not exist "%MAIN_PY%" (
     echo [错误] 未找到 main.py: %MAIN_PY%
-    pause
+    if "%NO_PAUSE%"=="0" pause
     exit /b 1
 )
 
-where python >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [错误] 未找到 Python，请先安装 Python 并加入 PATH
-    pause
-    exit /b 1
-)
-
-for /f "delims=" %%i in ('where python') do (
-    set PYTHON_PATH=%%i
-    goto :found_python
+if exist "%REPO_ROOT%\.venv312\Scripts\python.exe" (
+    set PYTHON_PATH=%REPO_ROOT%\.venv312\Scripts\python.exe
+) else if exist "%REPO_ROOT%\.venv\Scripts\python.exe" (
+    set PYTHON_PATH=%REPO_ROOT%\.venv\Scripts\python.exe
+) else (
+    where python >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo [错误] 未找到 Python，请先安装 Python 并加入 PATH
+        if "%NO_PAUSE%"=="0" pause
+        exit /b 1
+    )
+    for /f "delims=" %%i in ('where python') do (
+        set PYTHON_PATH=%%i
+        goto :found_python
+    )
 )
 :found_python
 
 if "%PYTHON_PATH%"=="" (
     echo [错误] Python 路径解析失败
-    pause
+    if "%NO_PAUSE%"=="0" pause
     exit /b 1
 )
 
@@ -115,4 +125,4 @@ echo 1. 重启终端
 echo 2. 运行 wr doctor
 echo 3. 在 Claude Code 输入 /tools
 echo.
-pause
+if "%NO_PAUSE%"=="0" pause

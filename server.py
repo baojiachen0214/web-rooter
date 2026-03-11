@@ -14,8 +14,9 @@ from tools.mcp_tools import WebTools
 from config import server_config
 from core.search.engine import SearchEngine
 from core.academic_search import AcademicSource
+from core.version import APP_VERSION
 
-app = FastAPI(title="Web-Rooter API", version="1.0.0")
+app = FastAPI(title="Web-Rooter API", version=APP_VERSION)
 
 # 全局变量
 _web_tools: Optional[WebTools] = None
@@ -101,7 +102,7 @@ class SiteSearchRequest(BaseModel):
 async def root():
     return {
         "name": "Web-Rooter API",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "status": "running"
     }
 

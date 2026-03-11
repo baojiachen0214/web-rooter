@@ -6,6 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
+    <img src="https://img.shields.io/badge/version-v0.9.0--beta-yellow.svg" alt="Version v0.9.0-beta">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
     <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP%20%7C%20HTTP-orange.svg" alt="Interfaces">
@@ -47,6 +48,14 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 - AI 只需调用 `python main.py ...` 或全局 `wr ...`
 - 同一套命令可在 Claude Code、Cursor、本地 Agent、CI 脚本中复用
 - MCP 保留为可选适配层，而不是默认工作流依赖
+
+---
+
+## 版本策略
+
+- 当前版本线使用 `v0.x.x`（预稳定阶段），避免过早宣称 `v1.0.0`
+- `v1.0.0` 仅在稳定性、兼容性和社区验证都达标后发布
+- 当前基线版本：`v0.9.0`
 
 ---
 
@@ -96,9 +105,15 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 ### 安装
 
 ```bash
-pip install -r requirements.txt
-python -m playwright install chromium
-python main.py --doctor
+# Windows（一键）
+install.bat
+
+# macOS / Linux（一键）
+bash install.sh
+
+# 可选：同时配置 MCP
+install.bat --with-mcp
+bash install.sh --with-mcp
 ```
 
 ### 5 分钟体验
@@ -213,16 +228,17 @@ chmod +x scripts/unix/setup-claude-mcp.sh
 
 ### Windows
 
-- 一键基础安装：`install.bat`
+- 一键安装（CLI First）：`install.bat`
 - 安装全局 `wr` 命令：`scripts\windows\install-system-cli.bat`
 - Claude MCP 安装：`scripts\windows\setup-claude-mcp.bat`
 
 ### macOS / Linux
 
 ```bash
-chmod +x scripts/unix/*.sh
-./scripts/unix/install-system-cli.sh
-./scripts/unix/setup-claude-mcp.sh
+bash install.sh
+
+# 可选 MCP
+bash install.sh --with-mcp
 ```
 
 ---
