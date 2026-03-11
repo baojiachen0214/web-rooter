@@ -1,5 +1,10 @@
 {
   "engine_search_urls": {
+    "quark": [
+      "https://www.quark.cn/s?q={query}",
+      "https://www.quark.cn/s?wd={query}",
+      "https://quark.sm.cn/s?wd={query}"
+    ],
     "meituan": [
       "https://i.meituan.com/s/{query}",
       "https://www.dianping.com/search/keyword/1/0_{query}"

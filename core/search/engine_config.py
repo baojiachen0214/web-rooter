@@ -303,6 +303,18 @@ class ConfigLoader:
                     "snippet": ".b_caption",
                 },
             },
+            {
+                "id": "quark",
+                "name": "夸克",
+                "baseUrl": "https://www.quark.cn",
+                "searchPath": "/s?q=",
+                "selectors": {
+                    "resultContainer": "div[class*='result'], .search-content .results",
+                    "title": "a.qk-link-wrapper, a[href^='http']",
+                    "link": "a.qk-link-wrapper, a[href^='http']",
+                    "snippet": "div[class*='desc'], p",
+                },
+            },
         ]
 
         for engine_data in default_engines:
