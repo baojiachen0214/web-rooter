@@ -654,7 +654,6 @@ class AdaptiveParser(Parser):
     """
     自适应解析器 - 当选择器失效时自动找到相似元素
 
-    灵感来自 Scrapling 的 Adaptive Parser
 
     功能：
     - 保存首次成功提取的元素特征
@@ -1011,7 +1010,6 @@ class AttributesHandler:
     """
     属性处理器 - 处理和提取元素属性
 
-    灵感来自 Scrapling 的 AttributesHandler
     """
 
     def __init__(self, element: Tag):
@@ -1085,7 +1083,6 @@ class TextHandler:
     """
     文本处理器 - 处理和提取元素文本
 
-    灵感来自 Scrapling 的 TextHandler
     """
 
     def __init__(self, element: Tag):
@@ -1177,7 +1174,6 @@ class CSSToXPath:
     """
     CSS 到 XPath 转换器
 
-    灵感来自 Scrapling 的 translator
     """
 
     # 常见 CSS 选择器到 XPath 的映射
@@ -1263,3 +1259,4 @@ class CSSToXPath:
         css = css.replace("[last()]", ":last-child")
 
         return css.strip()
+

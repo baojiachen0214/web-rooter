@@ -1,6 +1,5 @@
 """
 Response 对象 - 封装爬虫响应
-灵感来自 Scrapy 和 Scrapling 的 Response 对象
 
 功能：
 - 封装 HTML、状态码、头信息
@@ -465,3 +464,4 @@ def create_response(
             cookies=cookies,
             elapsed=elapsed,
         )
+

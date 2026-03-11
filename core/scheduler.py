@@ -1,6 +1,5 @@
 """
 Scheduler - 请求调度器
-灵感来自 Scrapy 和 Scrapling 的 Scheduler
 
 功能：
 - 优先级队列管理
@@ -618,3 +617,4 @@ async def create_scheduler(
     scheduler = Scheduler(config)
     await scheduler.open()
     return scheduler
+

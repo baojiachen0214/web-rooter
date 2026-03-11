@@ -27,6 +27,14 @@ What the one-click installer does:
 - install Playwright Chromium runtime
 - run `python main.py --doctor`
 - install user-level global CLI command `wr`
+- inject Web-Rooter CLI skill packs into Claude/Cursor/OpenCode/OpenClaw (best-effort)
+
+Default global skill paths:
+
+- Claude: `~/.claude/skills/web-rooter-cli.md`
+- Cursor: `~/.cursor/rules/web-rooter-cli.mdc`
+- OpenCode: `~/.opencode/AGENTS.md`
+- OpenClaw: `~/.openclaw/AGENTS.md`
 
 Optional MCP setup:
 
@@ -56,6 +64,7 @@ Windows note:
 - One-click installer: `install.bat`
 - Install global CLI (`wr`): `scripts\windows\install-system-cli.bat`
 - Uninstall global CLI: `scripts\windows\uninstall-system-cli.bat`
+- Install AI tool skills only: `python scripts\setup_ai_skills.py --repo-root .`
 - Setup Claude MCP: `scripts\windows\setup-claude-mcp.bat`
 - Uninstall Claude MCP: `scripts\windows\uninstall-claude-mcp.bat`
 
@@ -64,6 +73,7 @@ Windows note:
 ```bash
 chmod +x scripts/unix/*.sh
 ./scripts/unix/install-system-cli.sh
+python3 scripts/setup_ai_skills.py --repo-root .
 ./scripts/unix/setup-claude-mcp.sh
 ```
 

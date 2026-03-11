@@ -109,6 +109,13 @@ echo [4/4] 写入 Claude 权限（Desktop + Code）...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 "$mainPy='%MAIN_PY%'; $items=@('Bash(wr:*)','Bash(web*:*)',('Bash(python:'+ $mainPy + ':*)')); $targets=@(@{Path='$env:APPDATA\Claude\settings.json';Mode='desktop'},@{Path='$env:USERPROFILE\.claude\settings.json';Mode='code'}); foreach($t in $targets){ $path=$ExecutionContext.InvokeCommand.ExpandString($t.Path); $dir=Split-Path -Parent $path; if(-not (Test-Path $dir)){ [void](New-Item -ItemType Directory -Path $dir -Force) }; if(Test-Path $path){ try{ $raw=Get-Content -Raw $path; $cfg=ConvertFrom-Json $raw } catch { $cfg=[pscustomobject]@{} } } else { $cfg=[pscustomobject]@{} }; if($t.Mode -eq 'desktop'){ if(-not $cfg.permissions){ Add-Member -InputObject $cfg -NotePropertyName permissions -NotePropertyValue ([pscustomobject]@{}) }; if(-not ($cfg.permissions.PSObject.Properties.Name -contains 'allow')){ Add-Member -InputObject $cfg.permissions -NotePropertyName allow -NotePropertyValue @() }; foreach($i in $items){ if(-not ($cfg.permissions.allow -contains $i)){ $cfg.permissions.allow += $i } } } else { if(-not ($cfg.PSObject.Properties.Name -contains 'allow')){ Add-Member -InputObject $cfg -NotePropertyName allow -NotePropertyValue @() }; foreach($i in $items){ if(-not ($cfg.allow -contains $i)){ $cfg.allow += $i } } }; $json=ConvertTo-Json $cfg -Depth 20; Set-Content -Path $path -Value $json -Encoding UTF8; Write-Host ('  已更新: ' + $path) }"
 
+echo [附加] 注入 AI 工具 Skills（Claude/Cursor/OpenCode/OpenClaw）...
+"%PYTHON_PATH%" "%REPO_ROOT%\scripts\setup_ai_skills.py" --repo-root "%REPO_ROOT%"
+if errorlevel 1 (
+    echo   [警告] Skills 注入失败，可手动执行:
+    echo          "%PYTHON_PATH%" "%REPO_ROOT%\scripts\setup_ai_skills.py" --repo-root "%REPO_ROOT%"
+)
+
 echo.
 echo ========================================
 echo   安装完成

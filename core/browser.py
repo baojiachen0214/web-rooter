@@ -1,7 +1,6 @@
 """
 浏览器自动化 - 处理 JavaScript 渲染的页面
 增强版：添加隐身功能（指纹伪装、反检测）
-灵感来自 Scrapling 的 StealthyFetcher 和 playwright-search-mcp
 """
 import asyncio
 import random
@@ -72,7 +71,6 @@ class FingerprintConfig:
 class BaseBrowserManager:
     """
     浏览器管理器基类 - 提供通用的浏览器管理和状态持久化功能
-    灵感来自 playwright-search-mcp 的 BaseBrowserManager
     """
 
     def __init__(
@@ -533,7 +531,6 @@ class StealthInjector:
 class AntiBotActions:
     """
     反检测行为模拟器
-    灵感来自 playwright-search-mcp 的 anti-bot measures
     """
 
     def __init__(self, page: Page):
@@ -1797,3 +1794,4 @@ class BrowserManager(BaseBrowserManager):
             raise
         finally:
             self._untrack_active_operation(op_task)
+

@@ -74,14 +74,6 @@ AI coding assistants often face these challenges when solving real-world problem
 
 ---
 
-## Versioning Policy
-
-- We intentionally stay on `v0.x.x` while hardening stability and UX.
-- `v1.0.0` will be released only after broader community validation and compatibility confidence.
-- Current baseline: `v0.9.0`.
-
----
-
 ## Quick Start
 
 ### Installation
@@ -97,6 +89,14 @@ bash install.sh
 install.bat --with-mcp
 bash install.sh --with-mcp
 ```
+
+The installer also injects CLI skill packs into Claude Code / Cursor / OpenCode / OpenClaw (best-effort). You can rerun manually via `python scripts/setup_ai_skills.py --repo-root .`.
+
+### Zero-Dependency Binary Install (Release)
+
+- For very clean machines (no Python/pip/git), download the platform package from GitHub Release.
+- Windows: unzip and double-click `install-web-rooter.bat`.
+- macOS/Linux: unzip and run `./install-web-rooter.sh`.
 
 ### 5-Minute Walkthrough
 

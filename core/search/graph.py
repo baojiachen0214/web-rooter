@@ -1,7 +1,6 @@
 """
 搜索图结构 - 支持多子问题并行搜索
 
-灵感来自 MindSearch 的 WebSearchGraph
 
 功能:
 - 图结构管理搜索节点
@@ -422,3 +421,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

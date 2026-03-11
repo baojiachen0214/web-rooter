@@ -1,6 +1,5 @@
 """
 Session Manager - 会话管理器
-灵感来自 Scrapling 的 SessionManager
 
 功能：
 - 多 Session 支持
@@ -599,3 +598,4 @@ async def create_session_manager(
             await manager.register_session(config)
 
     return manager
+

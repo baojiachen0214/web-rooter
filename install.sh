@@ -46,34 +46,40 @@ if sys.version_info < (3, 10):
 PY
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
-  echo "[1/6] creating virtualenv: ${VENV_DIR}"
+  echo "[1/7] creating virtualenv: ${VENV_DIR}"
   "${PY_BOOTSTRAP}" -m venv "${VENV_DIR}"
 else
-  echo "[1/6] reusing virtualenv: ${VENV_DIR}"
+  echo "[1/7] reusing virtualenv: ${VENV_DIR}"
 fi
 
 PYTHON_BIN="${VENV_DIR}/bin/python"
 echo "[info] runtime python: ${PYTHON_BIN}"
 
-echo "[2/6] upgrading pip..."
+echo "[2/7] upgrading pip..."
 "${PYTHON_BIN}" -m pip install --upgrade pip
 
-echo "[3/6] installing requirements..."
+echo "[3/7] installing requirements..."
 "${PYTHON_BIN}" -m pip install -r "${REPO_ROOT}/requirements.txt"
 
-echo "[4/6] installing Playwright Chromium..."
+echo "[4/7] installing Playwright Chromium..."
 if ! "${PYTHON_BIN}" -m playwright install chromium; then
   echo "[warn] Playwright install failed; you can retry later:"
   echo "       ${PYTHON_BIN} -m playwright install chromium"
 fi
 
-echo "[5/6] running doctor..."
+echo "[5/7] running doctor..."
 if ! "${PYTHON_BIN}" "${MAIN_PY}" --doctor; then
   echo "[warn] doctor reported issues; review logs above"
 fi
 
-echo "[6/6] installing global wr command..."
+echo "[6/7] installing global wr command..."
 bash "${REPO_ROOT}/scripts/unix/install-system-cli.sh"
+
+echo "[7/7] installing AI tool skills (Claude/Cursor/OpenCode/OpenClaw)..."
+"${PYTHON_BIN}" "${REPO_ROOT}/scripts/setup_ai_skills.py" --repo-root "${REPO_ROOT}" || {
+  echo "[warn] AI skill install failed; retry manually:"
+  echo "       ${PYTHON_BIN} ${REPO_ROOT}/scripts/setup_ai_skills.py --repo-root ${REPO_ROOT}"
+}
 
 if [[ "${WITH_MCP}" == "1" ]]; then
   echo "[extra] setting up Claude MCP..."
@@ -92,4 +98,3 @@ echo "  wr skills --resolve \"Mine Zhihu comments with citations\" --compact"
 echo
 echo "Optional MCP setup:"
 echo "  bash scripts/unix/setup-claude-mcp.sh"
-

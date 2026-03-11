@@ -6,7 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
-    <img src="https://img.shields.io/badge/version-v0.9.0--beta-yellow.svg" alt="Version v0.9.0-beta">
+    <img src="https://img.shields.io/badge/version-v0.2.1-blue.svg" alt="Version v0.2.1">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
     <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP%20%7C%20HTTP-orange.svg" alt="Interfaces">
@@ -42,14 +42,6 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 - AI 只需调用 `python main.py ...` 或全局 `wr ...`
 - 同一套命令可在 Claude Code、Cursor、本地 Agent、CI 脚本中复用
 - MCP 保留为可选适配层，而不是默认工作流依赖
-
----
-
-## 版本策略
-
-- 当前版本线使用 `v0.x.x`（预稳定阶段），避免过早宣称 `v1.0.0`
-- `v1.0.0` 只在稳定性、兼容性和社区验证都达标后发布
-- 目前基线版本：`v0.9.0`
 
 ---
 
@@ -102,6 +94,14 @@ bash install.sh
 install.bat --with-mcp
 bash install.sh --with-mcp
 ```
+
+安装脚本会自动注入 CLI 操作 skills 到 Claude Code / Cursor / OpenCode / OpenClaw（best-effort，可手动重跑：`python scripts/setup_ai_skills.py --repo-root .`）。
+
+### 零依赖二进制安装（Release）
+
+- 如果机器非常干净（没有 Python/pip/git），可直接下载 GitHub Release 的平台包
+- Windows：解压后双击 `install-web-rooter.bat`
+- macOS/Linux：解压后执行 `./install-web-rooter.sh`
 
 ### 典型工作流
 

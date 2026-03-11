@@ -1,6 +1,5 @@
 """
 Checkpoint Manager - 检查点管理器
-灵感来自 Scrapling 的 CheckpointManager
 
 功能：
 - 定期保存爬虫状态
@@ -467,3 +466,4 @@ def save_checkpoint_sync(
     return checkpoint_mgr.save_checkpoint(
         scheduler_state, spider_state, stats, metadata
     )
+

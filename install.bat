@@ -52,51 +52,58 @@ if errorlevel 1 (
 )
 
 if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo [1/6] 创建虚拟环境: %VENV_DIR%
+    echo [1/7] 创建虚拟环境: %VENV_DIR%
     call %BOOTSTRAP_CMD% -m venv "%VENV_DIR%"
     if errorlevel 1 (
         echo [ERROR] 创建虚拟环境失败
         goto :failed
     )
 ) else (
-    echo [1/6] 复用已有虚拟环境: %VENV_DIR%
+    echo [1/7] 复用已有虚拟环境: %VENV_DIR%
 )
 
 set PYTHON_CMD=%VENV_DIR%\Scripts\python.exe
 echo [INFO] Runtime Python: "%PYTHON_CMD%"
 
-echo [2/6] 升级 pip...
+echo [2/7] 升级 pip...
 "%PYTHON_CMD%" -m pip install --upgrade pip
 if errorlevel 1 (
     echo [ERROR] pip 升级失败
     goto :failed
 )
 
-echo [3/6] 安装依赖...
+echo [3/7] 安装依赖...
 "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%\requirements.txt"
 if errorlevel 1 (
     echo [ERROR] 依赖安装失败
     goto :failed
 )
 
-echo [4/6] 安装 Playwright Chromium...
+echo [4/7] 安装 Playwright Chromium...
 "%PYTHON_CMD%" -m playwright install chromium
 if errorlevel 1 (
     echo [WARN] Playwright 浏览器安装失败，可稍后手动执行:
     echo        "%PYTHON_CMD%" -m playwright install chromium
 )
 
-echo [5/6] 环境自检...
+echo [5/7] 环境自检...
 "%PYTHON_CMD%" "%MAIN_PY%" --doctor
 if errorlevel 1 (
     echo [WARN] doctor 发现异常，请阅读上方输出
 )
 
-echo [6/6] 安装全局 wr 命令（用户级）...
+echo [6/7] 安装全局 wr 命令（用户级）...
 call "%SCRIPT_DIR%\scripts\windows\install-system-cli.bat" --no-pause
 if errorlevel 1 (
     echo [WARN] 全局 wr 安装失败，可稍后手动执行:
     echo        scripts\windows\install-system-cli.bat
+)
+
+echo [7/7] 注入 AI 工具 Skills（Claude/Cursor/OpenCode/OpenClaw）...
+"%PYTHON_CMD%" "%SCRIPT_DIR%\scripts\setup_ai_skills.py" --repo-root "%SCRIPT_DIR%"
+if errorlevel 1 (
+    echo [WARN] AI skills 注入失败，可稍后手动执行:
+    echo        "%PYTHON_CMD%" "%SCRIPT_DIR%\scripts\setup_ai_skills.py" --repo-root "%SCRIPT_DIR%"
 )
 
 if "%WITH_MCP%"=="1" (
@@ -127,4 +134,3 @@ echo.
 :end
 if "%NO_PAUSE%"=="0" pause
 endlocal
-

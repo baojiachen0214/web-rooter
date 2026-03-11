@@ -7,7 +7,6 @@
 - 自动扩缩容
 - 连接超时管理
 
-灵感来自 aiohttp 连接池和数据库连接池模式
 """
 import asyncio
 import time
@@ -470,3 +469,4 @@ class PooledSession:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._session:
             await self._pool.return_connection(self._session, self._url)
+
