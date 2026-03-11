@@ -60,6 +60,7 @@ echo "[2/7] upgrading pip..."
 
 echo "[3/7] installing requirements..."
 "${PYTHON_BIN}" -m pip install -r "${REPO_ROOT}/requirements.txt"
+"${PYTHON_BIN}" "${REPO_ROOT}/scripts/render_terminal_logo.py" --logo "${REPO_ROOT}/LOGO.png" --style blocks --width 64 --max-height 22 || true
 
 echo "[4/7] installing Playwright Chromium..."
 if ! "${PYTHON_BIN}" -m playwright install chromium; then

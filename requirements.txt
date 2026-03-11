@@ -19,6 +19,7 @@ asyncio>=3.12.0
 pydantic>=2.5.0
 python-dotenv>=1.0.0
 rich>=13.7.0
+Pillow>=10.2.0
 psutil>=5.9.0
 
 # MCP SDK (for AI agent integration)

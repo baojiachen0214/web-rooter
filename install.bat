@@ -79,6 +79,8 @@ if errorlevel 1 (
     goto :failed
 )
 
+"%PYTHON_CMD%" "%SCRIPT_DIR%\scripts\render_terminal_logo.py" --logo "%SCRIPT_DIR%\LOGO.png" --style blocks --width 64 --max-height 22
+
 echo [4/7] 安装 Playwright Chromium...
 "%PYTHON_CMD%" -m playwright install chromium
 if errorlevel 1 (

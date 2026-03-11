@@ -86,6 +86,17 @@ def _looks_success(payload: Any) -> bool:
     return True
 
 
+def _extract_output_error(payload: Any) -> Optional[str]:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        content = payload.get("content")
+        if isinstance(content, str) and "失败" in content:
+            return content.strip()[:240]
+    return None
+
+
 def _collect_urls(payload: Any, max_urls: int = 200) -> List[str]:
     urls: List[str] = []
     seen: set[str] = set()
@@ -184,34 +195,33 @@ def build_workflow_template(scenario: str = "social_comments") -> Dict[str, Any]
             "description": "Search papers and relation context, then visit top paper pages for evidence.",
             "variables": {
                 "topic": "retrieval augmented generation evaluation benchmark",
-                "paper_sources": ["arxiv", "semantic_scholar", "google_scholar"],
-                "num_results": 8,
+                "paper_sources": ["arxiv"],
+                "num_results": 6,
                 "crawl_top_papers": 5,
+            },
+            "runtime": {
+                "budget_sec": 180,
+                "min_optional_remaining_sec": 30,
+                "early_stop_soft_failed_steps": 2,
             },
             "steps": [
                 {
                     "id": "academic_search",
                     "tool": "academic",
+                    "timeout_sec": 60,
+                    "degrade_below_sec": 120,
+                    "degrade_args": {
+                        "sources": ["arxiv"],
+                        "num_results": 4,
+                        "fetch_abstracts": False,
+                        "include_code": False,
+                    },
                     "args": {
                         "query": "${vars.topic}",
                         "num_results": "${vars.num_results}",
-                        "include_code": True,
+                        "include_code": False,
                         "fetch_abstracts": True,
                         "sources": "${vars.paper_sources}",
-                    },
-                },
-                {
-                    "id": "mindsearch_relation",
-                    "tool": "mindsearch",
-                    "args": {
-                        "query": "${vars.topic}",
-                        "max_turns": 3,
-                        "max_branches": 4,
-                        "num_results": 6,
-                        "crawl_top": 1,
-                        "planner_name": "heuristic",
-                        "strict_expand": True,
-                        "channel_profiles": ["news", "platforms"],
                     },
                 },
                 {
@@ -220,12 +230,38 @@ def build_workflow_template(scenario: str = "social_comments") -> Dict[str, Any]
                     "for_each": "${steps.academic_search.data.papers}",
                     "item_alias": "paper",
                     "max_items": "${vars.crawl_top_papers}",
+                    "timeout_sec": 40,
+                    "item_timeout_sec": 12,
                     "continue_on_error": True,
                     "args": {
                         "url": "${local.paper.url}",
                         "use_browser": False,
                         "auto_fallback": True,
                         "max_chars": 60000,
+                    },
+                },
+                {
+                    "id": "mindsearch_relation",
+                    "tool": "mindsearch",
+                    "continue_on_error": True,
+                    "timeout_sec": 45,
+                    "degrade_below_sec": 35,
+                    "degrade_args": {
+                        "max_turns": 1,
+                        "max_branches": 2,
+                        "num_results": 4,
+                        "crawl_top": 0,
+                        "channel_profiles": ["news"],
+                    },
+                    "args": {
+                        "query": "${vars.topic}",
+                        "max_turns": 1,
+                        "max_branches": 4,
+                        "num_results": 6,
+                        "crawl_top": 0,
+                        "planner_name": "heuristic",
+                        "strict_expand": True,
+                        "channel_profiles": ["news", "platforms"],
                     },
                 },
             ],
@@ -254,8 +290,18 @@ def get_workflow_schema() -> Dict[str, Any]:
             "for_each": "optional list expression to run the step for each item",
             "item_alias": "loop variable name for for_each (default: item)",
             "max_items": "optional per-step cap for for_each",
+            "item_timeout_sec": "optional per-item timeout in for_each loops",
+            "timeout_sec": "optional per-step timeout (seconds)",
             "continue_on_error": "when true, workflow continues after this step fails",
+            "degrade_below_sec": "when remaining global budget below this threshold, apply degrade_args before execute",
+            "degrade_args": "optional args patch for degraded execution",
             "save_as": "optional variable key to save this step result into vars",
+        },
+        "runtime_fields": {
+            "budget_sec": "optional global workflow budget (seconds), 0 means disabled",
+            "min_optional_remaining_sec": "skip optional step when remaining budget below this threshold",
+            "early_stop_soft_failed_steps": "early-stop when soft-failed steps reach this threshold (0 disables)",
+            "min_step_timeout_sec": "minimum step timeout cap in low-budget mode",
         },
         "tools": {
             "visit": {"args": ["url", "use_browser", "auto_fallback"]},
@@ -288,6 +334,7 @@ class WorkflowStepReport:
     duration_ms: int
     continue_on_error: bool = False
     error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -299,6 +346,8 @@ class WorkflowStepReport:
         }
         if self.error:
             data["error"] = self.error
+        if self.metadata:
+            data["metadata"] = self.metadata
         return data
 
 
@@ -329,6 +378,9 @@ class WorkflowRunner:
     }
 
     _ENGINE_ALIAS = {item.value.lower(): item for item in AdvancedSearchEngine}
+    _DEFAULT_STEP_TIMEOUT_SEC = 180
+    _DEFAULT_MIN_OPTIONAL_REMAINING_SEC = 25
+    _DEFAULT_MIN_STEP_TIMEOUT_SEC = 5
 
     def __init__(self, agent: "WebAgent"):
         self._agent = agent
@@ -353,10 +405,47 @@ class WorkflowRunner:
         if isinstance(variable_overrides, dict):
             runtime.variables.update(variable_overrides)
 
+        runtime_cfg = spec.get("runtime") if isinstance(spec.get("runtime"), dict) else {}
+
+        def _resolve_runtime_int(raw_value: Any, default: int) -> int:
+            if raw_value is None:
+                return default
+            try:
+                resolved = self._resolve_value(raw_value, runtime, local_scope={})
+            except Exception:
+                return default
+            return _as_int(resolved, default)
+
+        budget_default = _as_int(os.getenv("WEB_ROOTER_WORKFLOW_BUDGET_SEC", "0"), 0)
+        min_optional_default = _as_int(
+            os.getenv("WEB_ROOTER_WORKFLOW_MIN_OPTIONAL_STEP_SEC", str(self._DEFAULT_MIN_OPTIONAL_REMAINING_SEC)),
+            self._DEFAULT_MIN_OPTIONAL_REMAINING_SEC,
+        )
+        early_stop_soft_default = _as_int(os.getenv("WEB_ROOTER_WORKFLOW_EARLY_STOP_SOFT_FAILS", "0"), 0)
+        min_step_timeout_default = _as_int(
+            os.getenv("WEB_ROOTER_WORKFLOW_MIN_STEP_TIMEOUT_SEC", str(self._DEFAULT_MIN_STEP_TIMEOUT_SEC)),
+            self._DEFAULT_MIN_STEP_TIMEOUT_SEC,
+        )
+
+        budget_sec = max(0, _resolve_runtime_int(runtime_cfg.get("budget_sec"), budget_default))
+        min_optional_remaining_sec = max(
+            0,
+            _resolve_runtime_int(runtime_cfg.get("min_optional_remaining_sec"), min_optional_default),
+        )
+        early_stop_soft_failed_steps = max(
+            0,
+            _resolve_runtime_int(runtime_cfg.get("early_stop_soft_failed_steps"), early_stop_soft_default),
+        )
+        min_step_timeout_sec = max(
+            1,
+            _resolve_runtime_int(runtime_cfg.get("min_step_timeout_sec"), min_step_timeout_default),
+        )
+
         reports: List[WorkflowStepReport] = []
         failed_step: Optional[str] = None
         started_at = time.time()
         hard_fail = False
+        early_stop_reason: Optional[str] = None
 
         for index, raw_step in enumerate(steps):
             if not isinstance(raw_step, dict):
@@ -371,31 +460,216 @@ class WorkflowRunner:
             start_monotonic = time.perf_counter()
             status = "completed"
             error_text: Optional[str] = None
+            report_meta: Dict[str, Any] = {}
+
+            remaining_sec: Optional[float] = None
+            if budget_sec > 0:
+                elapsed = time.time() - started_at
+                remaining_sec = max(0.0, float(budget_sec) - elapsed)
+                report_meta["remaining_sec_before"] = round(remaining_sec, 3)
+
+            if remaining_sec is not None and remaining_sec <= 0:
+                error_text = f"budget_exhausted:{budget_sec}s"
+                runtime.steps[step_id] = {
+                    "success": False,
+                    "error": error_text,
+                    "skipped": True,
+                    "reason": "budget_exhausted",
+                    "remaining_sec": 0,
+                }
+                runtime.last = runtime.steps[step_id]
+                if continue_on_error:
+                    status = "soft_failed"
+                    early_stop_reason = "budget_exhausted"
+                else:
+                    status = "failed"
+                    failed_step = step_id
+                    hard_fail = True
+
+                duration_ms = int((time.perf_counter() - start_monotonic) * 1000)
+                reports.append(
+                    WorkflowStepReport(
+                        id=step_id,
+                        tool=tool,
+                        status=status,
+                        duration_ms=duration_ms,
+                        continue_on_error=continue_on_error,
+                        error=error_text,
+                        metadata=report_meta,
+                    )
+                )
+                break
+
+            if (
+                remaining_sec is not None
+                and continue_on_error
+                and min_optional_remaining_sec > 0
+                and remaining_sec < float(min_optional_remaining_sec)
+            ):
+                error_text = (
+                    f"budget_low_skip_optional:remaining={remaining_sec:.1f}s"
+                    f"<{min_optional_remaining_sec}s"
+                )
+                runtime.steps[step_id] = {
+                    "success": False,
+                    "error": error_text,
+                    "skipped": True,
+                    "reason": "budget_low_skip_optional",
+                    "remaining_sec": round(remaining_sec, 3),
+                }
+                runtime.last = runtime.steps[step_id]
+                status = "soft_failed"
+                report_meta["skipped_optional_due_budget"] = True
+
+                duration_ms = int((time.perf_counter() - start_monotonic) * 1000)
+                reports.append(
+                    WorkflowStepReport(
+                        id=step_id,
+                        tool=tool,
+                        status=status,
+                        duration_ms=duration_ms,
+                        continue_on_error=continue_on_error,
+                        error=error_text,
+                        metadata=report_meta,
+                    )
+                )
+
+                if (
+                    early_stop_soft_failed_steps > 0
+                    and sum(1 for item in reports if item.status == "soft_failed") >= early_stop_soft_failed_steps
+                ):
+                    early_stop_reason = f"soft_failed_threshold:{early_stop_soft_failed_steps}"
+                    break
+                continue
 
             try:
-                output = await self._run_step(raw_step, runtime)
+                step_payload = raw_step
+                if remaining_sec is not None:
+                    degrade_threshold = max(
+                        0,
+                        _as_int(
+                            self._resolve_value(
+                                raw_step.get("degrade_below_sec"),
+                                runtime,
+                                local_scope={},
+                            ),
+                            0,
+                        ),
+                    )
+                    degrade_args = raw_step.get("degrade_args")
+                    if (
+                        degrade_threshold > 0
+                        and remaining_sec < float(degrade_threshold)
+                        and isinstance(degrade_args, dict)
+                    ):
+                        resolved_degrade_args = self._resolve_value(degrade_args, runtime, local_scope={})
+                        if isinstance(resolved_degrade_args, dict):
+                            step_payload = deepcopy(raw_step)
+                            step_args = step_payload.get("args")
+                            if not isinstance(step_args, dict):
+                                step_args = {}
+                            step_args.update(resolved_degrade_args)
+                            step_payload["args"] = step_args
+                            report_meta["degraded"] = True
+                            report_meta["degrade_threshold_sec"] = degrade_threshold
+
+                timeout_sec = max(
+                    5,
+                    _as_int(
+                        self._resolve_value(
+                            step_payload.get("timeout_sec"),
+                            runtime,
+                            local_scope={},
+                        ),
+                        int(os.getenv("WEB_ROOTER_WORKFLOW_STEP_TIMEOUT_SEC", str(self._DEFAULT_STEP_TIMEOUT_SEC))),
+                    ),
+                )
+                effective_timeout = timeout_sec
+                if remaining_sec is not None:
+                    budget_timeout_cap = max(1, int(remaining_sec))
+                    effective_timeout = min(timeout_sec, budget_timeout_cap)
+                    if continue_on_error and effective_timeout < min_step_timeout_sec:
+                        error_text = (
+                            f"budget_low_skip_optional_timeout:remaining={remaining_sec:.1f}s"
+                            f", timeout_cap={effective_timeout}s"
+                        )
+                        runtime.steps[step_id] = {
+                            "success": False,
+                            "error": error_text,
+                            "skipped": True,
+                            "reason": "budget_low_skip_optional_timeout",
+                            "remaining_sec": round(remaining_sec, 3),
+                        }
+                        runtime.last = runtime.steps[step_id]
+                        status = "soft_failed"
+                        report_meta["skipped_optional_due_timeout_cap"] = True
+                        duration_ms = int((time.perf_counter() - start_monotonic) * 1000)
+                        reports.append(
+                            WorkflowStepReport(
+                                id=step_id,
+                                tool=tool,
+                                status=status,
+                                duration_ms=duration_ms,
+                                continue_on_error=continue_on_error,
+                                error=error_text,
+                                metadata=report_meta,
+                            )
+                        )
+                        if (
+                            early_stop_soft_failed_steps > 0
+                            and sum(1 for item in reports if item.status == "soft_failed")
+                            >= early_stop_soft_failed_steps
+                        ):
+                            early_stop_reason = f"soft_failed_threshold:{early_stop_soft_failed_steps}"
+                            break
+                        continue
+
+                report_meta["timeout_sec"] = effective_timeout
+                output = await asyncio.wait_for(
+                    self._run_step(step_payload, runtime),
+                    timeout=effective_timeout,
+                )
                 runtime.steps[step_id] = output
                 runtime.last = output
 
-                save_as = str(raw_step.get("save_as") or "").strip()
+                save_as = str(step_payload.get("save_as") or "").strip()
                 if save_as:
                     runtime.variables[save_as] = output
 
                 step_ok = _looks_success(output)
+                if not step_ok and not error_text:
+                    error_text = _extract_output_error(output)
                 if not step_ok:
-                    if strict or not continue_on_error:
+                    # strict 模式不再覆盖 continue_on_error：
+                    # 可选步骤（continue_on_error=true）在 strict 下仍按 soft_failed 处理，
+                    # 避免外部网络/反爬波动导致整条 workflow 误判失败。
+                    if not continue_on_error:
                         status = "failed"
                         failed_step = step_id
                         hard_fail = True
                     else:
                         status = "soft_failed"
 
+            except asyncio.TimeoutError:
+                error_text = f"step_timeout:{report_meta.get('timeout_sec', 'unknown')}s"
+                runtime.steps[step_id] = {
+                    "success": False,
+                    "error": error_text,
+                }
+                runtime.last = runtime.steps[step_id]
+                if continue_on_error:
+                    status = "soft_failed"
+                else:
+                    status = "failed"
+                    failed_step = step_id
+                    hard_fail = True
+                logger.warning("workflow step timeout (%s): %s", step_id, error_text)
             except Exception as exc:
                 error_text = str(exc)
                 runtime.steps[step_id] = {"success": False, "error": error_text}
                 runtime.last = runtime.steps[step_id]
 
-                if strict or not continue_on_error:
+                if not continue_on_error:
                     status = "failed"
                     failed_step = step_id
                     hard_fail = True
@@ -412,10 +686,17 @@ class WorkflowRunner:
                     duration_ms=duration_ms,
                     continue_on_error=continue_on_error,
                     error=error_text,
+                    metadata=report_meta,
                 )
             )
 
             if hard_fail:
+                break
+            if (
+                early_stop_soft_failed_steps > 0
+                and sum(1 for item in reports if item.status == "soft_failed") >= early_stop_soft_failed_steps
+            ):
+                early_stop_reason = f"soft_failed_threshold:{early_stop_soft_failed_steps}"
                 break
 
         finished_at = time.time()
@@ -433,6 +714,13 @@ class WorkflowRunner:
             "duration_ms": int((finished_at - started_at) * 1000),
             "failed_step": failed_step,
             "soft_failed_steps": soft_failed,
+            "early_stop_reason": early_stop_reason,
+            "budget_sec": budget_sec,
+            "budget_remaining_sec": (
+                max(0.0, round(float(budget_sec) - (finished_at - started_at), 3))
+                if budget_sec > 0
+                else None
+            ),
             "variables": runtime.variables,
             "steps": runtime.steps,
             "reports": report_dicts,
@@ -462,6 +750,13 @@ class WorkflowRunner:
         max_items = max(0, _as_int(self._resolve_value(max_items_raw, runtime, local_scope={}), len(loop_items)))
         item_alias = str(step.get("item_alias") or "item").strip() or "item"
         stop_on_item_error = _as_bool(step.get("stop_on_item_error"), default=False)
+        item_timeout_sec = max(
+            0,
+            _as_int(
+                self._resolve_value(step.get("item_timeout_sec"), runtime, local_scope={}),
+                0,
+            ),
+        )
 
         items: List[Dict[str, Any]] = []
         success_count = 0
@@ -474,7 +769,13 @@ class WorkflowRunner:
             }
             call_args = self._resolve_value(args_template, runtime, local_scope=local_scope)
             try:
-                call_result = await self._invoke_tool(tool, call_args)
+                if item_timeout_sec > 0:
+                    call_result = await asyncio.wait_for(
+                        self._invoke_tool(tool, call_args),
+                        timeout=item_timeout_sec,
+                    )
+                else:
+                    call_result = await self._invoke_tool(tool, call_args)
                 ok = _looks_success(call_result)
                 if ok:
                     success_count += 1
@@ -489,6 +790,18 @@ class WorkflowRunner:
                     }
                 )
                 if not ok and stop_on_item_error:
+                    break
+            except asyncio.TimeoutError:
+                failed_count += 1
+                items.append(
+                    {
+                        "index": index,
+                        "success": False,
+                        "input": call_args,
+                        "error": f"item_timeout:{item_timeout_sec}s",
+                    }
+                )
+                if stop_on_item_error:
                     break
             except Exception as exc:
                 failed_count += 1

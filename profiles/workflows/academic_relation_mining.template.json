@@ -4,52 +4,79 @@
   "variables": {
     "topic": "retrieval augmented generation evaluation benchmark",
     "paper_sources": [
-      "arxiv",
-      "semantic_scholar",
-      "google_scholar"
+      "arxiv"
     ],
-    "num_results": 8,
+    "num_results": 6,
     "crawl_top_papers": 5
+  },
+  "runtime": {
+    "budget_sec": 180,
+    "min_optional_remaining_sec": 30,
+    "early_stop_soft_failed_steps": 2
   },
   "steps": [
     {
       "id": "academic_search",
       "tool": "academic",
+      "timeout_sec": 60,
+      "degrade_below_sec": 120,
+      "degrade_args": {
+        "sources": [
+          "arxiv"
+        ],
+        "num_results": 4,
+        "fetch_abstracts": false,
+        "include_code": false
+      },
       "args": {
         "query": "${vars.topic}",
         "num_results": "${vars.num_results}",
-        "include_code": true,
+        "include_code": false,
         "fetch_abstracts": true,
         "sources": "${vars.paper_sources}"
       }
     },
     {
-      "id": "mindsearch_relation",
-      "tool": "mindsearch",
-      "args": {
-        "query": "${vars.topic}",
-        "max_turns": 3,
-        "max_branches": 4,
-        "num_results": 6,
-        "crawl_top": 1,
-        "planner_name": "heuristic",
-        "strict_expand": true,
-        "channel_profiles": [
-          "news",
-          "platforms"
-        ]
-      }
-    },
-    {
       "id": "visit_top_papers",
-      "tool": "visit",
+      "tool": "fetch_html",
       "for_each": "${steps.academic_search.data.papers}",
       "item_alias": "paper",
       "max_items": "${vars.crawl_top_papers}",
       "continue_on_error": true,
       "args": {
         "url": "${local.paper.url}",
-        "use_browser": false
+        "use_browser": false,
+        "auto_fallback": true,
+        "max_chars": 60000
+      }
+    },
+    {
+      "id": "mindsearch_relation",
+      "tool": "mindsearch",
+      "continue_on_error": true,
+      "timeout_sec": 45,
+      "degrade_below_sec": 35,
+      "degrade_args": {
+        "max_turns": 1,
+        "max_branches": 2,
+        "num_results": 4,
+        "crawl_top": 0,
+        "channel_profiles": [
+          "news"
+        ]
+      },
+      "args": {
+        "query": "${vars.topic}",
+        "max_turns": 1,
+        "max_branches": 4,
+        "num_results": 6,
+        "crawl_top": 0,
+        "planner_name": "heuristic",
+        "strict_expand": true,
+        "channel_profiles": [
+          "news",
+          "platforms"
+        ]
       }
     }
   ]

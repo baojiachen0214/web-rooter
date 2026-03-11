@@ -32,11 +32,45 @@ from core.command_ir import build_command_ir, lint_command_ir, summarize_lint, h
 from core.safe_mode import get_safe_mode_manager, evaluate_safe_mode_command
 from core.job_system import get_job_store, spawn_job_worker
 from core.version import APP_VERSION
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+from core.terminal_logo import render_logo_from_png
+from core.updater import (
+    compare_semver_tags,
+    fetch_github_releases,
+    infer_github_repo_from_git,
+    is_git_repo,
+    select_latest_release,
+    update_git_to_tag,
 )
+
+try:
+    from rich.console import Console
+    from rich.logging import RichHandler
+    from rich.panel import Panel
+    from rich.syntax import Syntax
+    from rich.table import Table
+    from rich.text import Text
+
+    _RICH_AVAILABLE = True
+except Exception:
+    Console = None  # type: ignore
+    RichHandler = None  # type: ignore
+    Panel = None  # type: ignore
+    Syntax = None  # type: ignore
+    Table = None  # type: ignore
+    Text = None  # type: ignore
+    _RICH_AVAILABLE = False
+
+if _RICH_AVAILABLE and str(os.getenv("WEB_ROOTER_NO_RICH_LOG", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        handlers=[RichHandler(show_time=True, show_path=False, markup=True)],
+    )
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
 logger = logging.getLogger(__name__)
 
 # 仅在显式开启时才切换 SelectorEventLoop（默认保持系统策略，避免影响 Playwright 子进程）。
@@ -134,6 +168,10 @@ class WebRooterCLI:
         "tech",
         "export",
         "doctor",
+        "update",
+        "upgrade",
+        "self-update",
+        "self_update",
         "help",
         "quit",
         "exit",
@@ -147,14 +185,60 @@ class WebRooterCLI:
         self.tools: Optional[WebTools] = None
         self._safe_mode = get_safe_mode_manager()
         self._job_store = get_job_store()
+        rich_disabled = str(os.getenv("WEB_ROOTER_NO_RICH", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        self._console = Console() if (_RICH_AVAILABLE and not rich_disabled) else None
+        self._theme = {
+            "info": "bold cyan",
+            "success": "bold green",
+            "warn": "bold yellow",
+            "error": "bold red",
+            "usage": "magenta",
+            "dim": "dim",
+        }
+
+    def _print_line(self, text: str, level: str = "info") -> None:
+        if self._console:
+            style = self._theme.get(level, "")
+            if style:
+                self._console.print(text, style=style)
+            else:
+                self._console.print(text)
+        else:
+            print(text)
+
+    def _print_usage(self, text: str) -> None:
+        self._print_line(text, level="usage")
 
     async def start(self):
         """启动"""
         self.agent = WebAgent()
         await self.agent._init()
-        print(f"[Web]  Web-Rooter v{APP_VERSION} 已启动")
-        print("输入 'help' 查看可用命令")
-        print()
+        if self._console:
+            no_color_env = str(os.getenv("NO_COLOR", "")).strip() != ""
+            color_logo = bool(getattr(self._console, "color_system", None)) and not no_color_env
+            logo = render_logo_from_png(
+                Path(__file__).resolve().parent / "LOGO.png",
+                width=52,
+                max_height=18,
+                color=color_logo,
+                style="blocks",
+            )
+            if logo and Text is not None:
+                self._console.print(Text.from_ansi(logo))
+            if Panel is not None:
+                self._console.print(
+                    Panel.fit(
+                        f"Web-Rooter v{APP_VERSION} 已启动\n输入 'help' 查看可用命令",
+                        border_style="cyan",
+                    )
+                )
+            else:
+                self._console.print(f"[Web]  Web-Rooter v{APP_VERSION} 已启动")
+                self._console.print("输入 'help' 查看可用命令")
+        else:
+            print(f"[Web]  Web-Rooter v{APP_VERSION} 已启动")
+            print("输入 'help' 查看可用命令")
+            print()
 
 
     async def _ensure_tools(self):
@@ -169,7 +253,10 @@ class WebRooterCLI:
             await self.agent.close()
         if self.tools:
             await self.tools.close()
-        print("Bye 再见!")
+        if self._console:
+            self._console.print("Bye 再见!", style="bold green")
+        else:
+            print("Bye 再见!")
 
     async def run_command(self, command: str, args: list[str]) -> bool:
         """运行命令"""
@@ -271,7 +358,7 @@ class WebRooterCLI:
 
             task_text = " ".join(task_parts).strip()
             if not task_text:
-                print("用法：do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
+                self._print_usage("用法：do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
                 return True
 
             result = await self.agent.run_do_task(
@@ -339,7 +426,7 @@ class WebRooterCLI:
 
             task_text = " ".join(task_parts).strip()
             if not task_text:
-                print("用法：do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
+                self._print_usage("用法：do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
                 return True
 
             payload = self.agent.build_skill_playbook(
@@ -412,7 +499,7 @@ class WebRooterCLI:
 
             task_text = " ".join(task_parts).strip()
             if not task_text:
-                print("用法：do-submit <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--timeout-sec=N] [--html-first|--no-html-first]")
+                self._print_usage("用法：do-submit <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--timeout-sec=N] [--html-first|--no-html-first]")
                 return True
 
             options = {
@@ -446,8 +533,8 @@ class WebRooterCLI:
                     "success": True,
                     "job": updated or job,
                     "next": [
-                        f"python main.py job-status {job['id']}",
-                        f"python main.py job-result {job['id']}",
+                        f"wr job-status {job['id']}",
+                        f"wr job-result {job['id']}",
                     ],
                 }
             )
@@ -571,7 +658,7 @@ class WebRooterCLI:
         elif command in {"ir-lint", "ir_lint", "lint-ir", "lint_ir"} and args:
             raw_input = " ".join(args).strip()
             if not raw_input:
-                print("用法：ir-lint <ir-file|json|workflow-file|workflow-json>")
+                self._print_usage("用法：ir-lint <ir-file|json|workflow-file|workflow-json>")
                 return True
             try:
                 data = self._load_workflow_spec(raw_input)
@@ -657,7 +744,7 @@ class WebRooterCLI:
 
             raw_input = " ".join(input_parts).strip()
             if not raw_input:
-                print("用法：quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]")
+                self._print_usage("用法：quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]")
                 return True
 
             await self._run_inferred_input(
@@ -713,7 +800,7 @@ class WebRooterCLI:
 
             task_input = " ".join(input_parts).strip()
             if not task_input:
-                print("用法：task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]")
+                self._print_usage("用法：task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]")
                 return True
 
             result = await self.agent.orchestrate_task(
@@ -738,7 +825,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：search <query> [url]")
+                self._print_usage("用法：search <query> [url]")
                 return True
 
             result = await self.agent.search(query, url)
@@ -854,7 +941,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：web <query> [--no-crawl] [--crawl-pages=N] [--num-results=N] [--engine=name|a,b]")
+                self._print_usage("用法：web <query> [--no-crawl] [--crawl-pages=N] [--num-results=N] [--engine=name|a,b]")
                 return True
 
             if engine_tokens:
@@ -957,7 +1044,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：mindsearch <query> [--turns=N] [--branches=N] [--num-results=N] [--crawl=N] [--en] [--planner=name] [--strict-expand] [--news|--platforms|--commerce|--channel=x,y]")
+                self._print_usage("用法：mindsearch <query> [--turns=N] [--branches=N] [--num-results=N] [--crawl=N] [--en] [--planner=name] [--strict-expand] [--news|--platforms|--commerce|--channel=x,y]")
                 return True
 
             result = await self.agent.mindsearch_research(
@@ -1040,7 +1127,7 @@ class WebRooterCLI:
 
         elif command in {"auth-hint", "auth_hint", "login-hint", "login_hint"}:
             if not args:
-                print("用法：auth-hint <url>")
+                self._print_usage("用法：auth-hint <url>")
                 return True
             data = self.agent.get_auth_hint(args[0])
             self._print_result({"success": True, **data})
@@ -1151,9 +1238,9 @@ class WebRooterCLI:
 
             spec_input = " ".join(spec_parts).strip()
             if not spec_input:
-                print("用法：workflow <spec-file|json> [--var key=value] [--set key=value] [--strict] [--dry-run]")
-                print("示例：workflow .web-rooter/workflow.social.json --var topic='AI Agent 评论' --var top_hits=8")
-                print("先生成模板：workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force")
+                self._print_usage("用法：workflow <spec-file|json> [--var key=value] [--set key=value] [--strict] [--dry-run]")
+                self._print_line("示例：workflow .web-rooter/workflow.social.json --var topic='AI Agent 评论' --var top_hits=8", level="dim")
+                self._print_line("先生成模板：workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force", level="dim")
                 return True
 
             try:
@@ -1261,7 +1348,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：academic <query> [--papers-only|--with-code] [--no-abstracts] [--num-results=N] [--source=arxiv]")
+                self._print_usage("用法：academic <query> [--papers-only|--with-code] [--no-abstracts] [--num-results=N] [--source=arxiv]")
                 return True
 
             result = await self.agent.search_academic(
@@ -1339,7 +1426,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--engine=name|a,b] [--news] [--platforms] [--commerce] [--channel=x,y]")
+                self._print_usage("用法：deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--engine=name|a,b] [--news] [--platforms] [--commerce] [--channel=x,y]")
                 return True
 
             selected_engines: Optional[List[AdvancedSearchEngine]] = None
@@ -1404,7 +1491,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：social <query> [--platform=xiaohongshu|zhihu|tieba|douyin|bilibili|weibo|reddit|twitter]")
+                self._print_usage("用法：social <query> [--platform=xiaohongshu|zhihu|tieba|douyin|bilibili|weibo|reddit|twitter]")
                 return True
 
             logger.info(f"搜索社交媒体：{query}, 平台：{platforms or '全部'}")
@@ -1431,7 +1518,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：shopping <query> [--platform=taobao|jd|pinduoduo|meituan]")
+                self._print_usage("用法：shopping <query> [--platform=taobao|jd|pinduoduo|meituan]")
                 return True
 
             logger.info(f"搜索电商平台：{query}, 平台：{platforms or '全部'}")
@@ -1453,7 +1540,7 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：tech <query> [--source=github] [--source=stackoverflow]")
+                self._print_usage("用法：tech <query> [--source=github] [--source=stackoverflow]")
                 return True
 
             logger.info(f"搜索技术内容：{query}, 来源：{sources or '全部'}")
@@ -1462,13 +1549,13 @@ class WebRooterCLI:
 
         elif command == "export":
             if len(args) < 2:
-                print("用法：export <query> <output_file>")
-                print("示例：export AI 新闻 output.json")
+                self._print_usage("用法：export <query> <output_file>")
+                self._print_line("示例：export AI 新闻 output.json", level="dim")
             else:
                 query = " ".join(args[:-1]).strip()
                 output_file = args[-1]
                 if not query:
-                    print("Error: 查询词不能为空")
+                    self._print_line("Error: 查询词不能为空", level="error")
                     return True
 
                 deep_search = DeepSearchEngine()
@@ -1484,11 +1571,15 @@ class WebRooterCLI:
 
                 with open(output_file, "w", encoding="utf-8") as f:
                     json.dump(result, f, ensure_ascii=False, indent=2)
-                print(f"结果已导出到：{output_file}")
-                print(f"共 {result['total_results']} 条结果")
+                self._print_line(f"结果已导出到：{output_file}", level="success")
+                self._print_line(f"共 {result['total_results']} 条结果", level="info")
 
         elif command == "doctor":
             await self._run_doctor()
+
+        elif command in {"update", "upgrade", "self-update", "self_update"}:
+            payload = await self._run_update_command(args)
+            self._print_result(payload)
 
         elif command == "help":
             self._print_help()
@@ -1501,7 +1592,7 @@ class WebRooterCLI:
                 use_browser = "--js" in args
                 url_parts = [command] + [a for a in args if not a.startswith("--")]
                 url = " ".join(url_parts).strip()
-                print(f"[提示] 未识别命令 '{command}'，检测为 URL，按 visit 执行。")
+                self._print_line(f"[提示] 未识别命令 '{command}'，检测为 URL，按 visit 执行。", level="warn")
                 await self._run_inferred_input(url, use_browser=use_browser)
             else:
                 unknown_payload = self._build_unknown_command_payload(command, args=args)
@@ -1530,11 +1621,11 @@ class WebRooterCLI:
 
                 inferred_input = " ".join([command] + query_parts).strip()
                 if inferred_input:
-                    print(f"[提示] 未识别命令 '{command}'，按智能模式执行。")
+                    self._print_line(f"[提示] 未识别命令 '{command}'，按智能模式执行。", level="warn")
                     await self._run_inferred_input(inferred_input, crawl_pages=crawl_pages)
                 else:
-                    print(f"Error: 未知命令：{command}")
-                    print("输入 'help' 查看可用命令")
+                    self._print_line(f"Error: 未知命令：{command}", level="error")
+                    self._print_line("输入 'help' 查看可用命令", level="dim")
                     return True
 
         return True
@@ -1735,9 +1826,9 @@ class WebRooterCLI:
             "hint": "Possible command typo. Use suggested commands, or use `quick`/`do` for free-form goals.",
             "suggestions": suggestions,
             "recommended": [
-                f"python main.py {suggestions[0]} ...",
-                "python main.py do-plan \"<goal>\"",
-                "python main.py do \"<goal>\"",
+                f"wr {suggestions[0]} ...",
+                "wr do-plan \"<goal>\"",
+                "wr do \"<goal>\"",
             ],
         }
 
@@ -1764,9 +1855,9 @@ class WebRooterCLI:
                 escaped_goal = goal_text.replace('"', '\\"')
                 if selected_skill:
                     payload["recommended"] = [
-                        f'python main.py do-plan "{escaped_goal}" --skill={selected_skill}',
-                        f'python main.py do "{escaped_goal}" --skill={selected_skill} --dry-run',
-                        f'python main.py do "{escaped_goal}" --skill={selected_skill}',
+                        f'wr do-plan "{escaped_goal}" --skill={selected_skill}',
+                        f'wr do "{escaped_goal}" --skill={selected_skill} --dry-run',
+                        f'wr do "{escaped_goal}" --skill={selected_skill}',
                     ]
                 payload["auto_resolution"] = {
                     "goal": goal_text,
@@ -1892,20 +1983,244 @@ class WebRooterCLI:
             raise ValueError("workflow JSON root must be an object")
         return data
 
+    async def _run_update_command(self, args: List[str]) -> Dict[str, Any]:
+        """
+        自更新命令：
+        - wr update --check
+        - wr update --list
+        - wr update --to v0.2.2 --yes
+        - wr update               (交互式选择版本)
+        """
+        env_repo = str(os.getenv("WEB_ROOTER_GITHUB_REPO", "")).strip()
+        inferred_repo = infer_github_repo_from_git(Path.cwd(), remote="origin") or infer_github_repo_from_git(Path.cwd(), remote="github")
+        repo = env_repo or inferred_repo or "baojiachen0214/web-rooter"
+        include_prerelease = False
+        check_only = False
+        list_only = False
+        yes = False
+        force = False
+        limit = 10
+        target_tag: Optional[str] = None
+        i = 0
+        while i < len(args):
+            arg = str(args[i]).strip()
+            lower = arg.lower()
+            if lower in {"--check", "-c"}:
+                check_only = True
+            elif lower in {"--list", "-l"}:
+                list_only = True
+            elif lower in {"--yes", "-y"}:
+                yes = True
+            elif lower == "--force":
+                force = True
+            elif lower in {"--prerelease", "--pre"}:
+                include_prerelease = True
+            elif lower.startswith("--repo="):
+                repo = arg.split("=", 1)[1].strip() or repo
+            elif lower == "--repo" and i + 1 < len(args):
+                i += 1
+                repo = str(args[i]).strip() or repo
+            elif lower.startswith("--to="):
+                target_tag = arg.split("=", 1)[1].strip() or None
+            elif lower in {"--to", "-t"} and i + 1 < len(args):
+                i += 1
+                target_tag = str(args[i]).strip() or None
+            elif lower.startswith("--limit="):
+                limit = max(1, min(30, self._parse_option_int(arg.split("=", 1)[1], 10)))
+            elif lower == "--limit" and i + 1 < len(args):
+                i += 1
+                limit = max(1, min(30, self._parse_option_int(str(args[i]), 10)))
+            i += 1
+
+        current_tag = f"v{APP_VERSION}"
+        try:
+            releases = await asyncio.to_thread(
+                fetch_github_releases,
+                repo,
+                limit,
+                include_prerelease,
+            )
+        except Exception as exc:
+            token_present = bool(
+                str(os.getenv("WEB_ROOTER_GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
+            )
+            hint = None
+            if "404" in str(exc) and not token_present:
+                hint = "仓库可能为私有或不存在；可设置 WEB_ROOTER_GITHUB_TOKEN 后重试，或显式指定 --repo=owner/repo。"
+            return {
+                "success": False,
+                "error": str(exc),
+                "repo": repo,
+                "current_version": current_tag,
+                "hint": hint,
+            }
+
+        latest = select_latest_release(releases)
+        latest_tag = latest.tag_name if latest else None
+        cmp = compare_semver_tags(current_tag, latest_tag) if latest_tag else None
+
+        if list_only:
+            return {
+                "success": True,
+                "mode": "list",
+                "repo": repo,
+                "current_version": current_tag,
+                "latest": (latest.to_dict() if latest else None),
+                "releases": [item.to_dict() for item in releases],
+            }
+
+        if check_only:
+            return {
+                "success": True,
+                "mode": "check",
+                "repo": repo,
+                "current_version": current_tag,
+                "latest_version": latest_tag,
+                "update_available": (cmp == 1 if cmp is not None else None),
+                "latest_release": (latest.to_dict() if latest else None),
+            }
+
+        if not releases:
+            return {
+                "success": False,
+                "error": "no_releases_found",
+                "repo": repo,
+                "current_version": current_tag,
+            }
+
+        if not target_tag:
+            target_tag = latest_tag
+            if not yes and sys.stdin.isatty():
+                selected = self._prompt_select_release(releases)
+                if selected is None:
+                    return {
+                        "success": False,
+                        "error": "update_cancelled",
+                        "repo": repo,
+                        "current_version": current_tag,
+                    }
+                target_tag = selected
+
+        if not target_tag:
+            return {
+                "success": False,
+                "error": "target_tag_empty",
+                "repo": repo,
+            }
+
+        if target_tag == current_tag:
+            return {
+                "success": True,
+                "mode": "noop",
+                "repo": repo,
+                "message": f"当前已是目标版本：{current_tag}",
+                "current_version": current_tag,
+            }
+
+        if not is_git_repo(Path.cwd()):
+            return {
+                "success": False,
+                "error": "not_git_repo",
+                "repo_root": str(Path.cwd()),
+                "hint": "当前目录不是 git 仓库；请使用 release 包重新安装，或在源码仓库里执行 wr update。",
+                "target_version": target_tag,
+            }
+
+        if not yes and sys.stdin.isatty():
+            self._print_line(f"将仓库切换到 {target_tag}，是否继续？[y/N]", level="warn")
+            confirm = input("> ").strip().lower()
+            if confirm not in {"y", "yes"}:
+                return {
+                    "success": False,
+                    "error": "update_cancelled",
+                    "target_version": target_tag,
+                }
+
+        apply_result = await asyncio.to_thread(
+            update_git_to_tag,
+            Path.cwd(),
+            target_tag,
+            "origin",
+            force,
+        )
+        apply_result["repo"] = repo
+        apply_result["current_version"] = current_tag
+        apply_result["target_version"] = target_tag
+        if apply_result.get("success"):
+            apply_result["next_steps"] = [
+                "重新打开终端，执行 `wr --version` 确认版本。",
+                "执行 `wr doctor` 检查运行环境。",
+            ]
+        return apply_result
+
+    def _prompt_select_release(self, releases: List[Any]) -> Optional[str]:
+        if not releases:
+            return None
+
+        items = releases[:10]
+        if self._console and Table is not None:
+            table = Table(show_header=True, header_style="bold cyan")
+            table.add_column("#", width=4)
+            table.add_column("Tag", width=14)
+            table.add_column("Published", width=12)
+            table.add_column("Type", width=12)
+            table.add_column("Name", overflow="fold")
+            for idx, item in enumerate(items, 1):
+                tag = str(getattr(item, "tag_name", "") or "")
+                name = str(getattr(item, "name", "") or tag)
+                published = str(getattr(item, "published_at", "") or "")[:10]
+                prerelease = bool(getattr(item, "prerelease", False))
+                typ = "pre-release" if prerelease else "stable"
+                table.add_row(str(idx), tag, published, typ, name)
+            self._console.print(table)
+            self._print_line("输入版本序号（回车默认最新，q 取消）:", level="info")
+        else:
+            print("可选版本:")
+            for idx, item in enumerate(items, 1):
+                tag = str(getattr(item, "tag_name", "") or "")
+                name = str(getattr(item, "name", "") or tag)
+                published = str(getattr(item, "published_at", "") or "")[:10]
+                prerelease = bool(getattr(item, "prerelease", False))
+                typ = "pre-release" if prerelease else "stable"
+                print(f"  {idx}. {tag} ({typ}, {published}) - {name}")
+            print("输入版本序号（回车默认最新，q 取消）:")
+
+        raw = input("> ").strip().lower()
+        if raw in {"q", "quit", "cancel", "n", "no"}:
+            return None
+        if raw == "":
+            return str(getattr(items[0], "tag_name", "") or "")
+        idx = self._parse_option_int(raw, 1)
+        idx = max(1, min(len(items), idx))
+        return str(getattr(items[idx - 1], "tag_name", "") or "")
+
     async def _run_doctor(self):
         """运行本地环境诊断，减少 CLI 集成的试错成本。"""
-        print("=" * 60)
-        print("Web-Rooter Doctor")
-        print("=" * 60)
+        if self._console and Panel is not None:
+            self._console.print(Panel.fit("Web-Rooter Doctor", border_style="cyan"))
+        else:
+            print("=" * 60)
+            print("Web-Rooter Doctor")
+            print("=" * 60)
 
         checks = []
+        check_rows: List[Dict[str, Any]] = []
 
         def add_check(name: str, ok: bool, detail: str, fix: Optional[str] = None):
             checks.append(ok)
             marker = "OK" if ok else "FAIL"
-            print(f"[{marker}] {name}: {detail}")
-            if fix and not ok:
-                print(f"      修复建议: {fix}")
+            check_rows.append(
+                {
+                    "marker": marker,
+                    "name": name,
+                    "detail": detail,
+                    "fix": fix if (fix and not ok) else "",
+                }
+            )
+            if self._console is None:
+                print(f"[{marker}] {name}: {detail}")
+                if fix and not ok:
+                    print(f"      修复建议: {fix}")
 
         def short_error(exc: Exception) -> str:
             message = str(exc).strip()
@@ -1965,7 +2280,7 @@ class WebRooterCLI:
             sys.version_info >= (3, 10),
             f"{python_version} ({sys.executable})",
             (
-                f"请升级到 Python 3.10+，或改用: {recommended_python} main.py --doctor"
+                f"请升级到 Python 3.10+，或改用: {recommended_python} main.py doctor"
                 if recommended_python
                 else "请升级到 Python 3.10 或更高版本"
             ),
@@ -2045,11 +2360,35 @@ class WebRooterCLI:
             )
 
         success_count = sum(1 for ok in checks if ok)
-        print("-" * 60)
-        print(f"诊断结果: {success_count}/{len(checks)} 通过")
-        if success_count != len(checks):
-            print("建议先完成 FAIL 项，再执行深度抓取任务。")
-        print("=" * 60)
+        if self._console and Table is not None:
+            table = Table(show_header=True, header_style="bold cyan")
+            table.add_column("状态", width=8)
+            table.add_column("检查项", width=26)
+            table.add_column("详情", overflow="fold")
+            table.add_column("修复建议", overflow="fold")
+            for row in check_rows:
+                status = "PASS" if row["marker"] == "OK" else "FAIL"
+                style = "green" if row["marker"] == "OK" else "red"
+                table.add_row(
+                    f"[{style}]{status}[/{style}]",
+                    str(row["name"]),
+                    str(row["detail"]),
+                    str(row["fix"] or "-"),
+                )
+            self._console.print(table)
+            summary_style = "bold green" if success_count == len(checks) else "bold yellow"
+            self._console.print(
+                f"诊断结果: {success_count}/{len(checks)} 通过",
+                style=summary_style,
+            )
+            if success_count != len(checks):
+                self._console.print("建议先完成 FAIL 项，再执行深度抓取任务。", style="yellow")
+        else:
+            print("-" * 60)
+            print(f"诊断结果: {success_count}/{len(checks)} 通过")
+            if success_count != len(checks):
+                print("建议先完成 FAIL 项，再执行深度抓取任务。")
+            print("=" * 60)
 
     def _print_result(self, result):
         """打印结果"""
@@ -2076,9 +2415,28 @@ class WebRooterCLI:
             rendered = json.dumps(render_target, ensure_ascii=False, indent=2)
             if len(rendered) > max_chars:
                 rendered = rendered[:max_chars] + "\n... [truncated]"
-            print(rendered)
+            if self._console and Syntax is not None and Panel is not None:
+                syntax = Syntax(rendered, "json", word_wrap=True)
+                status_ok = bool(render_target.get("success")) if isinstance(render_target, dict) and "success" in render_target else None
+                if status_ok is True:
+                    border = "green"
+                    title = "Result · Success"
+                elif status_ok is False:
+                    border = "red"
+                    title = "Result · Error"
+                else:
+                    border = "cyan"
+                    title = "Result"
+                self._console.print(Panel(syntax, title=title, border_style=border))
+            elif self._console:
+                self._console.print(rendered)
+            else:
+                print(rendered)
         else:
-            print(result)
+            if self._console:
+                self._console.print(result)
+            else:
+                print(result)
 
     def _print_help(self):
         """打印帮助"""
@@ -2137,6 +2495,8 @@ Web-Rooter 可用命令:
   job-result <job_id>             - 读取作业结果
   safe-mode [status|on|off] [--policy=strict]
                                   - AI 命令防火墙（strict 模式只允许高层命令）
+  update [--check|--list] [--to vX.Y.Z] [--yes] [--prerelease]
+                                  - 连接 GitHub 检查/选择并更新本地版本（git 仓库）
   doctor                          - 环境自检（依赖/浏览器/抓取链路）
   context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
   processors [--load=module:obj] [--force] - 查看/加载抓取后处理扩展
@@ -2195,12 +2555,27 @@ Web-Rooter 可用命令:
   workflow .web-rooter/workflow.social.json --var topic=\"手机 评测\" --var top_hits=8
   workflow-template .web-rooter/workflow.academic.json --scenario=academic_relations --force
   workflow .web-rooter/workflow.academic.json --var topic=\"RAG evaluation benchmark\" --strict
+  update --check
+  update --list
+  update --to v0.2.1 --yes
   doctor
   # 也可直接输入 URL 或查询词（可疑命令拼写会先拦截并给建议）
-  python main.py "https://example.com"
-  python main.py "量化交易 因子 最新讨论"
+  wr "https://example.com"
+  wr "量化交易 因子 最新讨论"
 """
-        print(help_text)
+        if self._console and Panel is not None:
+            self._console.print(
+                Panel(
+                    help_text.strip("\n"),
+                    title="Web-Rooter CLI Help",
+                    border_style="cyan",
+                    expand=False,
+                )
+            )
+        elif self._console:
+            self._console.print(help_text)
+        else:
+            print(help_text)
 
 
 async def interactive_mode():
