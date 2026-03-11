@@ -24,7 +24,7 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x64
             artifact_name: web-rooter-linux-x64
-          - os: macos-13
+          - os: macos-15-intel
             platform: macos-x64
             artifact_name: web-rooter-macos-x64
           - os: macos-latest
