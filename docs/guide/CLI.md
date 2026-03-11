@@ -148,3 +148,4 @@ Workflow 机制的意义：
 - 无法稳定用 HTTP 抓取时，优先 `visit --js` 或 `quick --js`
 - `web/deep/academic/research` 输出包含 `citations` 字段；`deep/research` 还包含 `comparison` 交叉来源统计
 - `challenge-profiles` 会显示 profile 来源（`builtin` 或 JSON 路径），便于排查平台级挑战策略是否生效
+- `profiles/challenge_profiles/china_platforms.json` 已提供社交/电商/GitHub 的平台级 challenge 模板，可按站点继续细化

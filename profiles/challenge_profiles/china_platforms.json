@@ -213,6 +213,183 @@
       ]
     },
     {
+      "name": "github_platform_gate",
+      "priority": 332,
+      "domains": ["github.com", "gist.github.com"],
+      "markers": ["github", "verify", "captcha", "challenge", "robot", "human verification", "are you a robot"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 800},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('Verify')",
+            "button:has-text('Continue')",
+            "button:has-text('I am human')",
+            "button:has-text('I\\'m human')",
+            "[role='button']:has-text('Verify')",
+            "[role='button']:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "frame_click_any",
+          "frame_keywords": ["captcha", "challenge", "cloudflare", "recaptcha", "hcaptcha"],
+          "selectors": ["#recaptcha-anchor", "input[type='checkbox']", "div[role='checkbox']", "button"],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {"type": "delay", "wait_ms": 1000},
+        {"type": "wait_challenge_disappear", "timeout_ms": 6200}
+      ]
+    },
+    {
+      "name": "taobao_platform_gate",
+      "priority": 355,
+      "domains": ["taobao.com", "tmall.com"],
+      "markers": ["taobao", "tmall", "slide", "slider", "captcha", "安全验证", "拖动", "登录", "verify"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 850},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": [
+            "div[role='slider']",
+            "[class*='slider' i]",
+            "[id*='slider' i]",
+            "[class*='verify' i] [class*='drag' i]"
+          ],
+          "distance_px": 300,
+          "timeout_ms": 2800,
+          "retries": 3
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 7200}
+      ]
+    },
+    {
+      "name": "jd_platform_gate",
+      "priority": 354,
+      "domains": ["jd.com", "jingdong.com"],
+      "markers": ["jd", "jingdong", "slide", "slider", "captcha", "安全验证", "拖动", "登录", "verify"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 850},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": [
+            "div[role='slider']",
+            "[class*='slider' i]",
+            "[id*='slider' i]",
+            "[class*='verify' i] [class*='drag' i]"
+          ],
+          "distance_px": 285,
+          "timeout_ms": 2700,
+          "retries": 3
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 7000}
+      ]
+    },
+    {
+      "name": "pinduoduo_platform_gate",
+      "priority": 353,
+      "domains": ["pinduoduo.com", "yangkeduo.com"],
+      "markers": ["pinduoduo", "yangkeduo", "slide", "slider", "captcha", "安全验证", "拖动", "登录", "verify"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 850},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": [
+            "div[role='slider']",
+            "[class*='slider' i]",
+            "[id*='slider' i]",
+            "[class*='verify' i] [class*='drag' i]"
+          ],
+          "distance_px": 290,
+          "timeout_ms": 2700,
+          "retries": 3
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 7000}
+      ]
+    },
+    {
+      "name": "meituan_platform_gate",
+      "priority": 352,
+      "domains": ["meituan.com", "dianping.com"],
+      "markers": ["meituan", "dianping", "slide", "slider", "captcha", "安全验证", "拖动", "登录", "verify"],
+      "steps": [
+        {"type": "mouse_move"},
+        {"type": "scroll"},
+        {"type": "delay", "wait_ms": 850},
+        {
+          "type": "click_any",
+          "selectors": [
+            "button:has-text('验证')",
+            "button:has-text('继续')",
+            "button:has-text('确定')",
+            "button:has-text('Verify')",
+            "button:has-text('Continue')"
+          ],
+          "timeout_ms": 1800,
+          "retries": 2
+        },
+        {
+          "type": "drag_slider_any",
+          "selectors": [
+            "div[role='slider']",
+            "[class*='slider' i]",
+            "[id*='slider' i]",
+            "[class*='verify' i] [class*='drag' i]"
+          ],
+          "distance_px": 280,
+          "timeout_ms": 2600,
+          "retries": 3
+        },
+        {"type": "wait_challenge_disappear", "timeout_ms": 6800}
+      ]
+    },
+    {
       "name": "ecommerce_slider_gate",
       "priority": 348,
       "domains": ["taobao.com", "tmall.com", "jd.com", "pinduoduo.com", "yangkeduo.com", "meituan.com", "dianping.com"],
