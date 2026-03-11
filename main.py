@@ -20,7 +20,13 @@ import logging
 
 from agents.web_agent import WebAgent
 from tools.mcp_tools import WebTools, run_mcp_server
-from core.search.advanced import DeepSearchEngine, search_social_media, search_tech, search_commerce
+from core.search.advanced import (
+    DeepSearchEngine,
+    AdvancedSearchEngine,
+    search_social_media,
+    search_tech,
+    search_commerce,
+)
 from core.academic_search import AcademicSource
 from core.command_ir import build_command_ir, lint_command_ir, summarize_lint, has_lint_errors
 from core.safe_mode import get_safe_mode_manager, evaluate_safe_mode_command
@@ -798,6 +804,8 @@ class WebRooterCLI:
         elif command == "web" and args:
             auto_crawl = True
             crawl_pages = 3
+            num_results = 10
+            engine_tokens: List[str] = []
             query_parts = []
             i = 0
 
@@ -815,21 +823,62 @@ class WebRooterCLI:
                 elif arg == "--crawl" and i + 1 < len(args):
                     i += 1
                     crawl_pages = self._parse_option_int(args[i], crawl_pages)
+                elif arg.startswith("--num-results="):
+                    num_results = self._parse_option_int(arg.split("=", 1)[1], num_results)
+                elif arg == "--num-results" and i + 1 < len(args):
+                    i += 1
+                    num_results = self._parse_option_int(args[i], num_results)
+                elif arg.startswith("--engine="):
+                    raw = arg.split("=", 1)[1]
+                    engine_tokens.extend([x.strip() for x in raw.split(",") if x.strip()])
+                elif arg.startswith("--engines="):
+                    raw = arg.split("=", 1)[1]
+                    engine_tokens.extend([x.strip() for x in raw.split(",") if x.strip()])
+                elif arg in {"--engine", "--engines"} and i + 1 < len(args):
+                    i += 1
+                    engine_tokens.extend([x.strip() for x in args[i].split(",") if x.strip()])
                 else:
                     query_parts.append(arg)
                 i += 1
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：web <query> [--no-crawl] [--crawl-pages=N]")
+                print("用法：web <query> [--no-crawl] [--crawl-pages=N] [--num-results=N] [--engine=name|a,b]")
                 return True
 
-            result = await self.agent.search_internet(
-                query,
-                auto_crawl=auto_crawl,
-                crawl_pages=crawl_pages,
-            )
-            self._print_result(result)
+            if engine_tokens:
+                engines, unknown = self._resolve_advanced_engines(engine_tokens)
+                if unknown:
+                    self._print_result(
+                        {
+                            "success": False,
+                            "error": "unknown_engine_tokens",
+                            "unknown": unknown,
+                            "supported": self._supported_advanced_engine_tokens(),
+                        }
+                    )
+                    return True
+                deep_search = DeepSearchEngine()
+                try:
+                    result = await deep_search.deep_search(
+                        query,
+                        num_results=max(1, num_results),
+                        use_english=not bool(re.search(r"[\u4e00-\u9fff]", query)),
+                        engines=engines or None,
+                        crawl_top=(max(0, crawl_pages) if auto_crawl else 0),
+                        query_variants=1,
+                    )
+                finally:
+                    await deep_search.close()
+                self._print_result(result)
+            else:
+                result = await self.agent.search_internet(
+                    query,
+                    num_results=max(1, num_results),
+                    auto_crawl=auto_crawl,
+                    crawl_pages=crawl_pages,
+                )
+                self._print_result(result)
 
         elif command == "research" and args:
             topic = " ".join(args)
@@ -1225,6 +1274,7 @@ class WebRooterCLI:
             num_results = 10
             query_variants = 1
             channel_profiles: List[str] = []
+            engine_tokens: List[str] = []
             query_parts = []
             i = 0
 
@@ -1244,6 +1294,15 @@ class WebRooterCLI:
                 elif arg == "--channel" and i + 1 < len(args):
                     i += 1
                     channel_profiles.extend([x.strip() for x in args[i].split(",") if x.strip()])
+                elif arg.startswith("--engine="):
+                    raw = arg.split("=", 1)[1]
+                    engine_tokens.extend([x.strip() for x in raw.split(",") if x.strip()])
+                elif arg.startswith("--engines="):
+                    raw = arg.split("=", 1)[1]
+                    engine_tokens.extend([x.strip() for x in raw.split(",") if x.strip()])
+                elif arg in {"--engine", "--engines"} and i + 1 < len(args):
+                    i += 1
+                    engine_tokens.extend([x.strip() for x in args[i].split(",") if x.strip()])
                 elif arg.startswith("--crawl="):
                     crawl = self._parse_option_int(arg.split("=", 1)[1], crawl)
                 elif arg == "--crawl" and i + 1 < len(args):
@@ -1269,15 +1328,31 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                print("用法：deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--news] [--platforms] [--commerce] [--channel=x,y]")
+                print("用法：deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--engine=name|a,b] [--news] [--platforms] [--commerce] [--channel=x,y]")
                 return True
 
+            selected_engines: Optional[List[AdvancedSearchEngine]] = None
+            if engine_tokens:
+                resolved_engines, unknown = self._resolve_advanced_engines(engine_tokens)
+                if unknown:
+                    self._print_result(
+                        {
+                            "success": False,
+                            "error": "unknown_engine_tokens",
+                            "unknown": unknown,
+                            "supported": self._supported_advanced_engine_tokens(),
+                        }
+                    )
+                    return True
+                selected_engines = resolved_engines or None
+
             logger.info(
-                "执行深度搜索：%s, 英文搜索：%s, 爬取前%s个结果, 渠道=%s",
+                "执行深度搜索：%s, 英文搜索：%s, 爬取前%s个结果, 渠道=%s, engines=%s",
                 query,
                 use_en,
                 crawl,
                 ",".join(channel_profiles) if channel_profiles else "default",
+                ",".join([e.value for e in selected_engines]) if selected_engines else "default",
             )
             deep_search = DeepSearchEngine()
             try:
@@ -1285,6 +1360,7 @@ class WebRooterCLI:
                     query,
                     num_results=num_results,
                     use_english=use_en,
+                    engines=selected_engines,
                     crawl_top=crawl,
                     query_variants=query_variants,
                     channel_profiles=channel_profiles or None,
@@ -1654,6 +1730,64 @@ class WebRooterCLI:
             ],
         }
 
+    @classmethod
+    def _advanced_engine_alias_map(cls) -> Dict[str, AdvancedSearchEngine]:
+        mapping: Dict[str, AdvancedSearchEngine] = {
+            engine.value: engine for engine in AdvancedSearchEngine
+        }
+        mapping.update(
+            {
+                "ddg": AdvancedSearchEngine.DUCKDUCKGO,
+                "duck": AdvancedSearchEngine.DUCKDUCKGO,
+                "quarkcn": AdvancedSearchEngine.QUARK,
+                "quark_sm": AdvancedSearchEngine.QUARK,
+                "xhs": AdvancedSearchEngine.XIAOHONGSHU,
+                "bili": AdvancedSearchEngine.BILIBILI,
+                "x": AdvancedSearchEngine.TWITTER,
+                "jdcom": AdvancedSearchEngine.JD,
+                "jingdong": AdvancedSearchEngine.JD,
+                "pdd": AdvancedSearchEngine.PINDUODUO,
+                "scholar": AdvancedSearchEngine.GOOGLE_SCHOLAR,
+                "semantic": AdvancedSearchEngine.SEMANTIC_SCHOLAR,
+            }
+        )
+        return mapping
+
+    @classmethod
+    def _supported_advanced_engine_tokens(cls) -> List[str]:
+        preferred = [
+            "google", "bing", "quark", "baidu", "duckduckgo", "sogou", "yandex",
+            "google_us", "bing_us",
+            "xiaohongshu", "zhihu", "tieba", "douyin", "weibo", "bilibili", "reddit", "twitter", "hackernews",
+            "taobao", "jd", "pinduoduo", "meituan",
+            "github", "stackoverflow", "medium",
+            "google_scholar", "arxiv", "semantic_scholar",
+        ]
+        alias_map = cls._advanced_engine_alias_map()
+        extras = sorted([token for token in alias_map.keys() if token not in preferred])
+        return preferred + extras
+
+    def _resolve_advanced_engines(self, tokens: List[str]) -> tuple[List[AdvancedSearchEngine], List[str]]:
+        alias_map = self._advanced_engine_alias_map()
+        resolved: List[AdvancedSearchEngine] = []
+        seen = set()
+        unknown: List[str] = []
+
+        for raw in tokens:
+            normalized = str(raw or "").strip().lower().replace("-", "_")
+            if not normalized:
+                continue
+            engine = alias_map.get(normalized)
+            if engine is None:
+                unknown.append(raw)
+                continue
+            if engine.value in seen:
+                continue
+            seen.add(engine.value)
+            resolved.append(engine)
+
+        return resolved, unknown
+
     @staticmethod
     def _parse_option_int(value: str, default: int) -> int:
         """安全解析整数参数。"""
@@ -1920,8 +2054,8 @@ Web-Rooter 可用命令:
   fetch <url>                     - 获取页面
 
 【互联网搜索】
-  web <query> [--no-crawl] [--crawl-pages=N]
-  deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--news] [--platforms] [--commerce] [--channel=x,y]
+  web <query> [--no-crawl] [--crawl-pages=N] [--num-results=N] [--engine=name|a,b]
+  deep <query> [--en] [--crawl=N] [--num-results=N] [--variants=N] [--engine=name|a,b] [--news] [--platforms] [--commerce] [--channel=x,y]
   research <topic>                - 深度研究主题
   mindsearch <query> [--turns=N] [--branches=N] [--num-results=N] [--crawl=N] [--en] [--planner=name] [--strict-expand] [--channel=x,y]
 
@@ -1978,8 +2112,10 @@ Web-Rooter 可用命令:
   quick "RAG benchmark 2026" --top=6 --html-first
   task "帮我分析这个主题的主流观点并给出处：AI Agent 工程实践" --top=8 --crawl-assist
   web AI 大模型 --no-crawl
+  web "RAG benchmark" --engine=quark --num-results=6 --no-crawl
   web AI 大模型 --crawl-pages=5
   deep "苹果发布会" --en --crawl=5 --num-results=20 --variants=3 --news
+  deep "RAG benchmark" --engine=quark --num-results=8 --crawl=0
   deep "护肤品评测" --commerce
   deep "AI Agent 工程化" --platforms --channel=news,commerce
   mindsearch "多模态大模型 工程落地" --turns=3 --branches=4 --crawl=1 --planner=heuristic --strict-expand --channel=news,platforms
