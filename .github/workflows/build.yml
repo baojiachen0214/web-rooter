@@ -82,8 +82,13 @@ jobs:
       - name: Package binary (Unix)
         if: runner.os != 'Windows'
         run: |
+          mkdir -p dist/package
+          cp dist/web-rooter dist/package/web-rooter
+          cp packaging/standalone/unix/install-web-rooter.sh dist/package/install-web-rooter.sh
+          cp packaging/standalone/README.txt dist/package/README.txt
+          chmod +x dist/package/web-rooter dist/package/install-web-rooter.sh
           cd dist
-          tar czf ${{ matrix.artifact_name }}.tar.gz web-rooter
+          tar czf ${{ matrix.artifact_name }}.tar.gz package
           shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
 
       - name: Package binary (Windows)
@@ -91,7 +96,11 @@ jobs:
         shell: pwsh
         run: |
           cd dist
-          Compress-Archive -Path web-rooter.exe -DestinationPath ${{ matrix.artifact_name }}.zip
+          New-Item -ItemType Directory -Path package -Force | Out-Null
+          Copy-Item web-rooter.exe package\web-rooter.exe
+          Copy-Item ..\packaging\standalone\windows\install-web-rooter.bat package\install-web-rooter.bat
+          Copy-Item ..\packaging\standalone\README.txt package\README.txt
+          Compress-Archive -Path package\* -DestinationPath ${{ matrix.artifact_name }}.zip
           (Get-FileHash ${{ matrix.artifact_name }}.zip -Algorithm SHA256).Hash.ToLower() + "  " + "${{ matrix.artifact_name }}.zip" | Out-File -Encoding ASCII ${{ matrix.artifact_name }}.zip.sha256
 
       - name: Upload artifact
@@ -137,12 +146,12 @@ jobs:
           tag_name: ${{ steps.version.outputs.version }}
           name: Web-Rooter ${{ steps.version.outputs.version }}
           draft: false
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          prerelease: ${{ contains(steps.version.outputs.version, '-') || !startsWith(github.ref, 'refs/tags/v') }}
           generate_release_notes: true
           body: |
-            ## Web-Rooter MCP Server - 预编译二进制
+            ## Web-Rooter CLI-First - 预编译二进制
 
-            无需安装 Python 环境，下载对应平台的二进制文件即可直接使用。
+            无需安装 Python / pip / git。下载并解压后，运行包内安装脚本即可使用。
 
             ### 下载
 
@@ -156,8 +165,19 @@ jobs:
             ### 使用方法
 
             1. 下载并解压对应平台的文件
-            2. 首次运行会自动安装 Chromium 浏览器（需要网络）
-            3. 配置 Claude Desktop / Claude Code MCP:
+            2. 运行安装脚本：
+               - Windows: 双击 `install-web-rooter.bat`
+               - macOS / Linux: `chmod +x install-web-rooter.sh && ./install-web-rooter.sh`
+            3. 首次运行会自动安装 Chromium 浏览器（需要网络）
+            4. 直接使用 CLI:
+
+            ```bash
+            wr --version
+            wr doctor
+            wr do "Analyze RAG benchmark paper relations with citations" --dry-run
+            ```
+
+            5. 如需 MCP，再配置 Claude Desktop / Claude Code:
 
             **Claude Code (`.mcp.json`)**:
             ```json

@@ -31,6 +31,7 @@ from core.academic_search import AcademicSource
 from core.command_ir import build_command_ir, lint_command_ir, summarize_lint, has_lint_errors
 from core.safe_mode import get_safe_mode_manager, evaluate_safe_mode_command
 from core.job_system import get_job_store, spawn_job_worker
+from core.version import APP_VERSION
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,7 +152,7 @@ class WebRooterCLI:
         """启动"""
         self.agent = WebAgent()
         await self.agent._init()
-        print("[Web]  Web-Rooter 已启动")
+        print(f"[Web]  Web-Rooter v{APP_VERSION} 已启动")
         print("输入 'help' 查看可用命令")
         print()
 
@@ -1951,6 +1952,13 @@ class WebRooterCLI:
 
         recommended_python = detect_local_recommended_python()
 
+        add_check(
+            "Web-Rooter 版本",
+            APP_VERSION.startswith("0."),
+            f"v{APP_VERSION}",
+            "当前应保持 v0.x.x 版本线，待稳定后再进入 v1.0.0",
+        )
+
         python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         add_check(
             "Python",
@@ -2139,6 +2147,7 @@ Web-Rooter 可用命令:
   auth-template [path] [--force]  - 导出本地登录模板 JSON
 
 【其他】
+  --version                       - 显示版本
   help                            - 帮助信息
   quit / exit                     - 退出
 
@@ -2240,7 +2249,7 @@ async def command_mode(command: str, args: list[str]):
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description="[Web]  Web-Rooter - AI Web Crawling Agent"
+        description=f"[Web]  Web-Rooter v{APP_VERSION} - AI Web Crawling Agent"
     )
 
     parser.add_argument(
@@ -2259,6 +2268,12 @@ def main():
         "--doctor",
         action="store_true",
         help="运行环境自检"
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"web-rooter {APP_VERSION}",
     )
 
     parser.add_argument(

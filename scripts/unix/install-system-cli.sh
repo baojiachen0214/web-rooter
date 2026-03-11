@@ -90,6 +90,13 @@ for mode, path in targets:
     print(f"[ok] updated {path}")
 PY
 
+if "${PYTHON_BIN}" "${REPO_ROOT}/scripts/setup_ai_skills.py" --repo-root "${REPO_ROOT}"; then
+  echo "[ok] AI tool skills installed"
+else
+  echo "[warn] failed to install AI tool skills; retry manually:"
+  echo "       ${PYTHON_BIN} ${REPO_ROOT}/scripts/setup_ai_skills.py --repo-root ${REPO_ROOT}"
+fi
+
 echo "========================================"
 echo "Web-Rooter CLI install complete"
 echo "========================================"
@@ -101,4 +108,3 @@ echo "next:"
 echo "1. restart terminal"
 echo "2. run: wr doctor"
 echo "3. in Claude Code run: /tools"
-

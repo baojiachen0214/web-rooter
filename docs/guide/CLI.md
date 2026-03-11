@@ -12,6 +12,7 @@
 
 ```bash
 python main.py help
+python main.py --version
 python main.py doctor
 python main.py do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
 python main.py do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]

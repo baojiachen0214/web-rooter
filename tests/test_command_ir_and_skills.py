@@ -5,6 +5,8 @@ from core.workflow import get_workflow_schema
 from core.skills import SkillRegistry
 from core.search.engine_config import ConfigLoader
 from core.search.advanced import AdvancedSearchEngine, _get_engine_search_url_templates
+from core.version import APP_NAME, APP_VERSION, APP_VERSION_TAG
+from core import __version__
 from agents.web_agent import WebAgent
 
 
@@ -139,3 +141,18 @@ def test_quark_engine_config_and_templates() -> None:
     assert isinstance(templates, list) and len(templates) >= 1
     assert any("quark" in item for item in templates)
     assert all("{query}" in item for item in templates)
+
+
+def test_version_single_source_of_truth() -> None:
+    assert __version__ == APP_VERSION
+    assert APP_NAME == "web-rooter"
+    assert APP_VERSION_TAG == f"v{APP_VERSION}"
+
+
+def test_version_is_pre_1_semver() -> None:
+    parts = APP_VERSION.split(".")
+    assert len(parts) == 3
+    major, minor, patch = (int(parts[0]), int(parts[1]), int(parts[2]))
+    assert major == 0
+    assert minor >= 0
+    assert patch >= 0

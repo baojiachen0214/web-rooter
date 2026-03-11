@@ -1,6 +1,5 @@
 """
 Request 对象 - 封装爬虫请求
-灵感来自 Scrapy 和 Scrapling 的 Request 对象
 
 功能：
 - 封装 URL、回调、优先级、元数据
@@ -386,3 +385,4 @@ def make_requests_from_urls(
         make_request(url, callback=callback, priority=priority, **kwargs)
         for url in urls
     ]
+

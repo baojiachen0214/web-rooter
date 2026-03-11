@@ -2,7 +2,9 @@
 Web-Rooter - AI Web Crawling Agent
 """
 
-__version__ = "1.0.0"
+from .version import APP_VERSION
+
+__version__ = APP_VERSION
 __author__ = "Web-Rooter Team"
 
 # Core modules

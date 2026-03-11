@@ -1,6 +1,5 @@
 """
 可配置的搜索引擎基类
-灵感来自 playwright-search-mcp 的 ConfigurableSearchEngine
 
 功能:
 - 配置驱动的搜索引擎
@@ -449,3 +448,4 @@ SearchEngineFactory.register_engine("baidu", ConfigurableSearchEngine, ["bd"])
 SearchEngineFactory.register_engine("bing", ConfigurableSearchEngine, ["msn"])
 SearchEngineFactory.register_engine("duckduckgo", ConfigurableSearchEngine, ["ddg", "duck"])
 SearchEngineFactory.register_engine("zhihu", ConfigurableSearchEngine, ["zh"])
+

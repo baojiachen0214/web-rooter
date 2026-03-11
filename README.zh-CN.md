@@ -6,6 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
+    <img src="https://img.shields.io/badge/version-v0.2.1-blue.svg" alt="Version v0.2.1">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
     <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP%20%7C%20HTTP-orange.svg" alt="Interfaces">
@@ -96,10 +97,24 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 ### 安装
 
 ```bash
-pip install -r requirements.txt
-python -m playwright install chromium
-python main.py --doctor
+# Windows（一键）
+install.bat
+
+# macOS / Linux（一键）
+bash install.sh
+
+# 可选：同时配置 MCP
+install.bat --with-mcp
+bash install.sh --with-mcp
 ```
+
+安装脚本会自动注入 CLI 操作 skills 到 Claude Code / Cursor / OpenCode / OpenClaw（best-effort，可手动重跑：`python scripts/setup_ai_skills.py --repo-root .`）。
+
+### 零依赖二进制安装（Release）
+
+- 如果机器非常干净（没有 Python/pip/git），可直接下载 GitHub Release 的平台包
+- Windows：解压后双击 `install-web-rooter.bat`
+- macOS/Linux：解压后执行 `./install-web-rooter.sh`
 
 ### 5 分钟体验
 
@@ -213,16 +228,17 @@ chmod +x scripts/unix/setup-claude-mcp.sh
 
 ### Windows
 
-- 一键基础安装：`install.bat`
+- 一键安装（CLI First）：`install.bat`
 - 安装全局 `wr` 命令：`scripts\windows\install-system-cli.bat`
 - Claude MCP 安装：`scripts\windows\setup-claude-mcp.bat`
 
 ### macOS / Linux
 
 ```bash
-chmod +x scripts/unix/*.sh
-./scripts/unix/install-system-cli.sh
-./scripts/unix/setup-claude-mcp.sh
+bash install.sh
+
+# 可选 MCP
+bash install.sh --with-mcp
 ```
 
 ---

@@ -1,6 +1,5 @@
 """
 结果队列 - 支持流式输出的异步队列
-灵感来自 Scrapling 的流式 API
 
 功能:
 - 使用 asyncio.Queue 存储爬取结果
@@ -321,3 +320,4 @@ class StreamConsumer:
             "consumer_count": len(self._tasks),
             "is_running": self._running,
         }
+

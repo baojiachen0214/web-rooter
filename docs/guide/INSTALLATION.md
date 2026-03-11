@@ -6,7 +6,42 @@
 - Network access (for Playwright browser runtime download)
 - Recommended: Git
 
-## 2. Basic Install (All Platforms)
+## 2. One-Click Install (CLI First)
+
+Windows:
+
+```bat
+install.bat
+```
+
+macOS / Linux:
+
+```bash
+bash install.sh
+```
+
+What the one-click installer does:
+
+- create/reuse `.venv312`
+- install `requirements.txt`
+- install Playwright Chromium runtime
+- run `python main.py --doctor`
+- install user-level global CLI command `wr`
+- inject Web-Rooter CLI skill packs into Claude/Cursor/OpenCode/OpenClaw (best-effort)
+
+Default global skill paths:
+
+- Claude: `~/.claude/skills/web-rooter-cli.md`
+- Cursor: `~/.cursor/rules/web-rooter-cli.mdc`
+- OpenCode: `~/.opencode/AGENTS.md`
+- OpenClaw: `~/.openclaw/AGENTS.md`
+
+Optional MCP setup:
+
+- Windows: `install.bat --with-mcp`
+- macOS/Linux: `bash install.sh --with-mcp`
+
+## 3. Manual Install (All Platforms)
 
 ```bash
 pip install -r requirements.txt
@@ -22,13 +57,14 @@ Windows note:
   - `.venv312\Scripts\python.exe main.py --doctor`
   - `.venv312\Scripts\python.exe main.py quick "OpenAI Agents SDK"`
 
-## 3. OS-Specific Helpers
+## 4. OS-Specific Helpers
 
 ### Windows
 
-- Basic installer: `install.bat`
+- One-click installer: `install.bat`
 - Install global CLI (`wr`): `scripts\windows\install-system-cli.bat`
 - Uninstall global CLI: `scripts\windows\uninstall-system-cli.bat`
+- Install AI tool skills only: `python scripts\setup_ai_skills.py --repo-root .`
 - Setup Claude MCP: `scripts\windows\setup-claude-mcp.bat`
 - Uninstall Claude MCP: `scripts\windows\uninstall-claude-mcp.bat`
 
@@ -37,6 +73,7 @@ Windows note:
 ```bash
 chmod +x scripts/unix/*.sh
 ./scripts/unix/install-system-cli.sh
+python3 scripts/setup_ai_skills.py --repo-root .
 ./scripts/unix/setup-claude-mcp.sh
 ```
 
@@ -47,7 +84,7 @@ Uninstall:
 ./scripts/unix/uninstall-claude-mcp.sh
 ```
 
-## 4. Verify
+## 5. Verify
 
 ```bash
 python main.py help
@@ -62,7 +99,7 @@ wr help
 wr doctor
 ```
 
-## 5. Troubleshooting
+## 6. Troubleshooting
 
 - Playwright browser missing:
   - `python -m playwright install chromium`

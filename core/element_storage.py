@@ -1,6 +1,5 @@
 """
 元素特征存储系统 - 用于自适应解析器
-灵感来自 Scrapling 的 SQLiteStorageSystem
 
 功能：
 - 存储元素特征（标签名、属性、文本内容、相对位置等）
@@ -391,3 +390,4 @@ def element_to_feature(element, selector: str = "", url: str = "") -> ElementFea
         name=element.get("name"),
         xpath=generate_xpath(element),
     )
+

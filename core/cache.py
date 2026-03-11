@@ -7,7 +7,6 @@
 - 支持内存和 SQLite 存储
 - 支持缓存命中率统计
 
-灵感来自 Scrapling 和 Scrapy 的缓存系统
 """
 import asyncio
 import hashlib
@@ -539,3 +538,4 @@ class RequestCache:
         """关闭缓存"""
         if self._sqlite_cache:
             self._sqlite_cache.close()
+

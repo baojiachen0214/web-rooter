@@ -1,6 +1,5 @@
 """
 搜索引擎配置加载器 - 单例模式
-灵感来自 playwright-search-mcp 项目
 
 功能:
 - 加载 JSON 配置文件
@@ -442,3 +441,4 @@ def get_engine_config(engine_id: str) -> Optional[EngineConfig]:
 def get_supported_engines() -> List[str]:
     """获取所有支持的引擎"""
     return ConfigLoader.get_instance().get_supported_engines_ids()
+
