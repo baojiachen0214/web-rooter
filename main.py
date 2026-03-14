@@ -13,6 +13,7 @@ import subprocess
 import importlib.util
 import difflib
 import re
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -33,6 +34,7 @@ from core.safe_mode import get_safe_mode_manager, evaluate_safe_mode_command
 from core.job_system import get_job_store, spawn_job_worker
 from core.version import APP_VERSION
 from core.terminal_logo import render_logo_from_png
+from core.cli_entry import build_cli_command
 from core.updater import (
     compare_semver_tags,
     fetch_github_releases,
@@ -60,16 +62,33 @@ except Exception:
     Text = None  # type: ignore
     _RICH_AVAILABLE = False
 
-if _RICH_AVAILABLE and str(os.getenv("WEB_ROOTER_NO_RICH_LOG", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+_LOG_LEVEL_NAME = str(os.getenv("WEB_ROOTER_LOG_LEVEL", "ERROR")).strip().upper() or "ERROR"
+_LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.WARNING)
+_LOG_NO_RICH = str(os.getenv("WEB_ROOTER_NO_RICH_LOG", "0")).strip().lower() in {"1", "true", "yes", "on"}
+_LOG_FORCE_RICH = str(os.getenv("WEB_ROOTER_FORCE_RICH_LOG", "0")).strip().lower() in {"1", "true", "yes", "on"}
+_LOG_IS_TTY = bool(getattr(sys.stderr, "isatty", lambda: False)())
+_USE_RICH_LOG = _RICH_AVAILABLE and (not _LOG_NO_RICH) and (_LOG_FORCE_RICH or _LOG_IS_TTY)
+
+if _USE_RICH_LOG:
+    rich_handler_kwargs: Dict[str, Any] = {
+        "show_time": True,
+        "show_path": False,
+        "markup": True,
+    }
+    if Console is not None:
+        rich_handler_kwargs["console"] = Console(stderr=True)
     logging.basicConfig(
-        level=logging.INFO,
+        level=_LOG_LEVEL,
         format="%(message)s",
-        handlers=[RichHandler(show_time=True, show_path=False, markup=True)],
+        handlers=[RichHandler(**rich_handler_kwargs)],
+        force=True,
     )
 else:
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        level=_LOG_LEVEL,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stderr,
+        force=True,
     )
 logger = logging.getLogger(__name__)
 
@@ -98,6 +117,10 @@ class WebRooterCLI:
         "do-submit",
         "do_submit",
         "jobs",
+        "jobs-clean",
+        "jobs_clean",
+        "job-clean",
+        "job_clean",
         "job-status",
         "job_status",
         "job-result",
@@ -192,14 +215,55 @@ class WebRooterCLI:
         "safe_mode",
         "guard",
     }
+    _DEFAULT_COMMAND_TIMEOUT_SEC = 240
+    _COMMAND_TIMEOUT_TARGETS = {
+        "visit",
+        "html",
+        "dom",
+        "do",
+        "quick",
+        "q",
+        "task",
+        "orchestrate",
+        "auto",
+        "search",
+        "extract",
+        "crawl",
+        "fetch",
+        "web",
+        "deep",
+        "research",
+        "mindsearch",
+        "ms",
+        "social",
+        "shopping",
+        "shop",
+        "commerce",
+        "tech",
+        "academic",
+        "site",
+        "workflow",
+        "flow",
+    }
+    _COMMAND_TIMEOUT_RESERVED = {
+        "do-submit",
+        "do_submit",
+        "job-worker",
+        "job_worker",
+    }
 
     def __init__(self):
-        self.agent: Optional[WebAgent] = None
+        # Keep a lightweight agent shell available for local/compile-time commands.
+        # The crawler/browser runtime is initialized lazily only when a command needs it.
+        self.agent: Optional[WebAgent] = WebAgent()
         self.tools: Optional[WebTools] = None
         self._safe_mode = get_safe_mode_manager()
         self._job_store = get_job_store()
         rich_disabled = str(os.getenv("WEB_ROOTER_NO_RICH", "0")).strip().lower() in {"1", "true", "yes", "on"}
-        self._console = Console() if (_RICH_AVAILABLE and not rich_disabled) else None
+        force_rich = str(os.getenv("WEB_ROOTER_FORCE_RICH", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+        use_rich = _RICH_AVAILABLE and not rich_disabled and (force_rich or is_tty)
+        self._console = Console() if use_rich else None
         self._theme = {
             "info": "bold cyan",
             "success": "bold green",
@@ -222,10 +286,10 @@ class WebRooterCLI:
     def _print_usage(self, text: str) -> None:
         self._print_line(text, level="usage")
 
-    async def start(self):
+    async def start(self, show_banner: bool = True):
         """启动"""
-        self.agent = WebAgent()
-        await self.agent._init()
+        if not show_banner:
+            return
         if self._console:
             no_color_env = str(os.getenv("NO_COLOR", "")).strip() != ""
             color_logo = bool(getattr(self._console, "color_system", None)) and not no_color_env
@@ -253,6 +317,11 @@ class WebRooterCLI:
             print("输入 'help' 查看可用命令")
             print()
 
+    async def _ensure_agent_runtime(self) -> None:
+        """只在真正需要抓取/浏览器运行时时才初始化重资源依赖。"""
+        if self.agent is None:
+            self.agent = WebAgent()
+        await self.agent._init()
 
     async def _ensure_tools(self):
         """按需初始化工具集，减少 CLI 冷启动开销。"""
@@ -260,12 +329,136 @@ class WebRooterCLI:
             self.tools = WebTools()
             await self.tools.initialize()
 
-    async def stop(self):
+    async def run_command_safely(self, command: str, args: list[str]) -> bool:
+        sanitized_args, command_timeout_sec = self._extract_command_timeout(command, args)
+        try:
+            if command_timeout_sec and command_timeout_sec > 0:
+                return await asyncio.wait_for(
+                    self.run_command(command, sanitized_args),
+                    timeout=float(command_timeout_sec),
+                )
+            return await self.run_command(command, sanitized_args)
+        except asyncio.TimeoutError:
+            self._print_result(self._build_command_timeout_payload(command, command_timeout_sec))
+            return True
+        except Exception as exc:
+            self._print_result(self._build_command_exception_payload(command, exc))
+            return True
+
+    @classmethod
+    def _is_timeout_managed_command(cls, command: str) -> bool:
+        normalized = str(command or "").strip().lower()
+        return normalized in cls._COMMAND_TIMEOUT_TARGETS
+
+    @classmethod
+    def _extract_command_timeout(cls, command: str, args: List[str]) -> tuple[List[str], Optional[int]]:
+        normalized = str(command or "").strip().lower()
+        manage_timeout = cls._is_timeout_managed_command(normalized)
+        reserve_timeout_flag = normalized in cls._COMMAND_TIMEOUT_RESERVED
+
+        explicit_timeout: Optional[int] = None
+        sanitized: List[str] = []
+        i = 0
+
+        while i < len(args):
+            arg = str(args[i])
+            consumed = False
+
+            if arg.startswith("--command-timeout-sec="):
+                raw = arg.split("=", 1)[1].strip()
+                parsed = cls._parse_option_int(raw, -1)
+                if parsed >= 0:
+                    explicit_timeout = parsed
+                consumed = True
+            elif arg == "--command-timeout-sec":
+                consumed = True
+                if i + 1 < len(args):
+                    i += 1
+                    parsed = cls._parse_option_int(str(args[i]).strip(), -1)
+                    if parsed >= 0:
+                        explicit_timeout = parsed
+            elif (not reserve_timeout_flag) and arg.startswith("--timeout-sec="):
+                raw = arg.split("=", 1)[1].strip()
+                parsed = cls._parse_option_int(raw, -1)
+                if parsed >= 0:
+                    explicit_timeout = parsed
+                consumed = True
+            elif (not reserve_timeout_flag) and arg == "--timeout-sec":
+                consumed = True
+                if i + 1 < len(args):
+                    i += 1
+                    parsed = cls._parse_option_int(str(args[i]).strip(), -1)
+                    if parsed >= 0:
+                        explicit_timeout = parsed
+
+            if not consumed:
+                sanitized.append(arg)
+            i += 1
+
+        if explicit_timeout is not None:
+            return sanitized, max(0, int(explicit_timeout))
+
+        if not manage_timeout:
+            return sanitized, None
+
+        env_default = cls._parse_option_int(
+            str(os.getenv("WEB_ROOTER_COMMAND_TIMEOUT_SEC", cls._DEFAULT_COMMAND_TIMEOUT_SEC)),
+            cls._DEFAULT_COMMAND_TIMEOUT_SEC,
+        )
+        timeout_sec = max(0, int(env_default))
+        return sanitized, (timeout_sec if timeout_sec > 0 else None)
+
+    def _build_command_timeout_payload(self, command: str, timeout_sec: Optional[int]) -> Dict[str, Any]:
+        normalized = str(command or "").strip().lower() or command
+        timeout_value = max(1, int(timeout_sec or self._DEFAULT_COMMAND_TIMEOUT_SEC))
+        hint = (
+            f"命令执行超过 {timeout_value}s 已自动停止。"
+            "可增大 `--command-timeout-sec`，或设置 `WEB_ROOTER_COMMAND_TIMEOUT_SEC`。"
+        )
+        if str(normalized) in {"do", "quick", "q", "task", "orchestrate", "auto"}:
+            hint += " 对超长任务建议改用 `wr do-submit \"<goal>\" --timeout-sec=1200`。"
+        return {
+            "success": False,
+            "error": f"command_timeout:{normalized}:{timeout_value}s",
+            "command": normalized,
+            "timeout_sec": timeout_value,
+            "hint": hint,
+        }
+
+    def _build_command_exception_payload(self, command: str, exc: Exception) -> Dict[str, Any]:
+        message = self._compact_text(str(exc).strip() or exc.__class__.__name__, max_chars=1600)
+        normalized_command = str(command or "").strip().lower()
+        if (
+            isinstance(exc, RuntimeError)
+            and "runtime is unavailable" in message.lower()
+        ) or "install optional dependencies from requirements.txt" in message.lower():
+            return {
+                "success": False,
+                "error": "runtime_unavailable",
+                "command": normalized_command or command,
+                "detail": message,
+                "hint": (
+                    f"先执行 `{build_cli_command('doctor')}` 检查缺失依赖。"
+                    f"如需先让 AI 规划任务，可继续使用 "
+                    f"`{build_cli_command('skills --resolve \"<goal>\" --compact')}`、"
+                    f"`{build_cli_command('do-plan \"<goal>\"')}`、"
+                    f"`{build_cli_command('do \"<goal>\" --dry-run')}`。"
+                ),
+            }
+        return {
+            "success": False,
+            "error": f"unexpected_command_error:{normalized_command or command}",
+            "detail": message,
+        }
+
+    async def stop(self, show_farewell: bool = True):
         """停止"""
         if self.agent:
             await self.agent.close()
         if self.tools:
             await self.tools.close()
+        if not show_farewell:
+            return
         if self._console:
             self._console.print("Bye 再见!", style="bold green")
         else:
@@ -371,7 +564,7 @@ class WebRooterCLI:
 
             task_text = " ".join(task_parts).strip()
             if not task_text:
-                self._print_usage("用法：do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
+                self._print_usage("用法：do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--command-timeout-sec=N] [--html-first|--no-html-first]")
                 return True
 
             result = await self.agent.run_do_task(
@@ -578,6 +771,39 @@ class WebRooterCLI:
                 }
             )
 
+        elif command in {"jobs-clean", "jobs_clean", "job-clean", "job_clean"}:
+            keep_recent = 120
+            older_than_days: Optional[int] = None
+            include_running = False
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--keep="):
+                    keep_recent = self._parse_option_int(arg.split("=", 1)[1], keep_recent)
+                elif arg == "--keep" and i + 1 < len(args):
+                    i += 1
+                    keep_recent = self._parse_option_int(args[i], keep_recent)
+                elif arg.startswith("--days="):
+                    older_than_days = self._parse_option_int(arg.split("=", 1)[1], 14)
+                elif arg == "--days" and i + 1 < len(args):
+                    i += 1
+                    older_than_days = self._parse_option_int(args[i], 14)
+                elif arg == "--all":
+                    include_running = True
+                i += 1
+
+            payload = self._job_store.cleanup_jobs(
+                keep_recent=max(0, keep_recent),
+                older_than_days=older_than_days,
+                include_running=include_running,
+            )
+            self._print_result(
+                {
+                    "success": True,
+                    "cleanup": payload,
+                }
+            )
+
         elif command in {"job-status", "job_status"} and args:
             job_id = str(args[0]).strip()
             include_result = "--with-result" in args
@@ -757,7 +983,7 @@ class WebRooterCLI:
 
             raw_input = " ".join(input_parts).strip()
             if not raw_input:
-                self._print_usage("用法：quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]")
+                self._print_usage("用法：quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy] [--command-timeout-sec=N]")
                 return True
 
             await self._run_inferred_input(
@@ -813,7 +1039,7 @@ class WebRooterCLI:
 
             task_input = " ".join(input_parts).strip()
             if not task_input:
-                self._print_usage("用法：task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]")
+                self._print_usage("用法：task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--command-timeout-sec=N]")
                 return True
 
             result = await self.agent.orchestrate_task(
@@ -1345,11 +1571,19 @@ class WebRooterCLI:
                 })
                 return True
 
+            effective_spec = deepcopy(spec)
+            if overrides:
+                variables = effective_spec.setdefault("variables", {})
+                if not isinstance(variables, dict):
+                    variables = {}
+                    effective_spec["variables"] = variables
+                self._merge_nested_dict(variables, overrides)
+
             workflow_ir = build_command_ir(
                 command="workflow",
-                goal=f"workflow:{spec.get('name', 'adhoc')}",
+                goal=f"workflow:{effective_spec.get('name', 'adhoc')}",
                 route="auto",
-                workflow_spec=spec,
+                workflow_spec=effective_spec,
                 options={"variable_overrides": bool(overrides)},
                 strict=strict,
                 dry_run=dry_run,
@@ -2026,6 +2260,40 @@ class WebRooterCLI:
             return default
 
     @staticmethod
+    def _compact_text(value: str, max_chars: int = 1600) -> str:
+        text = str(value or "").strip()
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 16:
+            return text[:max_chars]
+        return text[: max_chars - 14].rstrip() + "...[truncated]"
+
+    @classmethod
+    def _build_truncated_output_payload(
+        cls,
+        render_target: Any,
+        rendered: str,
+        max_chars: int,
+    ) -> Dict[str, Any]:
+        preview_cap = max(240, min(2000, max_chars // 3))
+        payload: Dict[str, Any] = {
+            "success": None,
+            "truncated": True,
+            "output_limit_chars": max_chars,
+            "output_original_chars": len(rendered),
+            "hint": "Increase WEB_ROOTER_MAX_OUTPUT_CHARS to inspect full payload.",
+            "preview": rendered[:preview_cap],
+        }
+        if isinstance(render_target, dict):
+            payload["success"] = render_target.get("success")
+            if "error" in render_target:
+                payload["error"] = render_target.get("error")
+            content = render_target.get("content")
+            if isinstance(content, str) and content.strip():
+                payload["content_preview"] = cls._compact_text(content, max_chars=600)
+        return payload
+
+    @staticmethod
     def _parse_scalar_or_json(value: str) -> Any:
         raw = (value or "").strip()
         if raw == "":
@@ -2059,6 +2327,18 @@ class WebRooterCLI:
                 current[part] = next_value
             current = next_value
         current[parts[-1]] = value
+
+    @classmethod
+    def _merge_nested_dict(cls, target: Dict[str, Any], source: Dict[str, Any]) -> None:
+        for key, value in source.items():
+            if isinstance(value, dict):
+                child = target.get(key)
+                if not isinstance(child, dict):
+                    child = {}
+                    target[key] = child
+                cls._merge_nested_dict(child, value)
+            else:
+                target[key] = deepcopy(value)
 
     @staticmethod
     def _load_workflow_spec(spec_input: str) -> Dict[str, Any]:
@@ -2378,8 +2658,10 @@ class WebRooterCLI:
             ),
         )
 
+        module_status: Dict[str, bool] = {}
         for module_name in ("aiohttp", "playwright", "mcp"):
             installed = importlib.util.find_spec(module_name) is not None
+            module_status[module_name] = installed
             add_check(
                 f"依赖模块: {module_name}",
                 installed,
@@ -2432,24 +2714,40 @@ class WebRooterCLI:
             "执行: playwright install chromium",
         )
 
-        try:
-            http_result = await asyncio.wait_for(
-                self.agent._crawler.fetch("https://example.com", use_proxy=False, use_cache=False),
-                timeout=12,
-            )
-            add_check(
-                "HTTP 抓取链路",
-                http_result.success,
-                f"status={http_result.status_code}" if http_result.success else (http_result.error or f"status={http_result.status_code}"),
-                "网络受限时优先使用 visit <url> --js",
-            )
-        except Exception as e:
+        if not module_status.get("aiohttp", False):
             add_check(
                 "HTTP 抓取链路",
                 False,
-                short_error(e),
-                "检查网络连接，或使用 visit <url> --js",
+                "aiohttp 未安装，抓取链路未初始化",
+                (
+                    f"执行: {recommended_python} -m pip install aiohttp"
+                    if recommended_python
+                    else "执行: pip install aiohttp"
+                ),
             )
+        else:
+            try:
+                http_result = await asyncio.wait_for(
+                    self.agent._crawler_fetch("https://example.com"),
+                    timeout=12,
+                )
+                add_check(
+                    "HTTP 抓取链路",
+                    http_result.success,
+                    (
+                        f"status={http_result.status_code}"
+                        if http_result.success
+                        else (http_result.error or f"status={http_result.status_code}")
+                    ),
+                    "检查网络/DNS；若浏览器运行时可用，可尝试 visit <url> --js",
+                )
+            except Exception as e:
+                add_check(
+                    "HTTP 抓取链路",
+                    False,
+                    short_error(e),
+                    "检查网络连接；若浏览器运行时可用，可尝试 visit <url> --js",
+                )
 
         success_count = sum(1 for ok in checks if ok)
         if self._console and Table is not None:
@@ -2506,7 +2804,12 @@ class WebRooterCLI:
 
             rendered = json.dumps(render_target, ensure_ascii=False, indent=2)
             if len(rendered) > max_chars:
-                rendered = rendered[:max_chars] + "\n... [truncated]"
+                render_target = self._build_truncated_output_payload(
+                    render_target=render_target,
+                    rendered=rendered,
+                    max_chars=max_chars,
+                )
+                rendered = json.dumps(render_target, ensure_ascii=False, indent=2)
             if self._console and Syntax is not None and Panel is not None:
                 syntax = Syntax(rendered, "json", word_wrap=True)
                 status_ok = bool(render_target.get("success")) if isinstance(render_target, dict) and "success" in render_target else None
@@ -2539,15 +2842,15 @@ Web-Rooter 可用命令:
   visit <url> [--js]              - 访问网页 (--js 使用浏览器)
   html <url> [--js] [--max-chars=N] [--no-fallback]
                                   - 获取原始 HTML（推荐 AI 做结构分析）
-  do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
+  do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--command-timeout-sec=N] [--html-first|--no-html-first]
                                   - 单入口：Intent -> Skill -> IR -> Lint -> Execute
   do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]
                                   - 先输出阶段化 skills 剧本与推荐 CLI 序列
   do-submit <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--timeout-sec=N] [--html-first|--no-html-first]
                                   - 提交长任务到后台作业系统（非阻塞）
-  quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy]
+  quick <url|query> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--legacy] [--command-timeout-sec=N]
                                   - 默认智能入口（workflow 编排优先；--legacy 回退旧逻辑）
-  task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict]
+  task <goal> [--js] [--top=N] [--html-first|--no-html-first] [--crawl-assist] [--crawl-pages=N] [--strict] [--command-timeout-sec=N]
                                   - AI 默认任务入口（推荐）
   search <query> [url]            - 在已访问页面中搜索
   extract <url> <target>          - 提取特定信息
@@ -2582,6 +2885,8 @@ Web-Rooter 可用命令:
                                   - 对 command IR / workflow 进行 lint（执行前校验）
   jobs [--limit=N] [--status=queued|running|completed|failed]
                                   - 查看后台作业列表
+  jobs-clean [--keep=N] [--days=N] [--all]
+                                  - 清理历史作业目录（默认只清理终态作业）
   job-status <job_id> [--with-result]
                                   - 查看作业状态（可附带结果）
   job-result <job_id>             - 读取作业结果
@@ -2590,6 +2895,7 @@ Web-Rooter 可用命令:
   update [--check|--list] [--to vX.Y.Z] [--yes] [--prerelease]
                                   - 连接 GitHub 检查/选择并更新本地版本（git 仓库）
   doctor                          - 环境自检（依赖/浏览器/抓取链路）
+  [通用] --command-timeout-sec=N  - 覆盖单条命令超时（默认读取 WEB_ROOTER_COMMAND_TIMEOUT_SEC）
   context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
   artifact [--nodes=N] [--edges=N] [--kind=page|url|domain|request|session]
                                   - 查看运行时 artifact graph 快照（有预算上限）
@@ -2619,12 +2925,14 @@ Web-Rooter 可用命令:
   skills --resolve "抓取知乎评论区观点并给出处" --compact
   skills --resolve "抓取知乎评论区观点并给出处" --full
   jobs --status=running
+  jobs-clean --keep=80 --days=7
   job-status <job_id>
   job-result <job_id>
   safe-mode on --policy=strict
   quick https://example.com --js
   quick "WorldQuant alpha101 因子"
   quick "RAG benchmark 2026" --top=6 --html-first
+  quick "RAG benchmark 2026" --top=6 --command-timeout-sec=90
   task "帮我分析这个主题的主流观点并给出处：AI Agent 工程实践" --top=8 --crawl-assist
   web AI 大模型 --no-crawl
   web "RAG benchmark" --engine=quark --num-results=6 --no-crawl
@@ -2684,7 +2992,7 @@ Web-Rooter 可用命令:
 async def interactive_mode():
     """交互模式"""
     cli = WebRooterCLI()
-    await cli.start()
+    await cli.start(show_banner=True)
 
     try:
         while True:
@@ -2705,23 +3013,23 @@ async def interactive_mode():
             command = parts[0]
             args = parts[1:]
 
-            should_continue = await cli.run_command(command, args)
+            should_continue = await cli.run_command_safely(command, args)
             if not should_continue:
                 break
 
     finally:
-        await cli.stop()
+        await cli.stop(show_farewell=True)
 
 
 async def command_mode(command: str, args: list[str]):
     """命令行模式"""
     cli = WebRooterCLI()
-    await cli.start()
+    await cli.start(show_banner=False)
 
     try:
-        await cli.run_command(command, args)
+        await cli.run_command_safely(command, args)
     finally:
-        await cli.stop()
+        await cli.stop(show_farewell=False)
 
 
 def main():
@@ -2762,13 +3070,11 @@ def main():
 
     parser.add_argument(
         "args",
-        nargs="*",
+        nargs=argparse.REMAINDER,
         help="命令参数"
     )
 
-    args, unknown = parser.parse_known_args()
-    if unknown:
-        args.args.extend(unknown)
+    args = parser.parse_args()
 
     if args.mcp:
         from core.browser_bootstrap import ensure_browser_ready

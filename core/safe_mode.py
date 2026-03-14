@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.cli_entry import build_cli_command
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -151,6 +153,10 @@ STRICT_ALWAYS_ALLOWED = {
     "do-submit",
     "do_submit",
     "jobs",
+    "jobs-clean",
+    "jobs_clean",
+    "job-clean",
+    "job_clean",
     "job-status",
     "job_status",
     "job-result",
@@ -235,9 +241,9 @@ def evaluate_safe_mode_command(
             "reason": f"blocked_low_level_command:{normalized}",
             "hint": "Use `do-plan` first, then `do` for execution.",
             "recommended": [
-                "python main.py do-plan \"<goal>\"",
-                "python main.py do \"<goal>\" --dry-run",
-                "python main.py do \"<goal>\"",
+                build_cli_command('do-plan "<goal>"'),
+                build_cli_command('do "<goal>" --dry-run'),
+                build_cli_command('do "<goal>"'),
             ],
         }
 
@@ -248,8 +254,8 @@ def evaluate_safe_mode_command(
             "reason": "workflow_execute_blocked_in_safe_mode",
             "hint": "In safe mode strict, run workflow with --dry-run or use `do`.",
             "recommended": [
-                "python main.py workflow <spec> --dry-run",
-                "python main.py do \"<goal>\"",
+                build_cli_command("workflow <spec> --dry-run"),
+                build_cli_command('do "<goal>"'),
             ],
         }
 
@@ -266,8 +272,8 @@ def evaluate_safe_mode_command(
         "reason": f"unknown_command_blocked:{normalized}",
         "hint": "Use `do-plan` / `do` instead of unknown direct commands.",
         "recommended": [
-            "python main.py do-plan \"<goal>\"",
-            "python main.py do \"<goal>\" --dry-run",
+            build_cli_command('do-plan "<goal>"'),
+            build_cli_command('do "<goal>" --dry-run'),
         ],
     }
 

@@ -62,6 +62,7 @@ from core.trace_distill import distill_workflow_trace
 from core.runtime_state import PageSnapshot
 from core.research_kernel import ResearchKernel
 from core.metrics import set_budget_telemetry_provider, clear_budget_telemetry_provider
+from core.cli_entry import build_cli_command
 from config import crawler_config
 
 if TYPE_CHECKING:
@@ -182,7 +183,7 @@ class WebAgent:
             )
 
         except Exception as e:
-            logger.exception(f"Error visiting {url}")
+            logger.error("Error visiting %s: %s", url, e)
             return AgentResponse(
                 success=False,
                 content=f"访问失败：{url}",
@@ -238,7 +239,7 @@ class WebAgent:
                 metadata=result.metadata,
             )
         except Exception as e:
-            logger.exception("Error fetching html from %s", url)
+            logger.error("Error fetching html from %s: %s", url, e)
             return AgentResponse(
                 success=False,
                 content=f"HTML 获取失败：{url}",
@@ -1567,19 +1568,19 @@ class WebAgent:
     ) -> List[str]:
         task_text = str(task or "").replace('"', '\\"')
         commands: List[str] = []
-        commands.append(f'python main.py skills --resolve "{task_text}" --compact')
+        commands.append(build_cli_command(f'skills --resolve "{task_text}" --compact'))
         if route in {"social", "commerce", "url"}:
-            commands.append("python main.py challenge-profiles")
-            commands.append("python main.py auth-template")
-        do_dry = f'python main.py do "{task_text}" --skill={selected_skill} --dry-run'
+            commands.append(build_cli_command("challenge-profiles"))
+            commands.append(build_cli_command("auth-template"))
+        do_dry = build_cli_command(f'do "{task_text}" --skill={selected_skill} --dry-run')
         if strict:
             do_dry += " --strict"
         commands.append(do_dry)
-        do_exec = f'python main.py do "{task_text}" --skill={selected_skill}'
+        do_exec = build_cli_command(f'do "{task_text}" --skill={selected_skill}')
         if strict:
             do_exec += " --strict"
         commands.append(do_exec)
-        commands.append("python main.py context --event=workflow_trace --limit=10")
+        commands.append(build_cli_command("context --event=workflow_trace --limit=10"))
         return commands
 
     @staticmethod

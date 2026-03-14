@@ -16,6 +16,7 @@ from playwright.async_api import async_playwright, Browser, Page, BrowserContext
 from config import browser_config, BrowserConfig, StealthConfig
 from core.challenge_workflow import get_challenge_workflow_runner
 from core.auth_profiles import get_auth_profile_registry
+from core.cli_entry import build_cli_command
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1554,7 +1555,7 @@ class BrowserManager(BaseBrowserManager):
             if login_wall and isinstance(auth_profile, dict):
                 if auth_profile.get("matched") is None:
                     result_metadata["login_hint"] = (
-                        "页面存在登录门槛且未命中 auth profile。请先执行 `python main.py auth-template` 并配置本地登录态。"
+                        f"页面存在登录门槛且未命中 auth profile。请先执行 `{build_cli_command('auth-template')}` 并配置本地登录态。"
                     )
                 elif auth_profile.get("requires_user_input"):
                     result_metadata["login_hint"] = "已命中 auth profile，但登录态未配置完整，需要用户补充本地凭据。"
@@ -1578,7 +1579,7 @@ class BrowserManager(BaseBrowserManager):
                 error="operation_cancelled",
             )
         except Exception as e:
-            logger.exception(f"Error fetching {url}")
+            logger.error("Error fetching %s: %s", url, e)
             return BrowserResult(
                 url=url,
                 html="",
@@ -1747,7 +1748,7 @@ class BrowserManager(BaseBrowserManager):
             )
 
         except Exception as e:
-            logger.exception(f"Error in click_and_wait")
+            logger.error("Error in click_and_wait: %s", e)
             return BrowserResult(
                 url=url,
                 html="",
@@ -1798,7 +1799,7 @@ class BrowserManager(BaseBrowserManager):
             )
 
         except Exception as e:
-            logger.exception(f"Error in fill_and_submit")
+            logger.error("Error in fill_and_submit: %s", e)
             return BrowserResult(
                 url=url,
                 html="",

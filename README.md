@@ -1,61 +1,61 @@
 <div align="center">
-  <img src="./LOGO.png" alt="Web-Rooter Logo" width="220" />
+  <img src="./LOGO.png" alt="Web-Rooter Logo" width="240" />
   <h1>Web-Rooter</h1>
-  <p><strong>给 AI 编程工具的可引用联网检索层</strong></p>
-  <p>让 Claude/Cursor 在任务中稳定调用 <code>wr</code>，输出“结论 + 来源”</p>
+  <p><strong>给 AI 编程工具的可引用联网研究层</strong></p>
+  <p>让 Claude Code / Cursor / 本地 Agent 在同一条 <code>wr</code> 链路里稳定完成“检索 → 抓取 → 引用”</p>
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
-    <img src="https://img.shields.io/badge/version-v0.2.1-blue.svg" alt="Version v0.2.1">
+    <img src="https://img.shields.io/badge/version-v0.2.2-blue.svg" alt="Version v0.2.2">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
     <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP-orange.svg" alt="Interfaces">
   </p>
 
   <p>
-    <a href="./README.zh-CN.md">中文（完整）</a> |
+    <a href="./README.zh-CN.md">中文（完整版）</a> |
     <a href="./README.en.md">English</a>
   </p>
 </div>
 
 ---
 
-## TL;DR
+## 这是什么（先说人话）
 
-- 这是一个 **给 AI 调用** 的工具，不是人类长期手敲脚本的工具。
-- 安装后统一入口是 **`wr`**（不是默认 `python main.py ...`）。
-- 输出自带 `citations` 和 `references_text`，可以直接进报告/PR 说明。
+Web-Rooter 不是“又一个爬虫脚本集合”，而是给 AI 用的联网执行底座：
 
-```bash
-wr quick "OpenAI Agents SDK best practices"
-wr web "RAG benchmark 2026" --crawl-pages=5
-wr do "对比 3 篇 RAG 评测文章并给出处" --strict
-```
+- 你给 AI 一个目标
+- AI 调用 `wr` 执行固定流程
+- 输出结论时自动带 `citations` 和 `references_text`
+
+目标是把“AI 会编答案但不给来源”的体验，改造成“AI 有执行链路、有引用、可复查”。
 
 ---
 
-## 为什么团队会用它
+## 30 秒判断你需不需要它
 
-| 问题 | Web-Rooter 的做法 |
-|---|---|
-| AI 会给“无来源结论” | 强制输出 `citations` 与 `references_text` |
-| 普通搜索召回不稳 | `web/deep` 多源检索 + 页面抓取 |
-| 反爬导致抓取失败 | HTTP 优先，必要时自动浏览器兜底 |
-| AI 容易乱走命令 | 用 skills + `do-plan` + `do` 固定执行路径 |
+你正在用 Claude Code / Cursor / 其他 AI 编程工具，并且遇到以下任一问题：
+
+- AI 回答看起来正确，但没有可追溯来源
+- 搜索、抓取、整理出处要切多个工具，工作流很碎
+- 长任务容易卡住，或者运行不稳定
+- 希望团队里所有 AI 都走同一套命令标准
+
+如果是，Web-Rooter 就是这层“统一执行协议”。
 
 ---
 
-## 1 分钟安装
+## 1 分钟上手
 
-### 方案 A：预编译（推荐）
+### 1) 安装
 
-Release 下载：  
-[https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.1](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.1)
+预编译安装（推荐消费者）：
+[https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.2](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.2)
 
 - Windows：`install-web-rooter.bat`
 - macOS/Linux：`./install-web-rooter.sh`
 
-### 方案 B：源码一键安装
+源码安装：
 
 ```bash
 # Windows
@@ -65,26 +65,29 @@ install.bat
 bash install.sh
 ```
 
-### 安装完成验证
+### 2) 验证
 
 ```bash
 wr --version
 wr doctor
-wr help
 ```
+
+### 3) 跑第一个可引用任务
+
+```bash
+wr skills --resolve "比较三篇 RAG 评测并给出处" --compact
+wr do-plan "比较三篇 RAG 评测并给出处"
+wr do "比较三篇 RAG 评测并给出处" --dry-run
+wr do "比较三篇 RAG 评测并给出处"
+```
+
+如果你在源码目录调试，才使用 `python main.py ...`。
 
 ---
 
-## 让 AI 永远记得用 `wr`
+## 给 AI 的“强约束提示词”（直接可复制）
 
-安装脚本会自动注入 skills（best-effort）到：
-
-- Claude Code / Claude Desktop
-- Cursor
-- OpenCode
-- OpenClaw
-
-再把下面规则贴进你的项目指令（强烈推荐）：
+把下面这段贴进项目级 AI 指令：
 
 ```text
 凡是涉及联网检索、网页抓取、引用输出，必须优先使用 Web-Rooter（wr）。
@@ -92,84 +95,101 @@ wr help
 1) wr skills --resolve "<用户目标>" --compact
 2) wr do-plan "<用户目标>"
 3) wr do "<用户目标>" --dry-run
-4) wr do "<用户目标>" --strict
+4) wr do "<用户目标>"
 禁止跳过 wr 直接给无来源结论。
 ```
 
-如果 AI 还是跑偏，补一句：
-
-```text
-请先执行 wr help，并先给出你将执行的 wr 命令序列。
-```
+安装脚本会 best-effort 自动注入技能引导到 Claude/Cursor/OpenCode/OpenClaw，但项目指令里再强调一次，效果最稳。
 
 ---
 
-## 命令选择表
+## 输出契约（为什么它适合生产）
 
-| 你要做什么 | 直接用 |
+Web-Rooter 的核心价值不是“搜到内容”，而是“可引用、可审计、可复现”。
+
+```json
+{
+  "citations": [
+    {
+      "id": "W1",
+      "title": "Example Source",
+      "url": "https://example.com/report"
+    }
+  ],
+  "references_text": "[W1] Example Source https://example.com/report",
+  "comparison": {
+    "total_results": 8,
+    "corroborated_results": 3
+  }
+}
+```
+
+面向消费者最重要的两个字段：
+
+- `citations`：每条关键结论的来源
+- `references_text`：已经格式化好的可粘贴引用
+
+---
+
+## 命令选择图
+
+| 你要做什么 | 命令 |
 |---|---|
 | 快速查一个点 | `wr quick` |
-| 搜索 + 抓取页面 | `wr web` |
+| 多引擎检索 + 抓取 | `wr web` |
 | 深度多变体研究 | `wr deep` |
-| 自动规划并执行 | `wr do` |
-| 长任务后台跑 | `wr do-submit` + `wr jobs` |
-| 学术论文检索 | `wr academic` |
-| 社交观点检索 | `wr social` |
-| 看健康度和资源压力 | `wr telemetry` |
+| 让系统自动规划并执行 | `wr do` |
+| 长任务异步后台执行 | `wr do-submit` + `wr jobs` |
+| 清理历史后台作业 | `wr jobs-clean` |
+| 学术文献检索 | `wr academic` |
+| 社交观点抓取 | `wr social` |
+| 查看系统健康与压力 | `wr telemetry` |
+| 检查挑战页/登录态提示 | `wr challenge-profiles` / `wr auth-hint` |
 
 ---
 
-## 一个标准工作流（可直接复制）
+## 可靠性（v0.2.2 重点）
 
-```bash
-# 1) 先让系统判断最合适 skill
-wr skills --resolve "比较三篇 RAG 评测并给出处" --compact
+这一版聚焦在“AI 长时间实战是否稳定”：
 
-# 2) 先看计划
-wr do-plan "比较三篇 RAG 评测并给出处"
+- 命令级超时护栏：`--command-timeout-sec` / `WEB_ROOTER_COMMAND_TIMEOUT_SEC`
+- 超长输出保持合法 JSON（不再出现“被截断后 AI 解析失败”）
+- URL 归一化强化：拒绝 path-only / malformed URL，减少无效重试
+- 后台作业硬化：
+  - 僵尸作业自动纠偏
+  - 结果文件大小预算与压缩
+  - 作业列表按更新时间排序
+  - `wr jobs-clean` 清理历史作业目录
+- 缓存与预算路径增强，避免在异常环境下演变成资源失控
 
-# 3) 先 dry-run
-wr do "比较三篇 RAG 评测并给出处" --dry-run
-
-# 4) 正式执行
-wr do "比较三篇 RAG 评测并给出处" --strict
-```
-
----
-
-## 输出契约（对消费者最重要）
-
-你重点看两个字段：
-
-- `citations`: 结论对应的来源 URL/标题
-- `references_text`: 已格式化的可粘贴参考文献
-
-也就是说，结果天然是“可审计、可引用、可复现”的。
+一句话：优先修“会让 AI 生产流崩掉”的问题，而不是堆炫技功能。
 
 ---
 
 ## 常见问题
 
-1. 为什么不用 `python main.py`？
-   - 用户入口就是 `wr`。  
-   - `python main.py` 仅用于开发调试或兜底。
+1. 为什么强调 `wr` 而不是 `python main.py`？  
+`wr` 是安装后的正式用户入口，适合 AI 和团队统一调用；`python main.py` 是源码调试入口。
 
-2. `deep/social` 超时怎么办？
-   - 先试 `--crawl=0`；
-   - 或先用 `wr web` / `wr quick --js`。
+2. `doctor` 没通过还能做什么？  
+可以先做路由/规划类命令：`skills`、`do-plan`、`do --dry-run`、`workflow-schema`。  
+真实抓取类命令建议等依赖就绪后再执行。
 
-3. skills 注入失败怎么办？
-   - 手动执行：`python scripts/setup_ai_skills.py --repo-root .`
+3. 长任务怕卡住怎么办？  
+优先用 `wr do-submit ...` 后台执行，再用 `wr jobs` / `wr job-status` / `wr job-result` 轮询。
+
+4. AI 还是偶尔忘记调用 `wr` 怎么办？  
+把上面的“强约束提示词”放进项目级系统指令，并在 code review 中把“是否有 citations”作为检查项。
 
 ---
 
-## 文档导航
+## 文档
 
 - CLI 参数全集：[`docs/guide/CLI.md`](./docs/guide/CLI.md)
-- 安装细节：[`docs/guide/INSTALLATION.md`](./docs/guide/INSTALLATION.md)
-- MCP 工具清单：[`docs/reference/MCP_TOOLS.md`](./docs/reference/MCP_TOOLS.md)
+- 安装与打包：[`docs/guide/INSTALLATION.md`](./docs/guide/INSTALLATION.md)
+- MCP 工具参考：[`docs/reference/MCP_TOOLS.md`](./docs/reference/MCP_TOOLS.md)
 
 ---
 
 默认分支：`main`  
-稳定版本：`v0.2.1`
+当前稳定版本：`v0.2.2`

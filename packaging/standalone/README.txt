@@ -1,4 +1,4 @@
-Web-Rooter Standalone Bundle (v0.2.1-alpha)
+Web-Rooter Standalone Bundle
 
 This package is designed for clean machines (no pip/git required).
 
@@ -25,4 +25,3 @@ Notes:
 - For Claude MCP integration, installer performs best-effort config.
 - If MCP is not detected, configure MCP manually with command:
   web-rooter --mcp
-

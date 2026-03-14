@@ -734,44 +734,56 @@ class AdvancedSearchEngineClient:
             if uddg:
                 url = unquote(uddg)
 
+        engine_base_map = {
+            AdvancedSearchEngine.GOOGLE: "https://www.google.com",
+            AdvancedSearchEngine.GOOGLE_US: "https://www.google.com",
+            AdvancedSearchEngine.BING: "https://www.bing.com",
+            AdvancedSearchEngine.BING_US: "https://www.bing.com",
+            AdvancedSearchEngine.BAIDU: "https://www.baidu.com",
+            AdvancedSearchEngine.QUARK: "https://www.quark.cn",
+            AdvancedSearchEngine.DUCKDUCKGO: "https://duckduckgo.com",
+            AdvancedSearchEngine.SOGOU: "https://www.sogou.com",
+            AdvancedSearchEngine.YANDEX: "https://yandex.com",
+            AdvancedSearchEngine.GITHUB: "https://github.com",
+            AdvancedSearchEngine.STACKOVERFLOW: "https://stackoverflow.com",
+            AdvancedSearchEngine.MEDIUM: "https://medium.com",
+            AdvancedSearchEngine.REDDIT: "https://www.reddit.com",
+            AdvancedSearchEngine.ZHIHU: "https://www.zhihu.com",
+            AdvancedSearchEngine.XIAOHONGSHU: "https://www.xiaohongshu.com",
+            AdvancedSearchEngine.TIEBA: "https://tieba.baidu.com",
+            AdvancedSearchEngine.DOUYIN: "https://www.douyin.com",
+            AdvancedSearchEngine.WEIBO: "https://s.weibo.com",
+            AdvancedSearchEngine.BILIBILI: "https://search.bilibili.com",
+            AdvancedSearchEngine.TAOBAO: "https://s.taobao.com",
+            AdvancedSearchEngine.JD: "https://search.jd.com",
+            AdvancedSearchEngine.PINDUODUO: "https://mobile.yangkeduo.com",
+            AdvancedSearchEngine.MEITUAN: "https://www.meituan.com",
+            AdvancedSearchEngine.HACKERNEWS: "https://news.ycombinator.com",
+            AdvancedSearchEngine.GOOGLE_SCHOLAR: "https://scholar.google.com",
+            AdvancedSearchEngine.ARXIV: "https://arxiv.org",
+            AdvancedSearchEngine.SEMANTIC_SCHOLAR: "https://www.semanticscholar.org",
+            AdvancedSearchEngine.TWITTER: "https://x.com",
+        }
+
         parsed = urlparse(url)
-        if not parsed.scheme:
-            engine_base_map = {
-                AdvancedSearchEngine.GOOGLE: "https://www.google.com",
-                AdvancedSearchEngine.GOOGLE_US: "https://www.google.com",
-                AdvancedSearchEngine.BING: "https://www.bing.com",
-                AdvancedSearchEngine.BING_US: "https://www.bing.com",
-                AdvancedSearchEngine.BAIDU: "https://www.baidu.com",
-                AdvancedSearchEngine.QUARK: "https://www.quark.cn",
-                AdvancedSearchEngine.DUCKDUCKGO: "https://duckduckgo.com",
-                AdvancedSearchEngine.SOGOU: "https://www.sogou.com",
-                AdvancedSearchEngine.YANDEX: "https://yandex.com",
-                AdvancedSearchEngine.GITHUB: "https://github.com",
-                AdvancedSearchEngine.STACKOVERFLOW: "https://stackoverflow.com",
-                AdvancedSearchEngine.MEDIUM: "https://medium.com",
-                AdvancedSearchEngine.REDDIT: "https://www.reddit.com",
-                AdvancedSearchEngine.ZHIHU: "https://www.zhihu.com",
-                AdvancedSearchEngine.XIAOHONGSHU: "https://www.xiaohongshu.com",
-                AdvancedSearchEngine.TIEBA: "https://tieba.baidu.com",
-                AdvancedSearchEngine.DOUYIN: "https://www.douyin.com",
-                AdvancedSearchEngine.WEIBO: "https://s.weibo.com",
-                AdvancedSearchEngine.BILIBILI: "https://search.bilibili.com",
-                AdvancedSearchEngine.TAOBAO: "https://s.taobao.com",
-                AdvancedSearchEngine.JD: "https://search.jd.com",
-                AdvancedSearchEngine.PINDUODUO: "https://mobile.yangkeduo.com",
-                AdvancedSearchEngine.MEITUAN: "https://www.meituan.com",
-                AdvancedSearchEngine.HACKERNEWS: "https://news.ycombinator.com",
-                AdvancedSearchEngine.GOOGLE_SCHOLAR: "https://scholar.google.com",
-                AdvancedSearchEngine.ARXIV: "https://arxiv.org",
-                AdvancedSearchEngine.SEMANTIC_SCHOLAR: "https://www.semanticscholar.org",
-                AdvancedSearchEngine.TWITTER: "https://x.com",
-            }
+        if (not parsed.scheme) or (parsed.scheme in {"http", "https"} and not parsed.netloc):
             base = engine_base_map.get(engine)
             if base:
-                url = urljoin(base, url)
+                if parsed.scheme in {"http", "https"} and not parsed.netloc:
+                    # 修复 `https:///path` 这类“有协议但无主机”的 malformed URL。
+                    relative = parsed.path or "/"
+                    if parsed.query:
+                        relative = f"{relative}?{parsed.query}"
+                    if parsed.fragment:
+                        relative = f"{relative}#{parsed.fragment}"
+                    url = urljoin(base, relative)
+                else:
+                    url = urljoin(base, url)
                 parsed = urlparse(url)
 
         if parsed.scheme not in {"http", "https"}:
+            return ""
+        if not parsed.netloc:
             return ""
 
         return url

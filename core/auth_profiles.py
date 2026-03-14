@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from core.cli_entry import build_cli_command
+
 logger = logging.getLogger(__name__)
 
 _VALID_MODES = {"manual", "cookies", "headers", "storage_state", "auto"}
@@ -401,7 +403,7 @@ class AuthProfileRegistry:
                 )
             else:
                 payload["hint"] = (
-                    "未命中登录 profile。可先执行 `python main.py auth-template` 生成本地模板，"
+                    f"未命中登录 profile。可先执行 `{build_cli_command('auth-template')}` 生成本地模板，"
                     "填好 cookies/storage_state 后再重试。"
                 )
         elif payload.get("requires_user_input"):

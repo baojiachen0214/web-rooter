@@ -139,6 +139,18 @@ class ResearchKernel:
         auto_fallback: bool = True,
     ) -> KernelVisitResult:
         normalized_url = self.normalize_url(url)
+        if not normalized_url:
+            compact_input = self._compact_error_text(url, max_chars=240) or "empty"
+            self._emit_runtime_event(
+                "visit_invalid_url",
+                {
+                    "input_url": compact_input,
+                },
+            )
+            return KernelVisitResult(
+                success=False,
+                error=f"invalid_url:{compact_input}",
+            )
         self._state.mark_visited(normalized_url)
         pressure = self._refresh_pressure_state()
         limits = pressure.get("limits", {})
@@ -202,26 +214,31 @@ class ResearchKernel:
                 failed_result = KernelVisitResult(
                     success=False,
                     error=(
-                        f"HTTP失败：{crawler_result.error or crawler_result.status_code}; "
-                        f"浏览器兜底失败：{browser_result.error or 'Empty content'}"
+                        f"HTTP失败：{self._compact_error_text(crawler_result.error) or crawler_result.status_code}; "
+                        f"浏览器兜底失败：{self._compact_error_text(browser_result.error) or 'Empty content'}"
                     ),
                 )
                 self._emit_visit_event_outcome(normalized_url, failed_result)
                 return failed_result
 
-            failed_result = KernelVisitResult(success=False, error=crawler_result.error or "fetch_failed")
+            failed_result = KernelVisitResult(
+                success=False,
+                error=self._compact_error_text(crawler_result.error) or "fetch_failed",
+            )
             self._emit_visit_event_outcome(normalized_url, failed_result)
             return failed_result
         except Exception as exc:
-            logger.exception("Kernel visit error for %s", normalized_url)
+            compact = self._compact_error_text(exc) or "visit_failed"
+            compact_url = self._compact_error_text(normalized_url, max_chars=220) or "<empty>"
+            logger.error("Kernel visit error for %s: %s", compact_url, compact)
             self._emit_runtime_event(
                 "visit_exception",
                 {
                     "url": normalized_url,
-                    "error": str(exc),
+                    "error": compact,
                 },
             )
-            return KernelVisitResult(success=False, error=str(exc))
+            return KernelVisitResult(success=False, error=compact)
 
     async def fetch_html(
         self,
@@ -231,6 +248,18 @@ class ResearchKernel:
         max_chars: int = 80_000,
     ) -> KernelHTMLResult:
         normalized_url = self.normalize_url(url)
+        if not normalized_url:
+            compact_input = self._compact_error_text(url, max_chars=240) or "empty"
+            self._emit_runtime_event(
+                "fetch_html_invalid_url",
+                {
+                    "input_url": compact_input,
+                },
+            )
+            return KernelHTMLResult(
+                success=False,
+                error=f"invalid_url:{compact_input}",
+            )
         max_chars = max(1000, min(max_chars, 300000))
         pressure = self._refresh_pressure_state()
         limits = pressure.get("limits", {})
@@ -281,7 +310,10 @@ class ResearchKernel:
             if use_browser:
                 browser_result = await self.browser_fetch(normalized_url)
                 if browser_result.error:
-                    failed = KernelHTMLResult(success=False, error=browser_result.error)
+                    failed = KernelHTMLResult(
+                        success=False,
+                        error=self._compact_error_text(browser_result.error) or "browser_error",
+                    )
                     self._emit_fetch_html_outcome(normalized_url, failed, fetch_mode="browser")
                     return failed
                 html = browser_result.html or ""
@@ -310,8 +342,8 @@ class ResearchKernel:
                         failed = KernelHTMLResult(
                             success=False,
                             error=(
-                                f"HTTP失败（{crawler_result.error or crawler_result.status_code}）；"
-                                f"Browser失败（{browser_result.error}）"
+                                f"HTTP失败（{self._compact_error_text(crawler_result.error) or crawler_result.status_code}）；"
+                                f"Browser失败（{self._compact_error_text(browser_result.error)}）"
                             ),
                         )
                         self._emit_fetch_html_outcome(normalized_url, failed, fetch_mode="browser_fallback")
@@ -324,7 +356,7 @@ class ResearchKernel:
                 else:
                     failed = KernelHTMLResult(
                         success=False,
-                        error=crawler_result.error or f"status={crawler_result.status_code}",
+                        error=self._compact_error_text(crawler_result.error) or f"status={crawler_result.status_code}",
                     )
                     self._emit_fetch_html_outcome(normalized_url, failed, fetch_mode="http")
                     return failed
@@ -381,15 +413,17 @@ class ResearchKernel:
             )
             return success_result
         except Exception as exc:
-            logger.exception("Kernel fetch_html error for %s", normalized_url)
+            compact = self._compact_error_text(exc) or "fetch_html_failed"
+            compact_url = self._compact_error_text(normalized_url, max_chars=220) or "<empty>"
+            logger.error("Kernel fetch_html error for %s: %s", compact_url, compact)
             self._emit_runtime_event(
                 "fetch_html_exception",
                 {
                     "url": normalized_url,
-                    "error": str(exc),
+                    "error": compact,
                 },
             )
-            return KernelHTMLResult(success=False, error=str(exc))
+            return KernelHTMLResult(success=False, error=compact)
 
     def has_page(self, url: str) -> bool:
         return self._state.has_page(self.normalize_url(url))
@@ -535,9 +569,33 @@ class ResearchKernel:
 
     def normalize_url(self, url: str) -> str:
         normalized = str(url or "").strip()
-        if normalized and not normalized.startswith(("http://", "https://")):
-            normalized = "https://" + normalized
-        return normalized
+        if not normalized:
+            return ""
+
+        parsed = urlparse(normalized)
+        if parsed.scheme in {"http", "https"}:
+            return normalized if parsed.netloc else ""
+
+        if normalized.startswith("//"):
+            candidate = f"https:{normalized}"
+            parsed_candidate = urlparse(candidate)
+            return candidate if parsed_candidate.netloc else ""
+
+        if normalized.startswith(("/", "?", "#")):
+            return ""
+
+        if normalized.startswith("www."):
+            candidate = f"https://{normalized}"
+            parsed_candidate = urlparse(candidate)
+            return candidate if parsed_candidate.netloc else ""
+
+        hostname = normalized.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        if "." in hostname or hostname == "localhost":
+            candidate = f"https://{normalized}"
+            parsed_candidate = urlparse(candidate)
+            return candidate if parsed_candidate.netloc else ""
+
+        return ""
 
     def _build_parser(self):
         if Parser is None:
@@ -582,6 +640,16 @@ class ResearchKernel:
         ]
         return any(keyword in error_text for keyword in fallback_keywords)
 
+    @staticmethod
+    def _compact_error_text(error: Any, *, max_chars: int = 320) -> str:
+        text = str(error or "").strip()
+        if not text:
+            return ""
+        first_line = text.splitlines()[0].strip()
+        if len(first_line) > max_chars:
+            return first_line[: max_chars - 3] + "..."
+        return first_line
+
     def _visit_from_browser_result(
         self,
         url: str,
@@ -589,7 +657,10 @@ class ResearchKernel:
         metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> KernelVisitResult:
         if result.error is not None or not result.html:
-            return KernelVisitResult(success=False, error=result.error or "Empty content")
+            return KernelVisitResult(
+                success=False,
+                error=self._compact_error_text(result.error) or "Empty content",
+            )
 
         parser = self._build_parser().parse(result.html, url)
         extracted = parser.extract()

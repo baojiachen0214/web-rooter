@@ -11,6 +11,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
@@ -20,6 +21,28 @@ import logging
 import sqlite3
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_default_sqlite_cache_path() -> str:
+    """Resolve a writable sqlite cache path with safe fallbacks."""
+    env_path = str(os.getenv("WEB_ROOTER_CACHE_DB_PATH", "")).strip()
+    if env_path:
+        return str(Path(env_path).expanduser())
+
+    candidates = [
+        Path.cwd() / ".web-rooter" / "cache.db",
+        Path.home() / ".web-rooter" / "cache.db",
+        Path("/tmp") / "web-rooter-cache.db",
+    ]
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            return str(candidate)
+        except Exception:
+            continue
+
+    # Last resort: keep a relative path so runtime can still proceed.
+    return "cache.db"
 
 
 @dataclass
@@ -210,13 +233,17 @@ class SQLiteCache:
         self._lock = asyncio.Lock()
         self._hits = 0
         self._misses = 0
+        self._connect_error: Optional[str] = None
 
     def _connect(self):
         """连接数据库"""
         if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            db_file = Path(self._db_path).expanduser()
+            db_file.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(db_file), check_same_thread=False)
             self._create_table()
             self._cleanup_expired()
+            self._connect_error = None
 
     def _create_table(self):
         """创建表"""
@@ -249,9 +276,14 @@ class SQLiteCache:
     async def get(self, key: str) -> Optional[CacheEntry]:
         """获取缓存"""
         async with self._lock:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._connect
-            )
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._connect
+                )
+            except Exception as exc:
+                self._connect_error = str(exc)
+                self._misses += 1
+                return None
 
             cursor = self._conn.execute(
                 "SELECT * FROM cache WHERE key = ?",
@@ -292,9 +324,13 @@ class SQLiteCache:
     async def set(self, key: str, entry: CacheEntry):
         """设置缓存"""
         async with self._lock:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._connect
-            )
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._connect
+                )
+            except Exception as exc:
+                self._connect_error = str(exc)
+                return
 
             # 检查是否需要淘汰
             cursor = self._conn.execute("SELECT COUNT(*) FROM cache")
@@ -327,25 +363,38 @@ class SQLiteCache:
     async def delete(self, key: str):
         """删除缓存"""
         async with self._lock:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._connect
-            )
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._connect
+                )
+            except Exception as exc:
+                self._connect_error = str(exc)
+                return
             self._conn.execute("DELETE FROM cache WHERE key = ?", (key,))
             self._conn.commit()
 
     async def clear(self):
         """清空缓存"""
         async with self._lock:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._connect
-            )
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._connect
+                )
+            except Exception as exc:
+                self._connect_error = str(exc)
+                return
             self._conn.execute("DELETE FROM cache")
             self._conn.commit()
 
     def get_stats(self) -> dict:
         """获取统计信息"""
         if self._conn is None:
-            return {"size": 0, "max_size": self._max_size}
+            return {
+                "size": 0,
+                "max_size": self._max_size,
+                "connect_error": self._connect_error,
+                "db_path": self._db_path,
+            }
 
         cursor = self._conn.execute("SELECT COUNT(*) FROM cache")
         size = cursor.fetchone()[0]
@@ -359,6 +408,8 @@ class SQLiteCache:
             "hits": self._hits,
             "misses": self._misses,
             "hit_rate": hit_rate,
+            "connect_error": self._connect_error,
+            "db_path": self._db_path,
         }
 
     def close(self):
@@ -412,7 +463,7 @@ class RequestCache:
 
         if use_sqlite:
             if db_path is None:
-                db_path = str(Path.home() / ".web-rooter" / "cache.db")
+                db_path = _resolve_default_sqlite_cache_path()
             self._sqlite_cache = SQLiteCache(db_path, sqlite_max_size)
 
         self._default_ttl = default_ttl
@@ -453,7 +504,11 @@ class RequestCache:
 
         # 尝试 SQLite 缓存
         if self._sqlite_cache:
-            entry = await self._sqlite_cache.get(key)
+            try:
+                entry = await self._sqlite_cache.get(key)
+            except Exception as exc:
+                logger.debug("SQLite cache get failed: %s", exc)
+                entry = None
             if entry:
                 # 回填到内存缓存
                 if (
@@ -528,8 +583,11 @@ class RequestCache:
                 or len(response_body) <= self._sqlite_max_body_bytes
             )
         ):
-            await self._sqlite_cache.set(key, entry)
-            stored = True
+            try:
+                await self._sqlite_cache.set(key, entry)
+                stored = True
+            except Exception as exc:
+                logger.debug("SQLite cache set failed: %s", exc)
 
         if stored:
             self._requests_cached += 1
@@ -547,7 +605,7 @@ class RequestCache:
             tasks.append(self._sqlite_cache.delete(key))
 
         if tasks:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def clear(self):
         """清空缓存"""
@@ -558,7 +616,7 @@ class RequestCache:
             tasks.append(self._sqlite_cache.clear())
 
         if tasks:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         self._requests_cached = 0
         self._requests_served = 0

@@ -521,7 +521,7 @@ class Crawler:
             if proxy and self._proxy_rotator:
                 await self._proxy_rotator.record_failure(proxy)
 
-            logger.exception(f"Unexpected error fetching {url}")
+            logger.error("Unexpected error fetching %s: %s", url, e)
             return CrawlResult(
                 url=url,
                 status_code=0,

@@ -25,7 +25,7 @@ What the one-click installer does:
 - create/reuse `.venv312`
 - install `requirements.txt`
 - install Playwright Chromium runtime
-- run `python main.py --doctor`
+- run environment doctor check (`wr doctor` equivalent)
 - install user-level global CLI command `wr`
 - inject Web-Rooter CLI skill packs into Claude/Cursor/OpenCode/OpenClaw (best-effort)
 
@@ -70,7 +70,7 @@ Artifacts are generated under `dist/release/`.
 ```bash
 pip install -r requirements.txt
 python -m playwright install chromium
-python main.py --doctor
+python main.py doctor
 ```
 
 `--doctor` should pass before running deep crawling tasks.
@@ -78,7 +78,7 @@ python main.py --doctor
 Windows note:
 
 - If your system `python` is below `3.10`, use the project venv directly:
-  - `.venv312\Scripts\python.exe main.py --doctor`
+  - `.venv312\Scripts\python.exe main.py doctor`
   - `.venv312\Scripts\python.exe main.py quick "OpenAI Agents SDK"`
 
 ## 4. OS-Specific Helpers
@@ -111,16 +111,16 @@ Uninstall:
 ## 5. Verify
 
 ```bash
-python main.py help
-python main.py --doctor
-python main.py quick "OpenAI Agents SDK"
-```
-
-If global CLI is installed:
-
-```bash
 wr help
 wr doctor
+wr quick "OpenAI Agents SDK"
+```
+
+If you are debugging directly in source tree, use:
+
+```bash
+python main.py help
+python main.py doctor
 ```
 
 ## 6. Troubleshooting
@@ -128,7 +128,7 @@ wr doctor
 - Playwright browser missing:
   - `python -m playwright install chromium`
 - Python version too low in doctor:
-  - Use `.venv312\Scripts\python.exe main.py --doctor` (Windows)
+  - Use `.venv312\Scripts\python.exe main.py doctor` (Windows)
   - Or create a fresh `python3.10+` virtualenv and reinstall requirements
 - Anti-bot or access challenges:
   - Prefer `visit <url> --js` or `quick --js`

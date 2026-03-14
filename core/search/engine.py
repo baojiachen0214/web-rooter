@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
 import logging
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 try:
     from core.crawler import Crawler, CrawlResult
@@ -104,6 +105,14 @@ class SearchEngineClient:
         SearchEngine.SOGOU: "https://www.sogou.com/web?query={query}&num={count}",
         SearchEngine.GOOGLE_SCHOLAR: "https://scholar.google.com/scholar?q={query}&num={count}&hl=zh-CN",
     }
+    _ENGINE_BASE_URLS = {
+        SearchEngine.GOOGLE: "https://www.google.com",
+        SearchEngine.BING: "https://www.bing.com",
+        SearchEngine.BAIDU: "https://www.baidu.com",
+        SearchEngine.DUCKDUCKGO: "https://duckduckgo.com",
+        SearchEngine.SOGOU: "https://www.sogou.com",
+        SearchEngine.GOOGLE_SCHOLAR: "https://scholar.google.com",
+    }
 
     # 结果选择器
     RESULT_SELECTORS = {
@@ -184,6 +193,50 @@ class SearchEngineClient:
         import urllib.parse
         return urllib.parse.quote(query)
 
+    def _normalize_result_url(self, raw_url: str, engine: SearchEngine) -> str:
+        """将搜索结果链接标准化为可抓取的绝对 http(s) URL。"""
+        url = str(raw_url or "").strip()
+        if not url:
+            return ""
+
+        lower_url = url.lower()
+        if lower_url.startswith(("javascript:", "mailto:", "tel:", "#")):
+            return ""
+
+        if url.startswith("/url?") or url.startswith("url?"):
+            query_str = url.split("?", 1)[1] if "?" in url else ""
+            qs = parse_qs(query_str)
+            target = qs.get("q", qs.get("url", [""]))[0]
+            if target:
+                url = unquote(target)
+
+        if "duckduckgo.com/l/?" in lower_url:
+            parsed_ddg = urlparse(url)
+            uddg = parse_qs(parsed_ddg.query).get("uddg", [""])[0]
+            if uddg:
+                url = unquote(uddg)
+
+        parsed = urlparse(url)
+        base = self._ENGINE_BASE_URLS.get(engine, "")
+
+        if not parsed.scheme:
+            if base:
+                url = urljoin(base, url)
+                parsed = urlparse(url)
+        elif parsed.scheme in {"http", "https"} and not parsed.netloc:
+            if base:
+                relative = parsed.path or "/"
+                if parsed.query:
+                    relative = f"{relative}?{parsed.query}"
+                if parsed.fragment:
+                    relative = f"{relative}#{parsed.fragment}"
+                url = urljoin(base, relative)
+                parsed = urlparse(url)
+
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return ""
+        return url
+
     def _parse_results(self, html: str, engine: SearchEngine) -> List[SearchResult]:
         """解析搜索结果"""
         try:
@@ -220,9 +273,12 @@ class SearchEngineClient:
             snippet_tag = g.find("div", class_=re.compile(r"VwiC3b|yDYNvb"))
 
             if title_tag and url_tag:
+                normalized_url = self._normalize_result_url(url_tag["href"], SearchEngine.GOOGLE)
+                if not normalized_url:
+                    continue
                 results.append(SearchResult(
                     title=title_tag.get_text(strip=True),
-                    url=url_tag["href"],
+                    url=normalized_url,
                     snippet=snippet_tag.get_text(strip=True) if snippet_tag else "",
                     engine="google",
                     rank=i + 1,
@@ -241,9 +297,12 @@ class SearchEngineClient:
             snippet_tag = algo.find("div", class_=re.compile(r"b_caption|b_desc"))
 
             if title_tag and url_tag:
+                normalized_url = self._normalize_result_url(url_tag["href"], SearchEngine.BING)
+                if not normalized_url:
+                    continue
                 results.append(SearchResult(
                     title=title_tag.get_text(strip=True),
-                    url=url_tag["href"],
+                    url=normalized_url,
                     snippet=snippet_tag.get_text(strip=True) if snippet_tag else "",
                     engine="bing",
                     rank=i + 1,
@@ -266,9 +325,12 @@ class SearchEngineClient:
                 # 处理百度重定向链接
                 if "sogou.com" in href or "baidu.com" in href and "wd=" not in href:
                     continue
+                normalized_url = self._normalize_result_url(href, SearchEngine.BAIDU)
+                if not normalized_url:
+                    continue
                 results.append(SearchResult(
                     title=title_tag.get_text(strip=True),
-                    url=href,
+                    url=normalized_url,
                     snippet=snippet_tag.get_text(strip=True) if snippet_tag else "",
                     engine="baidu",
                     rank=i + 1,
@@ -286,9 +348,15 @@ class SearchEngineClient:
             snippet_tag = result.find("a", class_=re.compile(r"result__snippet"))
 
             if title_tag:
+                normalized_url = self._normalize_result_url(
+                    title_tag.get("href", ""),
+                    SearchEngine.DUCKDUCKGO,
+                )
+                if not normalized_url:
+                    continue
                 results.append(SearchResult(
                     title=title_tag.get_text(strip=True),
-                    url=title_tag.get("href", ""),
+                    url=normalized_url,
                     snippet=snippet_tag.get_text(strip=True) if snippet_tag else "",
                     engine="duckduckgo",
                     rank=i + 1,
@@ -307,9 +375,12 @@ class SearchEngineClient:
             snippet_tag = item.find(class_=re.compile(r"fb-abstract|text-lightgray"))
 
             if title_tag and url_tag:
+                normalized_url = self._normalize_result_url(url_tag["href"], SearchEngine.SOGOU)
+                if not normalized_url:
+                    continue
                 results.append(SearchResult(
                     title=title_tag.get_text(strip=True),
-                    url=url_tag["href"],
+                    url=normalized_url,
                     snippet=snippet_tag.get_text(strip=True) if snippet_tag else "",
                     engine="sogou",
                     rank=i + 1,
@@ -329,13 +400,19 @@ class SearchEngineClient:
             author_tag = item.find("div", class_=re.compile(r"gs_a"))
 
             if title_tag and url_tag:
+                normalized_url = self._normalize_result_url(
+                    url_tag["href"],
+                    SearchEngine.GOOGLE_SCHOLAR,
+                )
+                if not normalized_url:
+                    continue
                 metadata = {}
                 if author_tag:
                     metadata["authors"] = author_tag.get_text(strip=True)
 
                 results.append(SearchResult(
                     title=title_tag.get_text(strip=True).replace("[PDF]", "").strip(),
-                    url=url_tag["href"],
+                    url=normalized_url,
                     snippet=snippet_tag.get_text(strip=True) if snippet_tag else "",
                     engine="google_scholar",
                     rank=i + 1,

@@ -44,3 +44,20 @@ class RequestCacheBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(first)
         self.assertIsNotNone(second)
         self.assertLessEqual(stats["memory_cache"]["current_bytes"], 10)
+
+    async def test_unwritable_sqlite_path_degrades_to_memory_cache(self) -> None:
+        cache = RequestCache(
+            use_memory=True,
+            use_sqlite=True,
+            db_path="/dev/null/web-rooter-cache.db",
+            memory_max_size=8,
+            memory_max_bytes=1024,
+        )
+
+        await cache.set("https://example.com/fallback", b"ok", 200, {})
+        entry = await cache.get("https://example.com/fallback")
+        stats = cache.get_stats()
+
+        self.assertIsNotNone(entry)
+        self.assertIn("sqlite_cache", stats)
+        self.assertTrue(stats["sqlite_cache"].get("connect_error"))
