@@ -29,41 +29,45 @@ def _skill_markdown(repo_root: Path) -> str:
 ## Goal
 - Treat Web-Rooter as a CLI-first capability layer.
 - Prefer stable staged orchestration (`skills -> do-plan -> do --dry-run -> do`) instead of ad-hoc low-level commands.
+- Use `wr` commands by default for end users.
 
 ## Fast Route
 1. Resolve route and skill:
-   - `python main.py skills --resolve "<goal>" --compact`
+   - `wr skills --resolve "<goal>" --compact`
 2. Build staged playbook:
-   - `python main.py do-plan "<goal>"`
+   - `wr do-plan "<goal>"`
 3. Compile and lint before execution:
-   - `python main.py do "<goal>" --dry-run`
+   - `wr do "<goal>" --dry-run`
 4. Execute:
-   - `python main.py do "<goal>"`
+   - `wr do "<goal>"`
+
+Fallback when `wr` is unavailable:
+- run the same command with `python main.py ...` inside repo root.
 
 ## When Site Needs Login / Anti-Bot Handling
 - Check auth hints first:
-  - `python main.py auth-template`
-  - `python main.py auth-hint <url>`
-  - `python main.py challenge-profiles`
+  - `wr auth-template`
+  - `wr auth-hint <url>`
+  - `wr challenge-profiles`
 - Then run `do-plan` and `do`.
 
 ## High-Signal Commands
 - Search:
-  - `python main.py web "<query>" --engine=quark --num-results=8 --no-crawl`
-  - `python main.py deep "<query>" --variants=3 --crawl=2 --channel=news,platforms`
+  - `wr web "<query>" --engine=quark --num-results=8 --no-crawl`
+  - `wr deep "<query>" --variants=3 --crawl=2 --channel=news,platforms`
 - Social/commerce:
-  - `python main.py social "<query>" --platform=zhihu --platform=xiaohongshu`
-  - `python main.py shopping "<query>" --platform=taobao --platform=jd`
+  - `wr social "<query>" --platform=zhihu --platform=xiaohongshu`
+  - `wr shopping "<query>" --platform=taobao --platform=jd`
 - Academic:
-  - `python main.py academic "<topic>" --papers-only --source=arxiv --source=semantic_scholar`
+  - `wr academic "<topic>" --papers-only --source=arxiv --source=semantic_scholar`
 
 ## Guardrails
 - Prefer `do` / `do-plan` in short-context AI sessions.
 - If command typo occurs, use suggestions and recover with skill-guided `do-plan`.
 - For long jobs, submit async:
-  - `python main.py do-submit "<goal>" --timeout-sec=1200`
-  - `python main.py jobs`
-  - `python main.py job-result <job_id>`
+  - `wr do-submit "<goal>" --timeout-sec=1200`
+  - `wr jobs`
+  - `wr job-result <job_id>`
 
 ## Project Path
 - Repo root: `{repo_text}`
