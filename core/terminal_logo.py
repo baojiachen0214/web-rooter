@@ -8,13 +8,26 @@ from __future__ import annotations
 from pathlib import Path
 
 
-_FALLBACK_LOGO = """\
+_DEFAULT_FALLBACK_LOGO = """\
 __        __   _     ____              _
 \\ \\      / /__| |__ |  _ \\ ___   ___ | |_ ___ _ __
  \\ \\ /\\ / / _ \\ '_ \\| |_) / _ \\ / _ \\| __/ _ \\ '__|
   \\ V  V /  __/ |_) |  _ < (_) | (_) | ||  __/ |
    \\_/\\_/ \\___|_.__/|_| \\_\\___/ \\___/ \\__\\___|_|
 """
+_ASCII_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "cli_logo_ascii.txt"
+
+
+def _load_ascii_fallback_logo() -> str:
+    try:
+        text = _ASCII_LOGO_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return _DEFAULT_FALLBACK_LOGO
+    rendered = text.rstrip("\n")
+    return rendered if rendered.strip() else _DEFAULT_FALLBACK_LOGO
+
+
+_FALLBACK_LOGO = _load_ascii_fallback_logo()
 
 _BRAILLE_MAP = (
     ((0, 0), 0x01),  # dot 1
