@@ -461,6 +461,78 @@ class ResearchKernel:
             "limits": snapshot.get("limits"),
         }
 
+    def get_budget_telemetry_snapshot(self, refresh: bool = True) -> Dict[str, Any]:
+        pressure = self.get_runtime_pressure_snapshot(refresh=refresh)
+        runtime_state = self.get_runtime_state_stats()
+        runtime_events = self.get_runtime_events_stats()
+        artifact_graph = self.get_artifact_graph_stats()
+
+        state_budget = runtime_state.get("budget", {}) if isinstance(runtime_state.get("budget"), dict) else {}
+        artifact_budget = artifact_graph.get("budget", {}) if isinstance(artifact_graph.get("budget"), dict) else {}
+
+        utilization = {
+            "state_pages_ratio": self._safe_ratio(
+                runtime_state.get("pages"),
+                state_budget.get("max_pages"),
+            ),
+            "state_visited_ratio": self._safe_ratio(
+                runtime_state.get("visited_urls"),
+                state_budget.get("max_visited_urls"),
+            ),
+            "state_content_ratio": self._safe_ratio(
+                runtime_state.get("total_content_chars"),
+                state_budget.get("max_total_content_chars"),
+            ),
+            "event_store_ratio": self._safe_ratio(
+                runtime_events.get("store_size"),
+                runtime_events.get("max_events"),
+            ),
+            "artifact_nodes_ratio": self._safe_ratio(
+                artifact_graph.get("nodes"),
+                artifact_budget.get("max_nodes"),
+            ),
+            "artifact_edges_ratio": self._safe_ratio(
+                artifact_graph.get("edges"),
+                artifact_budget.get("max_edges"),
+            ),
+        }
+
+        alerts: List[str] = []
+        if self._safe_int(runtime_events.get("dropped_events"), default=0) > 0:
+            alerts.append("runtime_events_dropped")
+
+        state_counters = runtime_state.get("counters", {}) if isinstance(runtime_state.get("counters"), dict) else {}
+        if self._safe_int(state_counters.get("pages_evicted"), default=0) > 0:
+            alerts.append("runtime_state_pages_evicted")
+        if self._safe_int(state_counters.get("content_truncated"), default=0) > 0:
+            alerts.append("runtime_state_content_truncated")
+
+        artifact_counters = artifact_graph.get("counters", {}) if isinstance(artifact_graph.get("counters"), dict) else {}
+        if self._safe_int(artifact_counters.get("nodes_evicted"), default=0) > 0:
+            alerts.append("artifact_nodes_evicted")
+        if self._safe_int(artifact_counters.get("edges_evicted_total"), default=0) > 0:
+            alerts.append("artifact_edges_evicted")
+
+        pressure_level = str(pressure.get("level") or "normal")
+        if pressure_level in {"high", "critical"}:
+            alerts.append(f"pressure_{pressure_level}")
+
+        max_utilization = max(utilization.values()) if utilization else 0.0
+        if max_utilization >= 0.9:
+            alerts.append("budget_near_capacity")
+        health_score = max(0, min(100, int(round((1.0 - max_utilization) * 100))))
+
+        return {
+            "health_score": health_score,
+            "pressure_level": pressure_level,
+            "alerts": alerts,
+            "utilization": utilization,
+            "runtime_state": runtime_state,
+            "runtime_events": runtime_events,
+            "artifact_graph": artifact_graph,
+            "runtime_pressure": pressure,
+        }
+
     def normalize_url(self, url: str) -> str:
         normalized = str(url or "").strip()
         if normalized and not normalized.startswith(("http://", "https://")):
@@ -857,6 +929,11 @@ class ResearchKernel:
             return int(value)
         except (TypeError, ValueError):
             return int(default)
+
+    def _safe_ratio(self, value: Any, total: Any) -> float:
+        numerator = self._safe_int(value, default=0)
+        denominator = max(1, self._safe_int(total, default=1))
+        return round(max(0.0, min(float(numerator) / float(denominator), 5.0)), 4)
 
     def _safe_bool(self, value: Any, default: bool = False) -> bool:
         if isinstance(value, bool):

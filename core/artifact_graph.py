@@ -136,6 +136,15 @@ class ArtifactGraph:
         self._edges: "OrderedDict[str, ArtifactEdge]" = OrderedDict()
         self._outgoing: Dict[str, "OrderedDict[str, None]"] = {}
         self._incoming: Dict[str, "OrderedDict[str, None]"] = {}
+        self._counters: Dict[str, int] = {
+            "nodes_upserted": 0,
+            "nodes_evicted": 0,
+            "edges_upserted": 0,
+            "edges_evicted_total": 0,
+            "edges_evicted_by_budget": 0,
+            "edges_evicted_by_out_degree": 0,
+            "edges_removed_by_node_eviction": 0,
+        }
 
     @property
     def budget(self) -> ArtifactGraphBudget:
@@ -146,6 +155,8 @@ class ArtifactGraph:
         self._edges.clear()
         self._outgoing.clear()
         self._incoming.clear()
+        for key in list(self._counters.keys()):
+            self._counters[key] = 0
 
     def make_node_id(self, kind: str, key: str) -> str:
         normalized_kind = _trim_scalar((kind or "artifact").strip().lower(), 32)
@@ -186,6 +197,7 @@ class ArtifactGraph:
             touches=1,
         )
         self._nodes[node_id] = node
+        self._counters["nodes_upserted"] += 1
         self._evict_nodes()
         return node
 
@@ -227,6 +239,7 @@ class ArtifactGraph:
             touches=1,
         )
         self._edges[edge_id] = edge
+        self._counters["edges_upserted"] += 1
         self._register_edge_index(edge_id, source, target)
         self._enforce_out_degree_limit(source)
         self._evict_edges()
@@ -285,6 +298,7 @@ class ArtifactGraph:
             "nodes": len(self._nodes),
             "edges": len(self._edges),
             "approx_chars": approx_chars,
+            "counters": dict(self._counters),
             "budget": {
                 "max_nodes": self._budget.max_nodes,
                 "max_edges": self._budget.max_edges,
@@ -338,35 +352,38 @@ class ArtifactGraph:
             if not in_bucket:
                 self._incoming.pop(target, None)
 
-    def _remove_edge(self, edge_id: str) -> None:
+    def _remove_edge(self, edge_id: str, *, reason: str = "generic") -> None:
         edge = self._edges.pop(edge_id, None)
         if edge is None:
             return
         self._unregister_edge_index(edge_id, edge.source, edge.target)
+        self._counters["edges_evicted_total"] += 1
+        if reason == "edge_budget":
+            self._counters["edges_evicted_by_budget"] += 1
+        elif reason == "out_degree":
+            self._counters["edges_evicted_by_out_degree"] += 1
+        elif reason == "node_evicted":
+            self._counters["edges_removed_by_node_eviction"] += 1
 
-    def _remove_node(self, node_id: str) -> None:
+    def _remove_node(self, node_id: str, *, reason: str = "generic") -> None:
         self._nodes.pop(node_id, None)
         outgoing_keys = list((self._outgoing.get(node_id) or {}).keys())
         incoming_keys = list((self._incoming.get(node_id) or {}).keys())
         for edge_id in outgoing_keys:
-            self._remove_edge(edge_id)
+            self._remove_edge(edge_id, reason=reason)
         for edge_id in incoming_keys:
-            self._remove_edge(edge_id)
+            self._remove_edge(edge_id, reason=reason)
 
     def _evict_nodes(self) -> None:
         while len(self._nodes) > self._budget.max_nodes:
-            node_id, _ = self._nodes.popitem(last=False)
-            outgoing_keys = list((self._outgoing.get(node_id) or {}).keys())
-            incoming_keys = list((self._incoming.get(node_id) or {}).keys())
-            for edge_id in outgoing_keys:
-                self._remove_edge(edge_id)
-            for edge_id in incoming_keys:
-                self._remove_edge(edge_id)
+            node_id = next(iter(self._nodes))
+            self._counters["nodes_evicted"] += 1
+            self._remove_node(node_id, reason="node_evicted")
 
     def _evict_edges(self) -> None:
         while len(self._edges) > self._budget.max_edges:
-            edge_id, edge = self._edges.popitem(last=False)
-            self._unregister_edge_index(edge_id, edge.source, edge.target)
+            edge_id = next(iter(self._edges))
+            self._remove_edge(edge_id, reason="edge_budget")
 
     def _enforce_out_degree_limit(self, source: str) -> None:
         bucket = self._outgoing.get(source)
@@ -374,7 +391,7 @@ class ArtifactGraph:
             return
         while len(bucket) > self._budget.max_out_edges_per_node:
             oldest_edge_id = next(iter(bucket))
-            self._remove_edge(oldest_edge_id)
+            self._remove_edge(oldest_edge_id, reason="out_degree")
             bucket = self._outgoing.get(source)
             if bucket is None:
                 break

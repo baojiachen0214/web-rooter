@@ -322,6 +322,7 @@ def get_workflow_schema() -> Dict[str, Any]:
             "artifact_snapshot": {"args": ["node_limit", "edge_limit", "node_kind"]},
             "runtime_events_snapshot": {"args": ["limit", "event_type", "source", "since_seq"]},
             "runtime_pressure_snapshot": {"args": ["refresh"]},
+            "budget_telemetry_snapshot": {"args": ["refresh"]},
             "echo": {"args": ["value"]},
             "sleep": {"args": ["seconds"]},
         },
@@ -1001,6 +1002,10 @@ class WorkflowRunner:
         if name in {"runtime_pressure_snapshot", "web_runtime_pressure"}:
             refresh = _as_bool(args.get("refresh"), default=True)
             return self._agent.get_runtime_pressure_snapshot(refresh=refresh)
+
+        if name in {"budget_telemetry_snapshot", "web_budget_telemetry"}:
+            refresh = _as_bool(args.get("refresh"), default=True)
+            return self._agent.get_budget_telemetry_snapshot(refresh=refresh)
 
         if name in {"echo"}:
             return {"success": True, "value": args.get("value")}

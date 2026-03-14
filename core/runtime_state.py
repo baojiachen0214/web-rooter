@@ -111,6 +111,15 @@ class AgentRuntimeState:
         self._pages: "OrderedDict[str, PageSnapshot]" = OrderedDict()
         self._visited_urls: "OrderedDict[str, None]" = OrderedDict()
         self._total_content_chars = 0
+        self._counters: Dict[str, int] = {
+            "pages_stored": 0,
+            "pages_replaced": 0,
+            "pages_evicted": 0,
+            "visited_marked": 0,
+            "visited_evicted": 0,
+            "content_truncated": 0,
+            "link_items_dropped": 0,
+        }
 
     @property
     def budget(self) -> RuntimeStateBudget:
@@ -119,12 +128,14 @@ class AgentRuntimeState:
     def mark_visited(self, url: str) -> None:
         if not url:
             return
+        self._counters["visited_marked"] += 1
         if url in self._visited_urls:
             self._visited_urls.move_to_end(url)
         else:
             self._visited_urls[url] = None
         while len(self._visited_urls) > self._budget.max_visited_urls:
             self._visited_urls.popitem(last=False)
+            self._counters["visited_evicted"] += 1
 
     def has_visited(self, url: str) -> bool:
         return url in self._visited_urls
@@ -154,14 +165,19 @@ class AgentRuntimeState:
         links: Optional[List[Dict[str, Any]]] = None,
         extracted_info: Optional[Dict[str, Any]] = None,
     ) -> PageSnapshot:
+        self._counters["pages_stored"] += 1
         normalized_content = (content or "").strip()
         original_content_chars = max(len(normalized_content), int(content_chars or 0))
         truncated = original_content_chars > self._budget.max_page_content_chars
         if truncated:
             normalized_content = normalized_content[: self._budget.max_page_content_chars]
+            self._counters["content_truncated"] += 1
 
         compact_links: List[Dict[str, str]] = []
-        for raw_link in (links or [])[: self._budget.max_links_per_page]:
+        raw_links = links if isinstance(links, list) else []
+        if len(raw_links) > self._budget.max_links_per_page:
+            self._counters["link_items_dropped"] += len(raw_links) - self._budget.max_links_per_page
+        for raw_link in raw_links[: self._budget.max_links_per_page]:
             if not isinstance(raw_link, dict):
                 continue
             href = _trim_scalar(raw_link.get("href", ""), 500).strip()
@@ -196,6 +212,7 @@ class AgentRuntimeState:
         existing = self._pages.pop(url, None)
         if existing is not None:
             self._total_content_chars -= len(existing.content)
+            self._counters["pages_replaced"] += 1
 
         self._pages[url] = snapshot
         self._total_content_chars += len(snapshot.content)
@@ -209,10 +226,25 @@ class AgentRuntimeState:
         ]
 
     def get_stats(self) -> Dict[str, Any]:
+        page_utilization = (
+            len(self._pages) / max(1, self._budget.max_pages)
+        )
+        visited_utilization = (
+            len(self._visited_urls) / max(1, self._budget.max_visited_urls)
+        )
+        content_utilization = (
+            self._total_content_chars / max(1, self._budget.max_total_content_chars)
+        )
         return {
             "pages": len(self._pages),
             "visited_urls": len(self._visited_urls),
             "total_content_chars": self._total_content_chars,
+            "utilization": {
+                "pages_ratio": round(page_utilization, 4),
+                "visited_ratio": round(visited_utilization, 4),
+                "content_ratio": round(content_utilization, 4),
+            },
+            "counters": dict(self._counters),
             "budget": {
                 "max_pages": self._budget.max_pages,
                 "max_total_content_chars": self._budget.max_total_content_chars,
@@ -225,6 +257,8 @@ class AgentRuntimeState:
         self._pages.clear()
         self._visited_urls.clear()
         self._total_content_chars = 0
+        for key in list(self._counters.keys()):
+            self._counters[key] = 0
 
     def _evict_pages(self) -> None:
         while self._pages and (
@@ -233,3 +267,4 @@ class AgentRuntimeState:
         ):
             _, evicted = self._pages.popitem(last=False)
             self._total_content_chars -= len(evicted.content)
+            self._counters["pages_evicted"] += 1

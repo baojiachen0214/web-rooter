@@ -81,6 +81,8 @@ class MindSearchPipeline:
         max_nodes: Optional[int] = None,
         planner_name: Optional[str] = None,
         strict_expand: Optional[bool] = None,
+        pressure_level: Optional[str] = None,
+        pressure_limits: Optional[Dict[str, Any]] = None,
     ):
         self.max_turns = max(1, max_turns)
         self.max_branches = max(1, max_branches)
@@ -97,6 +99,9 @@ class MindSearchPipeline:
         strict_env = str(os.getenv("WEB_ROOTER_MINDSEARCH_STRICT", "0") or "0").strip().lower()
         strict_default = strict_env in {"1", "true", "yes", "on"}
         self.strict_expand = strict_default if strict_expand is None else bool(strict_expand)
+        self.pressure_level = self._normalize_pressure_level(pressure_level)
+        self.pressure_limits = pressure_limits if isinstance(pressure_limits, dict) else {}
+        self._apply_pressure_profile()
         self._planner = resolve_research_planner(self.planner_name)
 
         self._nodes: Dict[str, MindSearchNode] = {}
@@ -216,6 +221,15 @@ class MindSearchPipeline:
             "name": str(getattr(self._planner, "name", "heuristic")),
             "strict_expand": self.strict_expand,
         }
+        payload["runtime_profile"] = {
+            "pressure_level": self.pressure_level,
+            "max_turns": self.max_turns,
+            "max_branches": self.max_branches,
+            "max_nodes": self.max_nodes,
+            "num_results": self.num_results,
+            "crawl_top": self.crawl_top,
+            "stream_queue_max_size": self.max_stream_queue_size,
+        }
         payload, post_report = run_post_processors(
             payload,
             PostProcessContext(
@@ -244,6 +258,65 @@ class MindSearchPipeline:
         )
         payload["global_context_event_id"] = event.get("id")
         return payload
+
+    def _normalize_pressure_level(self, level: Optional[str]) -> str:
+        normalized = str(level or "").strip().lower()
+        if normalized in {"elevated", "high", "critical"}:
+            return normalized
+        return "normal"
+
+    def _apply_pressure_profile(self) -> None:
+        level = self.pressure_level
+        if level == "elevated":
+            self.max_branches = min(self.max_branches, 3)
+            self.max_nodes = min(self.max_nodes, 12)
+            self.num_results = min(self.num_results, 6)
+            self.crawl_top = min(self.crawl_top, 1)
+            self.max_stream_queue_size = min(self.max_stream_queue_size, 96)
+        elif level == "high":
+            self.max_turns = min(self.max_turns, 2)
+            self.max_branches = min(self.max_branches, 3)
+            self.max_nodes = min(self.max_nodes, 9)
+            self.num_results = min(self.num_results, 5)
+            self.crawl_top = min(self.crawl_top, 1)
+            self.max_stream_queue_size = min(self.max_stream_queue_size, 64)
+            self.strict_expand = False
+        elif level == "critical":
+            self.max_turns = min(self.max_turns, 2)
+            self.max_branches = min(self.max_branches, 2)
+            self.max_nodes = min(self.max_nodes, 6)
+            self.num_results = min(self.num_results, 3)
+            self.crawl_top = 0
+            self.max_stream_queue_size = min(self.max_stream_queue_size, 32)
+            self.strict_expand = False
+
+        if self._safe_bool(self.pressure_limits.get("allow_browser_fallback"), default=True) is False:
+            self.crawl_top = 0
+
+        links_max = self._safe_int(self.pressure_limits.get("links_max"), default=0)
+        if links_max > 0:
+            derived = max(3, min(8, links_max))
+            self.num_results = min(self.num_results, derived)
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _safe_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
 
     async def run_stream(self, query: str):
         """

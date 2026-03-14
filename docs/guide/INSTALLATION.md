@@ -41,6 +41,30 @@ Optional MCP setup:
 - Windows: `install.bat --with-mcp`
 - macOS/Linux: `bash install.sh --with-mcp`
 
+## 2.5 Build Standalone Release Bundle (Maintainers)
+
+If you need a “no Python/pip preinstall” delivery package for end users:
+
+```bash
+# macOS / Linux
+bash scripts/release/package-release.sh
+
+# Windows
+scripts\release\package-release.bat
+```
+
+Useful options:
+
+```bash
+# Re-package existing dist binary without rebuilding
+bash scripts/release/package-release.sh --skip-build
+
+# Emit both zip and tar.gz
+bash scripts/release/package-release.sh --format both
+```
+
+Artifacts are generated under `dist/release/`.
+
 ## 3. Manual Install (All Platforms)
 
 ```bash

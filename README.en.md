@@ -6,7 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
-    <img src="https://img.shields.io/badge/version-v0.9.0--beta-yellow.svg" alt="Version v0.9.0-beta">
+    <img src="https://img.shields.io/badge/version-v0.2.1-blue.svg" alt="Version v0.2.1">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
     <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP%20%7C%20HTTP-orange.svg" alt="Interfaces">
@@ -64,6 +64,9 @@ AI coding assistants often face these challenges when solving real-world problem
 16. **Typo Guard for Commands** - suspicious unknown commands are rejected with suggestions instead of being executed as queries
 17. **Phase Wake-up Skill Contract** - `do-plan` now returns `phase_wakeup + ai_contract` for staged AI execution
 18. **Skill Misrouting Guard** - `activation_keywords + min_score + min_margin` reduce broad-keyword false routing
+19. **Unified Budget Telemetry Snapshot** - `telemetry` / `web_budget_telemetry` expose health/pressure/utilization/alerts
+20. **Bounded Scheduler Queue + DupeFilter** - default bounded `max_queue_size + max_dupefilter_entries` for long-run stability
+21. **Spider Adaptive Budget Loop** - auto shrink/restore scheduler budgets based on memory and error pressure (critical can trim queue)
 
 ### Known Limitations
 
@@ -117,7 +120,7 @@ python main.py web "RAG evaluation benchmark 2025" --crawl-pages=5
 python main.py deep "AI agent engineering" --variants=4 --crawl=5 --platforms --channel=news
 
 # 5. Social media search
-python main.py social "iPhone 17 review" --platform=reddit --platform=twitter
+python main.py social "iPhone 17 review" --platform=xiaohongshu --platform=zhihu
 
 # 6. E-commerce search
 python main.py shopping "light down jacket" --platform=taobao --platform=jd
@@ -149,7 +152,24 @@ python main.py do-submit "Analyze RAG benchmark paper relations with citations" 
 python main.py jobs --status=running
 python main.py job-status <job_id>
 python main.py job-result <job_id>
+
+# 12. Runtime budget telemetry (health/pressure/utilization/alerts)
+python main.py telemetry
 ```
+
+### Maintainers: Build standalone no-Python-preinstall bundle
+
+```bash
+# macOS / Linux
+bash scripts/release/package-release.sh
+bash scripts/release/package-release.sh --format both
+
+# Windows
+scripts\release\package-release.bat
+scripts\release\package-release.bat --format both
+```
+
+Artifacts are generated under `dist/release/`.
 
 ---
 

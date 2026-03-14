@@ -224,6 +224,7 @@ class WebTools:
             "runtime_events": self._agent.get_runtime_events_stats(),
             "runtime_pressure": self._agent.get_runtime_pressure_stats(),
             "artifact_graph": self._agent.get_artifact_graph_stats(),
+            "budget_telemetry": self._agent.get_budget_telemetry_snapshot(refresh=False),
         }
 
     async def web_search(self, query: str, num_results: int = 10) -> Dict[str, Any]:
@@ -516,6 +517,20 @@ class WebTools:
         return {
             "success": True,
             "runtime_pressure": snapshot,
+        }
+
+    async def web_budget_telemetry(
+        self,
+        refresh: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        获取统一预算健康度快照（state/events/artifact/pressure）。
+        """
+        await self._ensure_initialized()
+        snapshot = self._agent.get_budget_telemetry_snapshot(refresh=refresh)
+        return {
+            "success": True,
+            "budget_telemetry": snapshot,
         }
 
     async def web_postprocessors(
@@ -934,6 +949,16 @@ async def setup_mcp_server():
                 },
             ),
             Tool(
+                name="web_budget_telemetry",
+                description="Get unified runtime budget telemetry (state/events/artifact/pressure) with health score",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "refresh": {"type": "boolean", "description": "Re-evaluate runtime pressure before collecting telemetry", "default": True},
+                    },
+                },
+            ),
+            Tool(
                 name="web_postprocessors",
                 description="List/load post-processors for custom data handling after crawl/search",
                 inputSchema={
@@ -1258,6 +1283,10 @@ async def setup_mcp_server():
                 )
             elif name == "web_runtime_pressure":
                 result = await web_tools.web_runtime_pressure(
+                    refresh=arguments.get("refresh", True),
+                )
+            elif name == "web_budget_telemetry":
+                result = await web_tools.web_budget_telemetry(
                     refresh=arguments.get("refresh", True),
                 )
             elif name == "web_postprocessors":

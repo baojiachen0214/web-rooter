@@ -1,10 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
-
 from core.global_context import GlobalDeepContextStore
 from core.result_queue import ResultQueue
-from core.scheduler import DEFAULT_SCHEDULER_MAX_QUEUE_SIZE, SchedulerConfig
+from core.scheduler import (
+    DEFAULT_DUPEFILTER_MAX_ENTRIES,
+    DEFAULT_SCHEDULER_MAX_QUEUE_SIZE,
+    Scheduler,
+    SchedulerConfig,
+)
 from core.search.graph import MindSearchStyleAgent, SearchGraph
 
 
@@ -18,6 +22,23 @@ class SchedulerBudgetTests(unittest.TestCase):
         config = SchedulerConfig()
         self.assertEqual(config.max_queue_size, DEFAULT_SCHEDULER_MAX_QUEUE_SIZE)
         self.assertGreater(config.max_queue_size, 0)
+
+    def test_scheduler_uses_bounded_default_dupefilter(self) -> None:
+        config = SchedulerConfig()
+        self.assertEqual(config.max_dupefilter_entries, DEFAULT_DUPEFILTER_MAX_ENTRIES)
+        self.assertGreater(config.max_dupefilter_entries, 0)
+
+    def test_scheduler_coerces_non_positive_budgets(self) -> None:
+        scheduler = Scheduler(
+            SchedulerConfig(
+                max_queue_size=0,
+                max_dupefilter_entries=0,
+                persist=False,
+            )
+        )
+        stats = scheduler.get_stats()
+        self.assertEqual(stats["queue_max_size"], DEFAULT_SCHEDULER_MAX_QUEUE_SIZE)
+        self.assertEqual(stats["dupefilter"]["max_entries"], DEFAULT_DUPEFILTER_MAX_ENTRIES)
 
 
 class SearchGraphBudgetTests(unittest.IsolatedAsyncioTestCase):

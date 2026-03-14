@@ -19,10 +19,16 @@ import logging
 
 from core.request import Request, make_request
 from core.response import Response
-from core.scheduler import Scheduler, SchedulerConfig
+from core.scheduler import (
+    DEFAULT_DUPEFILTER_MAX_ENTRIES,
+    DEFAULT_SCHEDULER_MAX_QUEUE_SIZE,
+    Scheduler,
+    SchedulerConfig,
+)
 from core.checkpoint import CheckpointManager
 from core.session_manager import SessionManager, SessionType
 from core.crawler import Crawler
+from core.runtime_pressure import RuntimePressureController
 from core.result_queue import ResultQueue, StreamItem
 
 logger = logging.getLogger(__name__)
@@ -46,7 +52,10 @@ class SpiderConfig:
     max_requests_per_domain: int = 0  # 0 表示无限制
 
     # 队列配置
-    max_queue_size: int = 0  # 0 表示无限制
+    max_queue_size: int = DEFAULT_SCHEDULER_MAX_QUEUE_SIZE
+    max_dupefilter_entries: int = DEFAULT_DUPEFILTER_MAX_ENTRIES
+    adaptive_budget_enabled: bool = True
+    pressure_check_interval: int = 25
 
     # 重试配置
     max_retries: int = 3
@@ -166,6 +175,9 @@ class Spider(ABC):
         # 任务管理
         self._tasks: Set[asyncio.Task] = set()
         self._active_requests: Dict[str, asyncio.Task] = {}
+        self._pressure = RuntimePressureController()
+        self._last_pressure_snapshot: Dict[str, Any] = self._pressure.snapshot()
+        self._last_pressure_check_downloaded: int = -1
 
         # 流式输出
         self._result_queue: Optional[ResultQueue] = None
@@ -196,11 +208,28 @@ class Spider(ABC):
 
     async def _init_components(self):
         """初始化组件"""
+        queue_size = int(self.config.max_queue_size or 0)
+        if queue_size <= 0:
+            queue_size = DEFAULT_SCHEDULER_MAX_QUEUE_SIZE
+            self.logger.warning(
+                "Spider max_queue_size was non-positive, fallback to bounded default=%s",
+                queue_size,
+            )
+
+        dupefilter_size = int(self.config.max_dupefilter_entries or 0)
+        if dupefilter_size <= 0:
+            dupefilter_size = DEFAULT_DUPEFILTER_MAX_ENTRIES
+            self.logger.warning(
+                "Spider max_dupefilter_entries was non-positive, fallback to bounded default=%s",
+                dupefilter_size,
+            )
+
         # 初始化调度器
         scheduler_config = SchedulerConfig(
             concurrent_requests=self.config.concurrent_requests,
-            max_queue_size=self.config.max_queue_size,
+            max_queue_size=queue_size,
             max_requests_per_domain=self.config.max_requests_per_domain,
+            max_dupefilter_entries=dupefilter_size,
             download_delay=self.config.download_delay,
             randomize_delay=self.config.randomize_delay,
             delay_range=self.config.delay_range,
@@ -425,6 +454,48 @@ class Spider(ABC):
             self._stats.errors[type(e).__name__] = self._stats.errors.get(type(e).__name__, 0) + 1
             return None
 
+    def _record_request_outcome(self, success: bool) -> None:
+        try:
+            self._pressure.record_outcome(success=bool(success))
+        except Exception:
+            pass
+
+    def _should_check_pressure(self, force: bool = False) -> bool:
+        if force:
+            return True
+        if not self.config.adaptive_budget_enabled:
+            return False
+        interval = max(1, int(self.config.pressure_check_interval or 25))
+        downloaded = int(self._stats.requests_downloaded or 0)
+        if downloaded <= 0:
+            return False
+        if downloaded == self._last_pressure_check_downloaded:
+            return False
+        return downloaded % interval == 0
+
+    def _apply_runtime_pressure_budget(self, force: bool = False) -> None:
+        if self._scheduler is None:
+            return
+        if not self._should_check_pressure(force=force):
+            return
+        try:
+            snapshot = self._pressure.evaluate()
+            self._last_pressure_snapshot = snapshot
+            self._last_pressure_check_downloaded = int(self._stats.requests_downloaded or 0)
+            level = snapshot.get("level")
+            limits = snapshot.get("limits", {}) if isinstance(snapshot, dict) else {}
+            adjustment = self._scheduler.apply_pressure_profile(level, limits)
+            if adjustment.get("changed") or adjustment.get("trimmed_requests", 0) > 0:
+                self.logger.info(
+                    "Adaptive scheduler budget: level=%s queue=%s dupe=%s trimmed=%s",
+                    adjustment.get("level"),
+                    adjustment.get("limits", {}).get("queue_max_size"),
+                    adjustment.get("limits", {}).get("dupefilter_max_entries"),
+                    adjustment.get("trimmed_requests"),
+                )
+        except Exception as exc:
+            self.logger.debug("Adaptive scheduler budget update failed: %s", exc)
+
     async def _worker(self, worker_id: int):
         """
         工作协程
@@ -467,10 +538,15 @@ class Spider(ABC):
         try:
             response = await self._fetch_request(request)
             if response:
+                self._record_request_outcome(response.success)
                 async for item in self._process_response(response, request):
                     pass  # 处理 yield 的数据
+            else:
+                self._record_request_outcome(False)
+            self._apply_runtime_pressure_budget(force=False)
         except Exception as e:
             self.logger.exception(f"处理请求失败 {request.url}: {e}")
+            self._record_request_outcome(False)
 
     async def run(
         self,
@@ -510,11 +586,13 @@ class Spider(ABC):
             asyncio.create_task(self._worker(i))
             for i in range(self.config.concurrent_requests)
         ]
+        self._apply_runtime_pressure_budget(force=True)
 
         # 等待队列完成
         try:
             while self._scheduler.has_pending_requests() and not self._shutdown_requested:
                 await asyncio.sleep(0.1)
+                self._apply_runtime_pressure_budget(force=False)
 
                 # 定期保存检查点
                 if self._checkpoint_manager and self.config.auto_checkpoint:
@@ -590,7 +668,24 @@ class Spider(ABC):
 
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
-        return self._stats.to_dict()
+        payload = self._stats.to_dict()
+        payload["runtime_pressure"] = self._last_pressure_snapshot
+        if self._scheduler:
+            scheduler_stats = self._scheduler.get_stats()
+            payload["scheduler_budget"] = {
+                "queue_size": scheduler_stats.get("queue_size"),
+                "queue_max_size": scheduler_stats.get("queue_max_size"),
+                "dupefilter_size": scheduler_stats.get("dupefilter_size"),
+                "dupefilter_max_entries": (
+                    (scheduler_stats.get("dupefilter") or {}).get("max_entries")
+                    if isinstance(scheduler_stats.get("dupefilter"), dict)
+                    else None
+                ),
+                "pressure_level": scheduler_stats.get("pressure_level"),
+                "dropped_queue_full": scheduler_stats.get("dropped_queue_full"),
+                "pressure_queue_trimmed": scheduler_stats.get("pressure_queue_trimmed"),
+            }
+        return payload
 
     def log_stats(self):
         """记录统计信息"""

@@ -61,6 +61,7 @@ from core.command_ir import (
 from core.trace_distill import distill_workflow_trace
 from core.runtime_state import PageSnapshot
 from core.research_kernel import ResearchKernel
+from core.metrics import set_budget_telemetry_provider, clear_budget_telemetry_provider
 from config import crawler_config
 
 if TYPE_CHECKING:
@@ -119,6 +120,9 @@ class WebAgent:
         self._kernel = ResearchKernel()
         await self._kernel.start()
         self._browser = None  # 延迟初始化
+        set_budget_telemetry_provider(
+            lambda: self.get_budget_telemetry_snapshot(refresh=False)
+        )
 
     async def _ensure_browser(self):
         """确保浏览器已初始化"""
@@ -142,6 +146,7 @@ class WebAgent:
         self._search_engine = None
         self._academic_engine = None
         self._form_filler = None
+        clear_budget_telemetry_provider()
 
     # ==================== 核心方法 ====================
 
@@ -906,6 +911,12 @@ class WebAgent:
         """
         MindSearch 风格研究（规划 + 图搜索 + 引用汇总）。
         """
+        pressure_snapshot = self.get_runtime_pressure_snapshot(refresh=True)
+        pressure_level = str(pressure_snapshot.get("level") or "normal")
+        pressure_limits = pressure_snapshot.get("limits")
+        if not isinstance(pressure_limits, dict):
+            pressure_limits = {}
+
         pipeline = MindSearchPipeline(
             max_turns=max_turns,
             max_branches=max_branches,
@@ -915,6 +926,8 @@ class WebAgent:
             channel_profiles=channel_profiles or None,
             planner_name=planner_name,
             strict_expand=strict_expand,
+            pressure_level=pressure_level,
+            pressure_limits=pressure_limits,
         )
         result = await pipeline.run(query)
 
@@ -944,6 +957,8 @@ class WebAgent:
                 "mode": "mindsearch",
                 "query": query,
                 "planner": result.get("planner", {}),
+                "runtime_profile": result.get("runtime_profile", {}),
+                "runtime_pressure": pressure_snapshot,
                 "global_context_event_id": result.get("global_context_event_id"),
             },
         )
@@ -2598,6 +2613,21 @@ class WebAgent:
         if self._kernel is None:
             return {}
         return self._kernel.get_runtime_pressure_stats()
+
+    def get_budget_telemetry_snapshot(self, refresh: bool = True) -> Dict[str, Any]:
+        """获取统一预算健康度快照。"""
+        if self._kernel is None:
+            return {
+                "health_score": 100,
+                "pressure_level": "normal",
+                "alerts": ["kernel_uninitialized"],
+                "utilization": {},
+                "runtime_state": {},
+                "runtime_events": {},
+                "artifact_graph": {},
+                "runtime_pressure": {},
+            }
+        return self._kernel.get_budget_telemetry_snapshot(refresh=refresh)
 
     def get_artifact_graph_snapshot(
         self,

@@ -42,6 +42,7 @@ python main.py workflow-schema
 python main.py workflow-template [path] [--scenario=social_comments|academic_relations] [--force]
 python main.py workflow <spec-file|json> [--var key=value] [--set key=value] [--strict] [--dry-run]
 python main.py context [--limit=N] [--event=type]
+python main.py telemetry [--no-refresh]
 ```
 
 ## Typical Workflows
@@ -146,8 +147,11 @@ Workflow 机制的意义：
 - `do-submit --timeout-sec=N` 可显式设置后台任务超时时间（默认 `900` 秒）
 - `safe-mode strict` 会拦截低层命令，强制外层 AI 优先走 `do-plan`/`do`
 - 未知命令若疑似拼写错误，会附带自动 skill 路由修复建议（`do-plan`/`do --dry-run`）
+- `telemetry`（别名：`budget`/`budget-telemetry`）可查看统一预算健康快照（pressure/utilization/alerts）
 - `skills --resolve "<goal>"` 默认返回紧凑 probe（低上下文），加 `--full` 返回完整技能目录
 - `WEB_ROOTER_SKILL_MIN_MARGIN` 可调技能判定的最小分差（默认 `0.35`）
+- `WEB_ROOTER_SCHEDULER_MAX_QUEUE_SIZE` / `WEB_ROOTER_SCHEDULER_DUPEFILTER_MAX_ENTRIES` 可调调度器硬预算
+- Spider 默认开启自适应预算控制：会按内存与错误率压力自动收缩/恢复队列与去重容量
 - `ir-lint` 可独立校验 AI 生成的 IR/workflow，防止错误命令直达执行
 - `python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining` 可做 skills A/B 回归（默认 compile-only）
 - `python scripts/regression/run_skill_ab.py --execute --max-cases=2 --case-timeout-sec=180` 可跑真实执行回归并避免长时间卡住

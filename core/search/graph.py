@@ -12,7 +12,6 @@ import asyncio
 from collections import defaultdict, deque
 import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Any, AsyncGenerator
@@ -96,6 +95,8 @@ class SearchGraph:
         max_event_queue_size: Optional[int] = None,
         max_results_per_node: Optional[int] = None,
         max_event_results: Optional[int] = None,
+        pressure_level: Optional[str] = None,
+        pressure_limits: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化搜索图
@@ -106,7 +107,7 @@ class SearchGraph:
         """
         self.nodes: Dict[str, SearchNode] = {}
         self.edges: Dict[str, List[str]] = defaultdict(list)
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._max_workers = max(1, int(max_workers))
         self._search_engine = search_engine
         self.root_id: Optional[str] = None
         self._max_event_queue_size = max(
@@ -121,10 +122,46 @@ class SearchGraph:
             1,
             int(max_event_results or os.getenv("WEB_ROOTER_SEARCH_GRAPH_MAX_EVENT_RESULTS", "3") or 3),
         )
+        self._pressure_level = self._normalize_pressure_level(pressure_level)
+        self._pressure_limits = pressure_limits if isinstance(pressure_limits, dict) else {}
+        self._apply_pressure_profile()
         self._result_queue = ResultQueue(
             maxsize=self._max_event_queue_size,
             overflow_strategy="drop_oldest",
         )
+
+    def _normalize_pressure_level(self, level: Optional[str]) -> str:
+        normalized = str(level or "").strip().lower()
+        if normalized in {"elevated", "high", "critical"}:
+            return normalized
+        return "normal"
+
+    def _apply_pressure_profile(self) -> None:
+        level = self._pressure_level
+        if level == "elevated":
+            self._max_event_queue_size = min(self._max_event_queue_size, 96)
+            self._max_results_per_node = min(self._max_results_per_node, 10)
+            self._max_event_results = min(self._max_event_results, 3)
+        elif level == "high":
+            self._max_event_queue_size = min(self._max_event_queue_size, 64)
+            self._max_results_per_node = min(self._max_results_per_node, 6)
+            self._max_event_results = min(self._max_event_results, 2)
+        elif level == "critical":
+            self._max_event_queue_size = min(self._max_event_queue_size, 32)
+            self._max_results_per_node = min(self._max_results_per_node, 4)
+            self._max_event_results = 1
+
+        links_max = self._safe_int(self._pressure_limits.get("links_max"), default=0)
+        if links_max > 0:
+            self._max_results_per_node = max(1, min(self._max_results_per_node, links_max))
+            self._max_event_results = max(1, min(self._max_event_results, links_max))
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
 
     def add_query(
         self,
@@ -308,6 +345,8 @@ class SearchGraph:
             "event_queue_size": queue_stats["current_size"],
             "dropped_events": queue_stats["items_dropped"],
             "max_results_per_node": self._max_results_per_node,
+            "max_workers": self._max_workers,
+            "pressure_level": self._pressure_level,
         }
 
     def reset(self):
@@ -330,10 +369,14 @@ class MindSearchStyleAgent:
         max_workers: int = 8,
         max_turns: int = 5,
         history_limit: Optional[int] = None,
+        pressure_level: Optional[str] = None,
+        pressure_limits: Optional[Dict[str, Any]] = None,
     ):
         self.search_engine = search_engine
         self.max_workers = max_workers
         self.max_turns = max_turns
+        self.pressure_level = pressure_level
+        self.pressure_limits = pressure_limits if isinstance(pressure_limits, dict) else {}
         self._history_limit = max(
             1,
             int(history_limit or os.getenv("WEB_ROOTER_SEARCH_HISTORY_LIMIT", "20") or 20),
@@ -382,6 +425,8 @@ class MindSearchStyleAgent:
         graph = SearchGraph(
             max_workers=self.max_workers,
             search_engine=self.search_engine,
+            pressure_level=self.pressure_level,
+            pressure_limits=self.pressure_limits,
         )
 
         # 添加根节点
@@ -419,6 +464,8 @@ class MindSearchStyleAgent:
         graph = SearchGraph(
             max_workers=self.max_workers,
             search_engine=self.search_engine,
+            pressure_level=self.pressure_level,
+            pressure_limits=self.pressure_limits,
         )
 
         # 添加根节点

@@ -18,6 +18,7 @@
 | `web_search_commerce` | 电商/本地生活平台搜索 |
 | `web_search_tech` | 技术社区搜索 |
 | `web_context_snapshot` | 全局深度抓取上下文快照 |
+| `web_budget_telemetry` | 运行时预算遥测快照（health/pressure/utilization/alerts） |
 | `web_postprocessors` | 抓取结果后处理扩展管理 |
 | `web_planners` | MindSearch planner 扩展管理 |
 | `web_challenge_profiles` | challenge workflow profile 列表 |
@@ -44,5 +45,6 @@
 - `web_search_internet` / `web_deep_search` / `web_research` / `web_search_academic` / `web_mindsearch` 返回结构化 `citations` 与可直接引用的 `references_text`
 - `web_deep_search` / `web_research` 额外返回 `comparison`（来源交叉覆盖统计）
 - `web_mindsearch` 额外返回 `mindsearch_compat`（`node` / `adjacency_list` / `ref2url`）
+- `web_budget_telemetry` 返回 `health_score`、`pressure.level`、`utilization` 与 `alerts`
 - `web_search_academic.sources` 支持：
   - `arxiv`, `google_scholar`, `semantic_scholar`, `pubmed`, `ieee`, `cnki`, `wanfang`, `paper_with_code`, `github`, `gitee`

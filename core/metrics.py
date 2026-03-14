@@ -21,12 +21,47 @@ import time
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional, Deque
+from typing import Dict, List, Any, Optional, Deque, Callable
 from collections import defaultdict, deque, OrderedDict
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_budget_telemetry(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    telemetry = raw if isinstance(raw, dict) else {}
+    utilization_raw = telemetry.get("utilization", {})
+    utilization = utilization_raw if isinstance(utilization_raw, dict) else {}
+    alerts_raw = telemetry.get("alerts", [])
+    alerts = [str(item) for item in alerts_raw if str(item or "").strip()]
+    pressure_level = str(telemetry.get("pressure_level") or "normal").strip().lower() or "normal"
+    health_score = telemetry.get("health_score")
+    try:
+        normalized_health = max(0, min(100, int(health_score)))
+    except Exception:
+        normalized_health = 100
+    return {
+        "health_score": normalized_health,
+        "pressure_level": pressure_level,
+        "alerts": alerts,
+        "utilization": {
+            str(key): float(value)
+            for key, value in utilization.items()
+            if str(key).strip()
+            and isinstance(value, (int, float))
+        },
+    }
+
+
+def _pressure_level_numeric(level: str) -> int:
+    mapping = {
+        "normal": 0,
+        "elevated": 1,
+        "high": 2,
+        "critical": 3,
+    }
+    return mapping.get(str(level or "").strip().lower(), 0)
 
 
 @dataclass
@@ -268,7 +303,7 @@ class MetricsCollector:
 
         return summary
 
-    def to_prometheus(self) -> str:
+    def to_prometheus(self, budget_telemetry: Optional[Dict[str, Any]] = None) -> str:
         """
         导出为 Prometheus 指标格式
 
@@ -315,6 +350,33 @@ class MetricsCollector:
         lines.append("# HELP web_rooter_response_time_avg Average response time (ms)")
         lines.append("# TYPE web_rooter_response_time_avg gauge")
         lines.append(f"web_rooter_response_time_avg {summary['avg_response_time_ms']:.2f}")
+
+        telemetry = _normalize_budget_telemetry(budget_telemetry)
+        lines.append("# HELP web_rooter_budget_health_score Unified runtime budget health score (0-100)")
+        lines.append("# TYPE web_rooter_budget_health_score gauge")
+        lines.append(f"web_rooter_budget_health_score {telemetry['health_score']}")
+
+        lines.append("# HELP web_rooter_budget_pressure_level Runtime pressure level numeric (normal=0,elevated=1,high=2,critical=3)")
+        lines.append("# TYPE web_rooter_budget_pressure_level gauge")
+        lines.append(
+            f"web_rooter_budget_pressure_level {float(_pressure_level_numeric(telemetry['pressure_level'])):.0f}"
+        )
+
+        lines.append("# HELP web_rooter_budget_alert_count Number of active runtime budget alerts")
+        lines.append("# TYPE web_rooter_budget_alert_count gauge")
+        lines.append(f"web_rooter_budget_alert_count {len(telemetry['alerts'])}")
+
+        lines.append("# HELP web_rooter_budget_utilization_ratio Runtime budget utilization ratio by surface")
+        lines.append("# TYPE web_rooter_budget_utilization_ratio gauge")
+        for surface, ratio in telemetry["utilization"].items():
+            safe_surface = str(surface).replace('"', "'")
+            lines.append(f'web_rooter_budget_utilization_ratio{{surface="{safe_surface}"}} {ratio:.4f}')
+
+        lines.append("# HELP web_rooter_budget_alert_active Runtime budget alert active flag")
+        lines.append("# TYPE web_rooter_budget_alert_active gauge")
+        for alert in telemetry["alerts"]:
+            safe_alert = str(alert).replace('"', "'")
+            lines.append(f'web_rooter_budget_alert_active{{alert="{safe_alert}"}} 1')
 
         return "\n".join(lines)
 
@@ -440,6 +502,7 @@ class ProxyPoolMetrics:
 
 # 全局指标收集器
 _global_collector: Optional[MetricsCollector] = None
+_budget_telemetry_provider: Optional[Callable[[], Dict[str, Any]]] = None
 
 
 def get_global_collector() -> MetricsCollector:
@@ -460,6 +523,23 @@ def get_metrics_summary() -> Dict[str, Any]:
     return get_global_collector().get_summary()
 
 
+def set_budget_telemetry_provider(provider: Optional[Callable[[], Dict[str, Any]]]) -> None:
+    """设置预算遥测提供器（用于 Prometheus 导出扩展）。"""
+    global _budget_telemetry_provider
+    _budget_telemetry_provider = provider
+
+
+def clear_budget_telemetry_provider() -> None:
+    """清空预算遥测提供器。"""
+    set_budget_telemetry_provider(None)
+
+
 def export_prometheus_metrics() -> str:
     """便捷函数：导出 Prometheus 指标"""
-    return get_global_collector().to_prometheus()
+    telemetry: Optional[Dict[str, Any]] = None
+    if _budget_telemetry_provider is not None:
+        try:
+            telemetry = _budget_telemetry_provider()
+        except Exception as exc:
+            logger.debug("budget telemetry provider failed: %s", exc)
+    return get_global_collector().to_prometheus(budget_telemetry=telemetry)

@@ -130,6 +130,10 @@ class WebRooterCLI:
         "pressure",
         "runtime-pressure",
         "runtime_pressure",
+        "telemetry",
+        "budget",
+        "budget-telemetry",
+        "budget_telemetry",
         "processors",
         "postprocessors",
         "planners",
@@ -1163,6 +1167,11 @@ class WebRooterCLI:
             refresh = "--no-refresh" not in args
             snapshot = self.agent.get_runtime_pressure_snapshot(refresh=refresh)
             self._print_result({"success": True, "runtime_pressure": snapshot})
+
+        elif command in {"telemetry", "budget", "budget-telemetry", "budget_telemetry"}:
+            refresh = "--no-refresh" not in args
+            snapshot = self.agent.get_budget_telemetry_snapshot(refresh=refresh)
+            self._print_result({"success": True, "budget_telemetry": snapshot})
 
         elif command in {"processors", "postprocessors"}:
             specs: List[str] = []
@@ -2587,6 +2596,7 @@ Web-Rooter 可用命令:
   events [--limit=N] [--event=type] [--source=name] [--since=seq]
                                   - 查看运行时事件流快照（支持游标增量拉取）
   pressure [--no-refresh]         - 查看运行时压力级别与自适应降级限制
+  telemetry [--no-refresh]        - 查看统一预算健康度（state/events/artifact/pressure）
   processors [--load=module:obj] [--force] - 查看/加载抓取后处理扩展
   planners [--load=module:obj] [--force] - 查看/加载 MindSearch planner 扩展
   challenge-profiles              - 查看 challenge workflow 路由档案
@@ -2636,6 +2646,7 @@ Web-Rooter 可用命令:
   events --event=visit_complete --limit=30
   events --since=120
   pressure
+  telemetry
   processors --load=plugins/post_processors/my_proc.py:create_processor --force
   planners --load=plugins/planners/my_planner.py:create_planner --force
   challenge-profiles

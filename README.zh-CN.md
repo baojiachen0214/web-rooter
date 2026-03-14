@@ -82,6 +82,9 @@ Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
 18. **错命令防误触** - 疑似命令拼写错误会直接给建议，不再被误当查询执行
 19. **阶段唤醒 Skills 契约** - `do-plan` 输出 `phase_wakeup + ai_contract`，指导 AI 分阶段执行
 20. **Skill 路由防误判** - 通过 `activation_keywords + min_score + min_margin` 抑制泛词误路由
+21. **统一预算遥测快照** - `telemetry`/`web_budget_telemetry` 输出 health/pressure/utilization/alerts
+22. **调度器有界化去重与队列** - 默认启用有界 `max_queue_size + max_dupefilter_entries`，避免长跑内存膨胀
+23. **Spider 自适应预算闭环** - 按内存与错误率压力自动收缩/恢复调度预算（critical 时主动 trim 队列）
 
 ### 已知限制
 
@@ -167,7 +170,24 @@ python main.py do-submit "分析 RAG benchmark 论文关系并给引用" --skill
 python main.py jobs --status=running
 python main.py job-status <job_id>
 python main.py job-result <job_id>
+
+# 12. 查看运行时预算遥测（health/pressure/utilization/alerts）
+python main.py telemetry
 ```
+
+### 维护者：一键构建零依赖发布包
+
+```bash
+# macOS / Linux
+bash scripts/release/package-release.sh
+bash scripts/release/package-release.sh --format both
+
+# Windows
+scripts\release\package-release.bat
+scripts\release\package-release.bat --format both
+```
+
+产物位于 `dist/release/`。
 
 ---
 
