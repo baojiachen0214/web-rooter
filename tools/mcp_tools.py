@@ -7,12 +7,33 @@ from typing import Optional, Dict, Any, List
 import logging
 
 from agents.web_agent import WebAgent, AgentResponse
-from core.crawler import Crawler
-from core.parser import Parser
-from core.browser import BrowserManager
 from core.search.engine import SearchEngine
 from core.academic_search import AcademicSource, is_academic_query
 from core.search.advanced import DeepSearchEngine, search_social_media, search_tech, search_commerce
+
+try:
+    from core.crawler import Crawler
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Crawler = None  # type: ignore[assignment]
+    _CRAWLER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _CRAWLER_IMPORT_ERROR = None
+
+try:
+    from core.parser import Parser
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Parser = None  # type: ignore[assignment]
+    _PARSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _PARSER_IMPORT_ERROR = None
+
+try:
+    from core.browser import BrowserManager
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    BrowserManager = None  # type: ignore[assignment]
+    _BROWSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _BROWSER_IMPORT_ERROR = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -162,6 +183,10 @@ class WebTools:
         Returns:
             解析后的结构化数据
         """
+        if Parser is None:
+            raise RuntimeError(
+                "HTML parser runtime is unavailable. Install optional dependencies from requirements.txt."
+            ) from _PARSER_IMPORT_ERROR
         parser = Parser().parse(html, url)
         extracted = parser.extract()
         return extracted.to_dict()
@@ -195,6 +220,10 @@ class WebTools:
             "success": True,
             "knowledge": self._agent.get_knowledge_base(),
             "visited_urls": self._agent.get_visited_urls(),
+            "runtime_state": self._agent.get_runtime_state_stats(),
+            "runtime_events": self._agent.get_runtime_events_stats(),
+            "runtime_pressure": self._agent.get_runtime_pressure_stats(),
+            "artifact_graph": self._agent.get_artifact_graph_stats(),
         }
 
     async def web_search(self, query: str, num_results: int = 10) -> Dict[str, Any]:
@@ -431,6 +460,62 @@ class WebTools:
         return {
             "success": True,
             "context": snapshot,
+        }
+
+    async def web_artifact_snapshot(
+        self,
+        node_limit: int = 80,
+        edge_limit: int = 200,
+        node_kind: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取 runtime artifact graph 快照。
+        """
+        await self._ensure_initialized()
+        snapshot = self._agent.get_artifact_graph_snapshot(
+            node_limit=node_limit,
+            edge_limit=edge_limit,
+            node_kind=node_kind,
+        )
+        return {
+            "success": True,
+            "artifact_graph": snapshot,
+        }
+
+    async def web_runtime_events(
+        self,
+        limit: int = 50,
+        event_type: Optional[str] = None,
+        source: Optional[str] = None,
+        since_seq: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取 bounded runtime event stream 快照。
+        """
+        await self._ensure_initialized()
+        snapshot = self._agent.get_runtime_events_snapshot(
+            limit=limit,
+            event_type=event_type,
+            source=source,
+            since_seq=since_seq,
+        )
+        return {
+            "success": True,
+            "runtime_events": snapshot,
+        }
+
+    async def web_runtime_pressure(
+        self,
+        refresh: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        获取运行时压力快照与自适应限制。
+        """
+        await self._ensure_initialized()
+        snapshot = self._agent.get_runtime_pressure_snapshot(refresh=refresh)
+        return {
+            "success": True,
+            "runtime_pressure": snapshot,
         }
 
     async def web_postprocessors(
@@ -814,6 +899,41 @@ async def setup_mcp_server():
                 },
             ),
             Tool(
+                name="web_artifact_snapshot",
+                description="Get bounded runtime artifact graph snapshot (pages, links, fetch relations)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "node_limit": {"type": "integer", "description": "Max nodes to return", "default": 80},
+                        "edge_limit": {"type": "integer", "description": "Max edges to return", "default": 200},
+                        "node_kind": {"type": "string", "description": "Optional node kind filter (page/url/domain/request/session)"},
+                    },
+                },
+            ),
+            Tool(
+                name="web_runtime_events",
+                description="Get bounded runtime event stream snapshot (visit/fallback/fetch lifecycle)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "Max events to return", "default": 50},
+                        "event_type": {"type": "string", "description": "Optional event type filter"},
+                        "source": {"type": "string", "description": "Optional source filter"},
+                        "since_seq": {"type": "integer", "description": "Return events with seq greater than this cursor"},
+                    },
+                },
+            ),
+            Tool(
+                name="web_runtime_pressure",
+                description="Get adaptive runtime pressure snapshot and current degrade limits",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "refresh": {"type": "boolean", "description": "Re-evaluate memory/error pressure before returning", "default": True},
+                    },
+                },
+            ),
+            Tool(
                 name="web_postprocessors",
                 description="List/load post-processors for custom data handling after crawl/search",
                 inputSchema={
@@ -1122,6 +1242,23 @@ async def setup_mcp_server():
                 result = await web_tools.web_context_snapshot(
                     limit=arguments.get("limit", 20),
                     event_type=arguments.get("event_type"),
+                )
+            elif name == "web_artifact_snapshot":
+                result = await web_tools.web_artifact_snapshot(
+                    node_limit=arguments.get("node_limit", 80),
+                    edge_limit=arguments.get("edge_limit", 200),
+                    node_kind=arguments.get("node_kind"),
+                )
+            elif name == "web_runtime_events":
+                result = await web_tools.web_runtime_events(
+                    limit=arguments.get("limit", 50),
+                    event_type=arguments.get("event_type"),
+                    source=arguments.get("source"),
+                    since_seq=arguments.get("since_seq"),
+                )
+            elif name == "web_runtime_pressure":
+                result = await web_tools.web_runtime_pressure(
+                    refresh=arguments.get("refresh", True),
                 )
             elif name == "web_postprocessors":
                 result = await web_tools.web_postprocessors(

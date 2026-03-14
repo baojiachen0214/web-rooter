@@ -10,11 +10,33 @@ from datetime import datetime
 from enum import Enum
 import logging
 
-from core.crawler import Crawler, CrawlResult
-from core.parser import Parser
+try:
+    from core.crawler import Crawler, CrawlResult
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Crawler = None  # type: ignore[assignment]
+    CrawlResult = Any  # type: ignore[misc,assignment]
+    _CRAWLER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _CRAWLER_IMPORT_ERROR = None
+
+try:
+    from core.parser import Parser
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Parser = None  # type: ignore[assignment]
+    _PARSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _PARSER_IMPORT_ERROR = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _build_parser():
+    if Parser is None:
+        raise RuntimeError(
+            "HTML parser runtime is unavailable. Install optional dependencies from requirements.txt."
+        ) from _PARSER_IMPORT_ERROR
+    return Parser()
 
 
 class SearchEngine(Enum):
@@ -94,6 +116,10 @@ class SearchEngineClient:
     }
 
     def __init__(self):
+        if Crawler is None:
+            raise RuntimeError(
+                "Search engine runtime is unavailable. Install optional dependencies from requirements.txt."
+            ) from _CRAWLER_IMPORT_ERROR
         self._crawler = Crawler()
 
     async def search(
@@ -161,7 +187,7 @@ class SearchEngineClient:
     def _parse_results(self, html: str, engine: SearchEngine) -> List[SearchResult]:
         """解析搜索结果"""
         try:
-            parser = Parser().parse(html)
+            parser = _build_parser().parse(html)
             results = []
 
             if engine == SearchEngine.GOOGLE:
@@ -484,13 +510,17 @@ class MultiSearchEngine:
 
         # 第二步：爬取前几个结果获取内容
         crawled_pages = []
+        if Crawler is None:
+            raise RuntimeError(
+                "Search engine runtime is unavailable. Install optional dependencies from requirements.txt."
+            ) from _CRAWLER_IMPORT_ERROR
         crawler = Crawler()
 
         for i, result in enumerate(search_response.results[:3]):
             try:
                 page_result = await crawler.fetch_with_retry(result.url)
                 if page_result.success:
-                    parser = Parser().parse(page_result.html, result.url)
+                    parser = _build_parser().parse(page_result.html, result.url)
                     extracted = parser.extract()
                     crawled_pages.append({
                         "url": result.url,

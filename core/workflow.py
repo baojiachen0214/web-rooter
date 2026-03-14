@@ -319,6 +319,9 @@ def get_workflow_schema() -> Dict[str, Any]:
             "auth_profiles": {"args": []},
             "challenge_profiles": {"args": []},
             "context_snapshot": {"args": ["limit", "event_type"]},
+            "artifact_snapshot": {"args": ["node_limit", "edge_limit", "node_kind"]},
+            "runtime_events_snapshot": {"args": ["limit", "event_type", "source", "since_seq"]},
+            "runtime_pressure_snapshot": {"args": ["refresh"]},
             "echo": {"args": ["value"]},
             "sleep": {"args": ["seconds"]},
         },
@@ -972,6 +975,32 @@ class WorkflowRunner:
             limit = max(1, _as_int(args.get("limit"), 20))
             event_type = str(args.get("event_type") or "").strip() or None
             return self._agent.get_global_context_snapshot(limit=limit, event_type=event_type)
+
+        if name in {"artifact_snapshot", "web_artifact_snapshot"}:
+            node_limit = max(1, _as_int(args.get("node_limit"), 80))
+            edge_limit = max(1, _as_int(args.get("edge_limit"), 200))
+            node_kind = str(args.get("node_kind") or "").strip() or None
+            return self._agent.get_artifact_graph_snapshot(
+                node_limit=node_limit,
+                edge_limit=edge_limit,
+                node_kind=node_kind,
+            )
+
+        if name in {"runtime_events_snapshot", "web_runtime_events"}:
+            limit = max(1, _as_int(args.get("limit"), 50))
+            event_type = str(args.get("event_type") or "").strip() or None
+            source = str(args.get("source") or "").strip() or None
+            since_seq = _as_int(args.get("since_seq"), 0)
+            return self._agent.get_runtime_events_snapshot(
+                limit=limit,
+                event_type=event_type,
+                source=source,
+                since_seq=(since_seq if since_seq > 0 else None),
+            )
+
+        if name in {"runtime_pressure_snapshot", "web_runtime_pressure"}:
+            refresh = _as_bool(args.get("refresh"), default=True)
+            return self._agent.get_runtime_pressure_snapshot(refresh=refresh)
 
         if name in {"echo"}:
             return {"success": True, "value": args.get("value")}

@@ -14,8 +14,29 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus, urljoin, urlparse
 
-from core.crawler import Crawler
-from core.parser import Parser
+try:
+    from core.crawler import Crawler
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Crawler = None  # type: ignore[assignment]
+    _CRAWLER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _CRAWLER_IMPORT_ERROR = None
+
+try:
+    from core.parser import Parser
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Parser = None  # type: ignore[assignment]
+    _PARSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _PARSER_IMPORT_ERROR = None
+
+
+def _build_parser():
+    if Parser is None:
+        raise RuntimeError(
+            "HTML parser runtime is unavailable. Install optional dependencies from requirements.txt."
+        ) from _PARSER_IMPORT_ERROR
+    return Parser()
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +157,10 @@ class AcademicSearchEngine:
     }
 
     def __init__(self):
+        if Crawler is None:
+            raise RuntimeError(
+                "Academic search runtime is unavailable. Install optional dependencies from requirements.txt."
+            ) from _CRAWLER_IMPORT_ERROR
         self._crawler = Crawler()
         self._headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -469,7 +494,7 @@ class AcademicSearchEngine:
             if not result.success:
                 return None
 
-            parser = Parser().parse(result.html, url)
+            parser = _build_parser().parse(result.html, url)
             abstract_selectors = [
                 "meta[name='description']",
                 "meta[property='og:description']",
@@ -568,7 +593,7 @@ class AcademicSearchEngine:
         return (-citation_count, source_priority, -year, -title_len)
 
     def _parse_scholar(self, html: str, num_results: int) -> List[PaperResult]:
-        parser = Parser().parse(html, "https://scholar.google.com")
+        parser = _build_parser().parse(html, "https://scholar.google.com")
         results: List[PaperResult] = []
         for item in parser.soup.select("div.gs_ri"):
             title_anchor = item.select_one("h3.gs_rt a") or item.select_one("h3 a")
@@ -607,7 +632,7 @@ class AcademicSearchEngine:
         return results
 
     def _parse_paperwithcode(self, html: str, num_results: int) -> List[PaperResult]:
-        parser = Parser().parse(html, "https://paperswithcode.com")
+        parser = _build_parser().parse(html, "https://paperswithcode.com")
         results: List[PaperResult] = []
         for item in parser.soup.select(".infinite-container .row.infinite-item, .paper-card, .media-item"):
             title_anchor = item.select_one("h1 a, h2 a, h3 a")
@@ -648,7 +673,7 @@ class AcademicSearchEngine:
         source: AcademicSource,
         base_url: str,
     ) -> List[PaperResult]:
-        parser = Parser().parse(html, base_url)
+        parser = _build_parser().parse(html, base_url)
         results: List[PaperResult] = []
         for item in parser.soup.select("article, .result-item, .search-result, .item, li")[: max(50, num_results * 8)]:
             title_anchor = item.select_one("h1 a, h2 a, h3 a, a[title]")
@@ -683,7 +708,7 @@ class AcademicSearchEngine:
         return results
 
     def _parse_github(self, html: str, num_results: int) -> List[CodeProjectResult]:
-        parser = Parser().parse(html, "https://github.com")
+        parser = _build_parser().parse(html, "https://github.com")
         results: List[CodeProjectResult] = []
         for item in parser.soup.select("ul.repo-list li, div.search-results-container li"):
             title_anchor = item.select_one("a.v-align-middle, h3 a")
@@ -709,7 +734,7 @@ class AcademicSearchEngine:
         return results
 
     def _parse_gitee(self, html: str, num_results: int) -> List[CodeProjectResult]:
-        parser = Parser().parse(html, "https://gitee.com")
+        parser = _build_parser().parse(html, "https://gitee.com")
         results: List[CodeProjectResult] = []
         for item in parser.soup.select(".items .item, .search-result-item, li"):
             title_anchor = item.select_one(".title a, h3 a, a[href*='/']")

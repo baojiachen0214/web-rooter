@@ -9,14 +9,17 @@
 - 流式结果输出
 """
 import asyncio
+from collections import defaultdict, deque
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Any, AsyncGenerator
 import logging
 import json
+
+from core.result_queue import ResultQueue
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,32 @@ class SearchNode:
             "metadata": self.metadata,
         }
 
+    def to_event_dict(self, max_results: int = 3, max_string_chars: int = 240) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "query": self.query[:max_string_chars],
+            "parent_id": self.parent_id,
+            "status": self.status,
+            "result_count": len(self.results),
+            "results": self.results[:max_results],
+            "created_at": self.created_at.isoformat(),
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error": self.error[:max_string_chars] if self.error else None,
+            "metadata": self._trim_mapping(self.metadata, max_string_chars=max_string_chars),
+        }
+
+    @staticmethod
+    def _trim_mapping(data: Dict[str, Any], max_string_chars: int) -> Dict[str, Any]:
+        trimmed: Dict[str, Any] = {}
+        for idx, (key, value) in enumerate(data.items()):
+            if idx >= 20:
+                break
+            if isinstance(value, str):
+                trimmed[str(key)] = value[:max_string_chars]
+            else:
+                trimmed[str(key)] = value
+        return trimmed
+
 
 class SearchGraph:
     """
@@ -64,6 +93,9 @@ class SearchGraph:
         self,
         max_workers: int = 8,
         search_engine: Optional[Any] = None,
+        max_event_queue_size: Optional[int] = None,
+        max_results_per_node: Optional[int] = None,
+        max_event_results: Optional[int] = None,
     ):
         """
         初始化搜索图
@@ -77,7 +109,22 @@ class SearchGraph:
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self._search_engine = search_engine
         self.root_id: Optional[str] = None
-        self._result_queue = asyncio.Queue()
+        self._max_event_queue_size = max(
+            1,
+            int(max_event_queue_size or os.getenv("WEB_ROOTER_SEARCH_GRAPH_EVENT_QUEUE_SIZE", "128") or 128),
+        )
+        self._max_results_per_node = max(
+            1,
+            int(max_results_per_node or os.getenv("WEB_ROOTER_SEARCH_GRAPH_MAX_RESULTS_PER_NODE", "12") or 12),
+        )
+        self._max_event_results = max(
+            1,
+            int(max_event_results or os.getenv("WEB_ROOTER_SEARCH_GRAPH_MAX_EVENT_RESULTS", "3") or 3),
+        )
+        self._result_queue = ResultQueue(
+            maxsize=self._max_event_queue_size,
+            overflow_strategy="drop_oldest",
+        )
 
     def add_query(
         self,
@@ -128,7 +175,7 @@ class SearchGraph:
         node.status = "executing"
 
         # 通知节点开始执行
-        await self._result_queue.put(("node_start", node.to_dict()))
+        self._emit_result("node_start", node.to_event_dict(max_results=self._max_event_results))
 
         try:
             # 确保搜索引擎初始化
@@ -142,7 +189,10 @@ class SearchGraph:
                 deduplicate=True,
                 parallel=True,
             )
-            node.results = [r.to_dict() if hasattr(r, 'to_dict') else r for r in results]
+            normalized_results = [r.to_dict() if hasattr(r, 'to_dict') else r for r in results]
+            node.results = normalized_results[:self._max_results_per_node]
+            if len(normalized_results) > self._max_results_per_node:
+                node.metadata["results_truncated"] = len(normalized_results) - self._max_results_per_node
             node.status = "completed"
             logger.info(f"Node {node_id} completed with {len(node.results)} results")
 
@@ -155,7 +205,7 @@ class SearchGraph:
             node.completed_at = datetime.now()
 
         # 通知节点完成
-        await self._result_queue.put(("node_complete", node.to_dict()))
+        self._emit_result("node_complete", node.to_event_dict(max_results=self._max_event_results))
 
         return node
 
@@ -202,18 +252,20 @@ class SearchGraph:
         tasks = [asyncio.create_task(run_node(nid)) for nid in self.nodes]
 
         # 从队列中获取更新
-        pending_tasks = len(tasks)
-        while pending_tasks > 0:
+        while True:
             try:
-                event_type, data = await asyncio.wait_for(
-                    self._result_queue.get(),
-                    timeout=1.0,
-                )
-                yield {
-                    "event": event_type,
-                    "data": data,
-                }
+                item = await self._result_queue.get(timeout=1.0)
+                if item is not None:
+                    event_type, data = item.data
+                    yield {
+                        "event": event_type,
+                        "data": data,
+                    }
+                    continue
             except asyncio.TimeoutError:
+                pass
+
+            if self._result_queue.is_empty():
                 # 检查任务是否完成
                 done = sum(1 for t in tasks if t.done())
                 if done == len(tasks):
@@ -223,6 +275,9 @@ class SearchGraph:
             "event": "complete",
             "data": self.get_results(),
         }
+
+    def _emit_result(self, event_type: str, data: Dict[str, Any]) -> None:
+        self._result_queue.put_nowait((event_type, data), item_type="event")
 
     def get_results(self) -> Dict[str, Any]:
         """获取结果"""
@@ -242,6 +297,7 @@ class SearchGraph:
             status_counts[node.status] += 1
 
         total_results = sum(len(node.results) for node in self.nodes.values())
+        queue_stats = self._result_queue.get_stats()
 
         return {
             "total_nodes": len(self.nodes),
@@ -249,6 +305,9 @@ class SearchGraph:
             "failed": status_counts.get("failed", 0),
             "pending": status_counts.get("pending", 0),
             "total_results": total_results,
+            "event_queue_size": queue_stats["current_size"],
+            "dropped_events": queue_stats["items_dropped"],
+            "max_results_per_node": self._max_results_per_node,
         }
 
     def reset(self):
@@ -270,11 +329,16 @@ class MindSearchStyleAgent:
         search_engine: Optional[Any] = None,
         max_workers: int = 8,
         max_turns: int = 5,
+        history_limit: Optional[int] = None,
     ):
         self.search_engine = search_engine
         self.max_workers = max_workers
         self.max_turns = max_turns
-        self._search_history = []
+        self._history_limit = max(
+            1,
+            int(history_limit or os.getenv("WEB_ROOTER_SEARCH_HISTORY_LIMIT", "20") or 20),
+        )
+        self._search_history = deque(maxlen=self._history_limit)
 
     def decompose_query(self, query: str) -> List[str]:
         """
@@ -332,11 +396,7 @@ class MindSearchStyleAgent:
 
         # 获取结果
         results = graph.get_results()
-        self._search_history.append({
-            "query": query,
-            "timestamp": datetime.now().isoformat(),
-            "results": results,
-        })
+        self._record_history(query=query, results=results, mode="batch")
 
         return results
 
@@ -381,13 +441,36 @@ class MindSearchStyleAgent:
             }
 
         # 流式执行搜索
+        final_result: Optional[Dict[str, Any]] = None
         async for update in graph.execute_stream():
+            if update.get("event") == "complete" and isinstance(update.get("data"), dict):
+                final_result = update["data"]
             yield update
 
-        self._search_history.append({
-            "query": query,
-            "timestamp": datetime.now().isoformat(),
-        })
+        self._record_history(query=query, results=final_result, mode="stream")
+
+    def _record_history(
+        self,
+        *,
+        query: str,
+        results: Optional[Dict[str, Any]],
+        mode: str,
+    ) -> None:
+        stats = results.get("stats", {}) if isinstance(results, dict) else {}
+        self._search_history.append(
+            {
+                "query": query,
+                "timestamp": datetime.now().isoformat(),
+                "mode": mode,
+                "stats": {
+                    "total_nodes": int(stats.get("total_nodes", 0) or 0),
+                    "completed": int(stats.get("completed", 0) or 0),
+                    "failed": int(stats.get("failed", 0) or 0),
+                    "total_results": int(stats.get("total_results", 0) or 0),
+                    "dropped_events": int(stats.get("dropped_events", 0) or 0),
+                },
+            }
+        )
 
 
 async def main():
@@ -421,4 +504,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

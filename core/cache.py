@@ -86,7 +86,7 @@ class MemoryCache:
     - TTL 支持
     """
 
-    def __init__(self, max_size: int = 1000):
+    def __init__(self, max_size: int = 1000, max_bytes: int = 64 * 1024 * 1024):
         """
         初始化内存缓存
 
@@ -96,6 +96,8 @@ class MemoryCache:
         self._cache: Dict[str, CacheEntry] = {}
         self._access_order: List[str] = []
         self._max_size = max_size
+        self._max_bytes = max_bytes
+        self._current_bytes = 0
         self._hits = 0
         self._misses = 0
         self._lock = asyncio.Lock()
@@ -109,9 +111,7 @@ class MemoryCache:
                 return None
 
             if entry.is_expired():
-                del self._cache[key]
-                if key in self._access_order:
-                    self._access_order.remove(key)
+                self._remove_entry(key)
                 self._misses += 1
                 return None
 
@@ -133,31 +133,43 @@ class MemoryCache:
         async with self._lock:
             # 如果已存在，先删除
             if key in self._cache:
-                self._access_order.remove(key)
+                self._remove_entry(key)
+
+            entry_size = len(entry.response_body or b"")
+            if entry_size > self._max_bytes:
+                return
 
             # 检查是否需要淘汰
-            while len(self._cache) >= self._max_size:
+            while self._cache and (
+                len(self._cache) >= self._max_size
+                or self._current_bytes + entry_size > self._max_bytes
+            ):
                 # 淘汰最久未访问的
                 oldest_key = self._access_order.pop(0)
-                if oldest_key in self._cache:
-                    del self._cache[oldest_key]
+                self._remove_entry(oldest_key)
 
             self._cache[key] = entry
             self._access_order.append(key)
+            self._current_bytes += entry_size
 
     async def delete(self, key: str):
         """删除缓存"""
         async with self._lock:
-            if key in self._cache:
-                del self._cache[key]
-            if key in self._access_order:
-                self._access_order.remove(key)
+            self._remove_entry(key)
 
     async def clear(self):
         """清空缓存"""
         async with self._lock:
             self._cache.clear()
             self._access_order.clear()
+            self._current_bytes = 0
+
+    def _remove_entry(self, key: str) -> None:
+        entry = self._cache.pop(key, None)
+        if key in self._access_order:
+            self._access_order.remove(key)
+        if entry is not None:
+            self._current_bytes = max(0, self._current_bytes - len(entry.response_body or b""))
 
     def get_stats(self) -> dict:
         """获取统计信息"""
@@ -166,6 +178,8 @@ class MemoryCache:
         return {
             "size": len(self._cache),
             "max_size": self._max_size,
+            "current_bytes": self._current_bytes,
+            "max_bytes": self._max_bytes,
             "hits": self._hits,
             "misses": self._misses,
             "hit_rate": hit_rate,
@@ -376,8 +390,11 @@ class RequestCache:
         use_sqlite: bool = False,
         db_path: Optional[str] = None,
         memory_max_size: int = 1000,
+        memory_max_bytes: int = 64 * 1024 * 1024,
         sqlite_max_size: int = 10000,
         default_ttl: Optional[int] = None,
+        memory_max_body_bytes: Optional[int] = None,
+        sqlite_max_body_bytes: Optional[int] = None,
     ):
         """
         初始化请求缓存
@@ -390,7 +407,7 @@ class RequestCache:
             sqlite_max_size: SQLite 缓存最大大小
             default_ttl: 默认 TTL (秒)
         """
-        self._memory_cache = MemoryCache(memory_max_size) if use_memory else None
+        self._memory_cache = MemoryCache(memory_max_size, memory_max_bytes) if use_memory else None
         self._sqlite_cache = None
 
         if use_sqlite:
@@ -399,8 +416,11 @@ class RequestCache:
             self._sqlite_cache = SQLiteCache(db_path, sqlite_max_size)
 
         self._default_ttl = default_ttl
+        self._memory_max_body_bytes = memory_max_body_bytes
+        self._sqlite_max_body_bytes = sqlite_max_body_bytes
         self._requests_cached = 0
         self._requests_served = 0
+        self._skipped_too_large = 0
 
     def _generate_key(self, url: str, method: str = "GET") -> str:
         """生成缓存键"""
@@ -436,7 +456,13 @@ class RequestCache:
             entry = await self._sqlite_cache.get(key)
             if entry:
                 # 回填到内存缓存
-                if self._memory_cache:
+                if (
+                    self._memory_cache
+                    and (
+                        self._memory_max_body_bytes is None
+                        or len(entry.response_body or b"") <= self._memory_max_body_bytes
+                    )
+                ):
                     await self._memory_cache.set(key, entry)
                 self._requests_served += 1
                 return entry
@@ -482,14 +508,33 @@ class RequestCache:
         )
 
         # 写入内存缓存
-        if self._memory_cache:
+        stored = False
+
+        if (
+            self._memory_cache
+            and (
+                self._memory_max_body_bytes is None
+                or len(response_body) <= self._memory_max_body_bytes
+            )
+        ):
             await self._memory_cache.set(key, entry)
+            stored = True
 
         # 写入 SQLite 缓存
-        if self._sqlite_cache:
+        if (
+            self._sqlite_cache
+            and (
+                self._sqlite_max_body_bytes is None
+                or len(response_body) <= self._sqlite_max_body_bytes
+            )
+        ):
             await self._sqlite_cache.set(key, entry)
+            stored = True
 
-        self._requests_cached += 1
+        if stored:
+            self._requests_cached += 1
+        else:
+            self._skipped_too_large += 1
 
     async def delete(self, url: str, method: str = "GET"):
         """删除缓存"""
@@ -523,6 +568,7 @@ class RequestCache:
         stats = {
             "requests_cached": self._requests_cached,
             "requests_served": self._requests_served,
+            "skipped_too_large": self._skipped_too_large,
             "cache_efficiency": self._requests_served / max(1, self._requests_cached + self._requests_served),
         }
 
@@ -538,4 +584,3 @@ class RequestCache:
         """关闭缓存"""
         if self._sqlite_cache:
             self._sqlite_cache.close()
-

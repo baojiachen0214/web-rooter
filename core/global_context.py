@@ -48,11 +48,19 @@ class ContextEvent:
 class GlobalDeepContextStore:
     """进程内全局上下文存储。"""
 
-    def __init__(self, max_events: int = 500, persist_path: Optional[Path] = None):
+    def __init__(
+        self,
+        max_events: int = 500,
+        persist_path: Optional[Path] = None,
+        max_persisted_events: Optional[int] = None,
+    ):
         self._events: Deque[ContextEvent] = deque(maxlen=max_events)
         self._max_events = max_events
         self._lock = threading.Lock()
         self._persist_path = persist_path
+        persisted_default = max(max_events, max_events * 4)
+        self._max_persisted_events = max_persisted_events or persisted_default
+        self._persisted_events = 0
         if self._persist_path:
             self._persist_path.parent.mkdir(parents=True, exist_ok=True)
             self._load_persisted_events()
@@ -94,6 +102,8 @@ class GlobalDeepContextStore:
     def clear(self) -> None:
         with self._lock:
             self._events.clear()
+            if self._persist_path:
+                self._rewrite_persisted_events_locked()
 
     def _persist_event(self, event: ContextEvent) -> None:
         if not self._persist_path:
@@ -101,6 +111,9 @@ class GlobalDeepContextStore:
         try:
             with self._persist_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+            self._persisted_events += 1
+            if self._persisted_events > self._max_persisted_events:
+                self._rewrite_persisted_events_locked()
         except Exception as exc:
             logger.debug("写入全局上下文失败: %s", exc)
 
@@ -108,25 +121,64 @@ class GlobalDeepContextStore:
         if not self._persist_path or not self._persist_path.exists():
             return
         try:
-            with self._persist_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        item = json.loads(line)
-                        event = ContextEvent(
-                            id=str(item.get("id") or str(uuid.uuid4())),
-                            event_type=str(item.get("event_type") or "unknown"),
-                            source=str(item.get("source") or "unknown"),
-                            timestamp=str(item.get("timestamp") or _utc_now_iso()),
-                            payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
-                        )
-                        self._events.append(event)
-                    except Exception:
-                        continue
+            for line in self._tail_lines(self._persist_path, self._max_persisted_events):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                    event = ContextEvent(
+                        id=str(item.get("id") or str(uuid.uuid4())),
+                        event_type=str(item.get("event_type") or "unknown"),
+                        source=str(item.get("source") or "unknown"),
+                        timestamp=str(item.get("timestamp") or _utc_now_iso()),
+                        payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
+                    )
+                    self._events.append(event)
+                    self._persisted_events += 1
+                except Exception:
+                    continue
+            if self._persisted_events > self._max_persisted_events:
+                self._rewrite_persisted_events_locked()
         except Exception as exc:
             logger.debug("读取全局上下文失败: %s", exc)
+
+    def _rewrite_persisted_events_locked(self) -> None:
+        if not self._persist_path:
+            return
+        try:
+            recent_events = list(self._events)[-self._max_persisted_events:]
+            with self._persist_path.open("w", encoding="utf-8") as f:
+                for event in recent_events:
+                    f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+            self._persisted_events = len(recent_events)
+        except Exception as exc:
+            logger.debug("压缩全局上下文失败: %s", exc)
+
+    @staticmethod
+    def _tail_lines(path: Path, limit: int, block_size: int = 4096) -> List[str]:
+        if limit <= 0:
+            return []
+
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
+            if file_size <= 0:
+                return []
+
+            buffer = bytearray()
+            lines: List[bytes] = []
+            position = file_size
+
+            while position > 0 and len(lines) <= limit:
+                read_size = min(block_size, position)
+                position -= read_size
+                f.seek(position)
+                buffer[:0] = f.read(read_size)
+                lines = buffer.splitlines()
+
+            tail = lines[-limit:]
+            return [line.decode("utf-8", errors="ignore") for line in tail]
 
     @staticmethod
     def _trim_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -154,8 +206,15 @@ def get_global_deep_context() -> GlobalDeepContextStore:
     global _store
     if _store is None:
         max_events = int(os.getenv("WEB_ROOTER_CONTEXT_MAX_EVENTS", "500") or 500)
+        max_persisted_events = int(
+            os.getenv("WEB_ROOTER_CONTEXT_MAX_PERSISTED_EVENTS", str(max(max_events, max_events * 4))) or max(max_events, max_events * 4)
+        )
         default_path = Path(".web-rooter") / "global-context.jsonl"
         persist_path_raw = os.getenv("WEB_ROOTER_CONTEXT_PATH", "").strip()
         persist_path = Path(persist_path_raw).expanduser() if persist_path_raw else default_path
-        _store = GlobalDeepContextStore(max_events=max_events, persist_path=persist_path)
+        _store = GlobalDeepContextStore(
+            max_events=max_events,
+            persist_path=persist_path,
+            max_persisted_events=max_persisted_events,
+        )
     return _store

@@ -1378,6 +1378,46 @@ class BrowserManager(BaseBrowserManager):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
+    async def _capture_html(self, page: Page) -> tuple[str, int, bool]:
+        """Capture a bounded HTML snapshot so very large DOMs do not flood memory."""
+        limit = max(10_000, int(getattr(self.config, "MAX_HTML_CHARS", 250000) or 250000))
+        try:
+            payload = await page.evaluate(
+                """
+                (maxChars) => {
+                    const root = document.documentElement;
+                    if (!root) {
+                        return { html: "", html_chars: 0, truncated: false };
+                    }
+                    const html = root.outerHTML || "";
+                    const htmlChars = html.length;
+                    return {
+                        html: htmlChars > maxChars ? html.slice(0, maxChars) : html,
+                        html_chars: htmlChars,
+                        truncated: htmlChars > maxChars,
+                    };
+                }
+                """,
+                limit,
+            )
+        except Exception:
+            html = await page.content()
+            html_chars = len(html)
+            truncated = html_chars > limit
+            return (html[:limit] if truncated else html, html_chars, truncated)
+
+        if not isinstance(payload, dict):
+            return "", 0, False
+
+        html = payload.get("html")
+        html_chars = payload.get("html_chars")
+        truncated = payload.get("truncated")
+        return (
+            str(html or ""),
+            int(html_chars or 0),
+            bool(truncated),
+        )
+
     async def fetch(
         self,
         url: str,
@@ -1417,7 +1457,8 @@ class BrowserManager(BaseBrowserManager):
                 error="browser_context_unavailable",
             )
 
-        console_logs = []
+        console_logs: List[str] = []
+        max_console_logs = max(1, int(getattr(self.config, "MAX_CONSOLE_LOGS", 50) or 50))
         page: Optional[Page] = None
         op_task = self._track_active_operation_current_task()
 
@@ -1427,7 +1468,14 @@ class BrowserManager(BaseBrowserManager):
             auth_profile = await self._apply_auth_profile(page, url)
 
             # 收集控制台日志
-            page.on("console", lambda msg: console_logs.append(msg.text))
+            def _remember_console(msg: Any) -> None:
+                if len(console_logs) >= max_console_logs:
+                    return
+                text = getattr(msg, "text", "")
+                text = text if len(text) <= 300 else text[:300] + "...[truncated]"
+                console_logs.append(text)
+
+            page.on("console", _remember_console)
 
             # 设置超时
             page.set_default_timeout(self.config.TIMEOUT)
@@ -1488,7 +1536,7 @@ class BrowserManager(BaseBrowserManager):
                 screenshot = await page.screenshot(full_page=True)
 
             # 获取内容
-            html = await page.content()
+            html, html_chars, html_truncated = await self._capture_html(page)
             title = await page.title()
             cookie_items = await page.context.cookies([page.url])
             cookie_map = {
@@ -1500,6 +1548,8 @@ class BrowserManager(BaseBrowserManager):
             result_metadata = {
                 "auth": auth_profile,
                 "login_wall": login_wall,
+                "html_chars": html_chars,
+                "html_truncated": html_truncated,
             }
             if login_wall and isinstance(auth_profile, dict):
                 if auth_profile.get("matched") is None:
@@ -1794,4 +1844,3 @@ class BrowserManager(BaseBrowserManager):
             raise
         finally:
             self._untrack_active_operation(op_task)
-

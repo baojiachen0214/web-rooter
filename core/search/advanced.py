@@ -21,10 +21,7 @@ from enum import Enum
 import logging
 from urllib.parse import parse_qs, parse_qsl, quote, quote_plus, unquote, urlencode, urljoin, urlparse, urlunparse
 
-from core.crawler import Crawler, CrawlResult
-from core.browser import BrowserManager
 from core.search.engine_config import ConfigLoader
-from core.parser import Parser
 from core.memory_optimizer import (
     get_session_cleaner,
     mark_result_as_final,
@@ -38,6 +35,39 @@ from core.auth_profiles import get_auth_profile_registry
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+try:
+    from core.crawler import Crawler, CrawlResult
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Crawler = None  # type: ignore[assignment]
+    CrawlResult = Any  # type: ignore[misc,assignment]
+    _CRAWLER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _CRAWLER_IMPORT_ERROR = None
+
+try:
+    from core.browser import BrowserManager
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    BrowserManager = None  # type: ignore[assignment]
+    _BROWSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _BROWSER_IMPORT_ERROR = None
+
+try:
+    from core.parser import Parser
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Parser = None  # type: ignore[assignment]
+    _PARSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _PARSER_IMPORT_ERROR = None
+
+
+def _build_parser():
+    if Parser is None:
+        raise RuntimeError(
+            "HTML parser runtime is unavailable. Install optional dependencies from requirements.txt."
+        ) from _PARSER_IMPORT_ERROR
+    return Parser()
 
 
 class AdvancedSearchEngine(Enum):
@@ -324,6 +354,10 @@ class AdvancedSearchEngineClient:
     }
 
     def __init__(self):
+        if Crawler is None:
+            raise RuntimeError(
+                "Advanced search runtime is unavailable. Install optional dependencies from requirements.txt."
+            ) from _CRAWLER_IMPORT_ERROR
         self._crawler = Crawler()
         self._browser_manager: Optional[BrowserManager] = None
         self._browser_lock = asyncio.Lock()
@@ -341,6 +375,10 @@ class AdvancedSearchEngineClient:
             return
         async with self._browser_lock:
             if self._browser_manager is None:
+                if BrowserManager is None:
+                    raise RuntimeError(
+                        "Browser runtime is unavailable. Install optional dependencies from requirements.txt."
+                    ) from _BROWSER_IMPORT_ERROR
                 self._browser_manager = BrowserManager()
                 await self._browser_manager.start("search-fallback")
 
@@ -581,7 +619,7 @@ class AdvancedSearchEngineClient:
 
         parsed_results = self._parse_results(engine, browser_result.html)
         if not parsed_results:
-            parser = Parser().parse(browser_result.html, search_url)
+            parser = _build_parser().parse(browser_result.html, search_url)
             for idx, link in enumerate(parser.soup.select("a[href]")[: max(20, num_results * 4)], 1):
                 href = (link.get("href") or "").strip()
                 title = link.get_text(strip=True)
@@ -617,7 +655,7 @@ class AdvancedSearchEngineClient:
 
     def _parse_results(self, engine: AdvancedSearchEngine, html: str) -> List[SearchResult]:
         """解析搜索结果"""
-        parser = Parser().parse(html)
+        parser = _build_parser().parse(html)
         results = []
 
         selector = self.RESULT_SELECTORS.get(engine)
@@ -836,6 +874,10 @@ class DeepSearchEngine:
 
     def __init__(self, auto_cleanup: bool = True):
         self._client = AdvancedSearchEngineClient()
+        if Crawler is None:
+            raise RuntimeError(
+                "Deep search runtime is unavailable. Install optional dependencies from requirements.txt."
+            ) from _CRAWLER_IMPORT_ERROR
         self._crawler = Crawler(use_cache=True)
         self._browser: Optional[BrowserManager] = None
         self._browser_lock = asyncio.Lock()
@@ -856,6 +898,10 @@ class DeepSearchEngine:
             return
         async with self._browser_lock:
             if self._browser is None:
+                if BrowserManager is None:
+                    raise RuntimeError(
+                        "Browser runtime is unavailable. Install optional dependencies from requirements.txt."
+                    ) from _BROWSER_IMPORT_ERROR
                 self._browser = BrowserManager()
                 await self._browser.start()
 

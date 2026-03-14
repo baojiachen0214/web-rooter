@@ -34,6 +34,16 @@ class CrawlerConfig:
     # 允许的文件大小（字节）
     MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
 
+    # 单次响应读取上限（内存保护）
+    MAX_IN_MEMORY_RESPONSE_BYTES: int = 2 * 1024 * 1024  # 2MB
+
+    # 请求缓存预算（避免 HTML 缓存吞掉进程内存）
+    CACHE_MEMORY_MAX_ENTRIES: int = 128
+    CACHE_MEMORY_MAX_BYTES: int = 32 * 1024 * 1024  # 32MB
+    CACHE_MEMORY_BODY_MAX_BYTES: int = 256 * 1024  # 256KB
+    CACHE_SQLITE_MAX_ENTRIES: int = 5000
+    CACHE_SQLITE_BODY_MAX_BYTES: int = 2 * 1024 * 1024  # 2MB
+
 
 class ProxyRotationStrategy(Enum):
     """代理轮换策略"""
@@ -152,6 +162,8 @@ class BrowserConfig:
     BLOCK_IMAGES: bool = True  # 加快速度
     BLOCK_FONTS: bool = True
     USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    MAX_HTML_CHARS: int = 250000
+    MAX_CONSOLE_LOGS: int = 50
 
     # CDP 支持
     CDP_URL: Optional[str] = None  # CDP 端点 URL

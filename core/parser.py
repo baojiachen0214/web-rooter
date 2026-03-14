@@ -5,6 +5,8 @@
 """
 import re
 import json
+import os
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any, Tuple
 from bs4 import BeautifulSoup, Tag
@@ -672,6 +674,7 @@ class AdaptiveParser(Parser):
         position_weight: float = 0.25,
         db_path: Optional[str] = None,
         use_db: bool = True,
+        feature_cache_max_entries: Optional[int] = None,
     ):
         super().__init__()
         self.adaptive = adaptive
@@ -682,7 +685,15 @@ class AdaptiveParser(Parser):
             "text": text_weight,
             "position": position_weight,
         }
-        self._feature_cache: Dict[str, ElementFeature] = {}
+        self._feature_cache_max_entries = max(
+            1,
+            int(
+                feature_cache_max_entries
+                or os.getenv("WEB_ROOTER_ADAPTIVE_FEATURE_CACHE_MAX", "512")
+                or 512
+            ),
+        )
+        self._feature_cache: "OrderedDict[str, ElementFeature]" = OrderedDict()
 
         # SQLite 元素存储
         self._element_storage: Optional[ElementStorageSystem] = None
@@ -721,9 +732,9 @@ class AdaptiveParser(Parser):
 
         if results:
             # 成功找到，保存特征
-            if auto_save and selector not in self._feature_cache:
+            if auto_save:
                 feature = element_to_feature(results[0], selector, self.base_url)
-                self._feature_cache[selector] = feature
+                self._cache_put(selector, feature)
                 # 保存到数据库
                 self._save_feature_to_db(selector, feature)
             return results
@@ -735,7 +746,10 @@ class AdaptiveParser(Parser):
         cached_feature = self._load_feature_from_db(selector)
         if not cached_feature:
             # 回退到内存缓存
-            cached_feature = self._feature_cache.get(selector)
+            cached_feature = self._cache_get(selector)
+        else:
+            # DB 回填到内存 LRU，减少重复 IO
+            self._cache_put(selector, cached_feature)
 
         if not cached_feature:
             logger.warning(f"No cached feature for selector '{selector}'")
@@ -936,12 +950,26 @@ class AdaptiveParser(Parser):
     def save_feature(self, selector: str, element: Tag):
         """手动保存元素特征"""
         feature = element_to_feature(element, selector, self.base_url)
-        self._feature_cache[selector] = feature
+        self._cache_put(selector, feature)
         self._save_feature_to_db(selector, feature)
 
     def clear_cache(self):
         """清除特征缓存"""
         self._feature_cache.clear()
+
+    def _cache_get(self, selector: str) -> Optional[ElementFeature]:
+        feature = self._feature_cache.get(selector)
+        if feature is None:
+            return None
+        self._feature_cache.move_to_end(selector)
+        return feature
+
+    def _cache_put(self, selector: str, feature: ElementFeature) -> None:
+        if selector in self._feature_cache:
+            self._feature_cache.pop(selector, None)
+        self._feature_cache[selector] = feature
+        while len(self._feature_cache) > self._feature_cache_max_entries:
+            self._feature_cache.popitem(last=False)
 
     # ==================== SQLite 持久化方法 ====================
 
@@ -1259,4 +1287,3 @@ class CSSToXPath:
         css = css.replace("[last()]", ":last-child")
 
         return css.strip()
-

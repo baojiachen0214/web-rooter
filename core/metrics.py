@@ -19,9 +19,10 @@
 """
 import time
 import json
+import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
-from collections import defaultdict
+from typing import Dict, List, Any, Optional, Deque
+from collections import defaultdict, deque, OrderedDict
 from datetime import datetime
 import logging
 
@@ -93,27 +94,38 @@ class MetricsCollector:
         print(collector.get_summary())
     """
 
-    def __init__(self, max_history: int = 10000):
+    def __init__(
+        self,
+        max_history: int = 10000,
+        max_domains: Optional[int] = None,
+        max_proxies: Optional[int] = None,
+    ):
         """
         初始化指标收集器
 
         Args:
             max_history: 最大历史记录数
         """
-        self._history: List[RequestMetric] = []
+        self._history: Deque[RequestMetric] = deque(maxlen=max_history)
         self._max_history = max_history
+        self._max_domains = max(
+            1,
+            int(max_domains or os.getenv("WEB_ROOTER_METRICS_MAX_DOMAINS", "512") or 512),
+        )
+        self._max_proxies = max(
+            1,
+            int(max_proxies or os.getenv("WEB_ROOTER_METRICS_MAX_PROXIES", "128") or 128),
+        )
         self._aggregated = CrawlerMetrics()
 
         # 按域名统计
-        self._by_domain: Dict[str, CrawlerMetrics] = defaultdict(CrawlerMetrics)
+        self._by_domain: "OrderedDict[str, CrawlerMetrics]" = OrderedDict()
 
         # 代理统计
-        self._proxy_stats: Dict[str, Dict[str, int]] = defaultdict(
-            lambda: {"success": 0, "failure": 0}
-        )
+        self._proxy_stats: "OrderedDict[str, Dict[str, int]]" = OrderedDict()
 
         # 每秒请求数历史 (用于计算 QPS)
-        self._requests_per_second: List[float] = []
+        self._requests_per_second: Deque[float] = deque(maxlen=60)
         self._last_qps_calculation = time.time()
 
     def record_request(
@@ -149,8 +161,6 @@ class MetricsCollector:
 
         # 添加到历史记录
         self._history.append(metric)
-        if len(self._history) > self._max_history:
-            self._history.pop(0)
 
         # 聚合
         self._aggregated.add_request(metric)
@@ -158,15 +168,31 @@ class MetricsCollector:
 
         # 按域名统计
         domain = self._extract_domain(url)
-        self._by_domain[domain].add_request(metric)
-        self._by_domain[domain].total_bytes += bytes_transferred
+        domain_metrics = self._by_domain.get(domain)
+        if domain_metrics is None:
+            domain_metrics = CrawlerMetrics()
+            self._by_domain[domain] = domain_metrics
+        else:
+            self._by_domain.move_to_end(domain)
+        domain_metrics.add_request(metric)
+        domain_metrics.total_bytes += bytes_transferred
+        while len(self._by_domain) > self._max_domains:
+            self._by_domain.popitem(last=False)
 
         # 代理统计
         if proxy:
-            if 200 <= status_code < 400:
-                self._proxy_stats[proxy]["success"] += 1
+            proxy_stats = self._proxy_stats.get(proxy)
+            if proxy_stats is None:
+                proxy_stats = {"success": 0, "failure": 0}
+                self._proxy_stats[proxy] = proxy_stats
             else:
-                self._proxy_stats[proxy]["failure"] += 1
+                self._proxy_stats.move_to_end(proxy)
+            if 200 <= status_code < 400:
+                proxy_stats["success"] += 1
+            else:
+                proxy_stats["failure"] += 1
+            while len(self._proxy_stats) > self._max_proxies:
+                self._proxy_stats.popitem(last=False)
 
         # 更新 QPS
         self._update_qps()
@@ -187,10 +213,6 @@ class MetricsCollector:
             if elapsed > 0:
                 qps = self._aggregated.total_requests / elapsed
                 self._requests_per_second.append(qps)
-
-                # 只保留最近 60 秒
-                if len(self._requests_per_second) > 60:
-                    self._requests_per_second.pop(0)
 
             self._last_qps_calculation = now
 
@@ -231,7 +253,7 @@ class MetricsCollector:
                 "requests": metrics.total_requests,
                 "success_rate": metrics.successful_requests / max(1, metrics.total_requests),
             }
-            for domain, metrics in list(self._by_domain.items())[:10]  # 前 10 个域名
+            for domain, metrics in list(self._by_domain.items())[-10:]  # 最近 10 个域名窗口
         }
 
         # 代理统计

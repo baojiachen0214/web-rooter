@@ -288,7 +288,12 @@ class Crawler:
                 use_memory=True,
                 use_sqlite=True,
                 db_path=cache_db_path,
+                memory_max_size=self.config.CACHE_MEMORY_MAX_ENTRIES,
+                memory_max_bytes=self.config.CACHE_MEMORY_MAX_BYTES,
+                sqlite_max_size=self.config.CACHE_SQLITE_MAX_ENTRIES,
                 default_ttl=cache_ttl,
+                memory_max_body_bytes=self.config.CACHE_MEMORY_BODY_MAX_BYTES,
+                sqlite_max_body_bytes=self.config.CACHE_SQLITE_BODY_MAX_BYTES,
             )
             logger.info("Request cache enabled")
 
@@ -532,16 +537,59 @@ class Crawler:
     ) -> CrawlResult:
         """处理响应"""
         response_time = asyncio.get_event_loop().time() - start_time
+        body_limit = min(
+            max(1, int(self.config.MAX_IN_MEMORY_RESPONSE_BYTES)),
+            max(1, int(self.config.MAX_FILE_SIZE)),
+        )
+        body_bytes, truncated = await self._read_response_body(response, body_limit)
+        charset = response.charset or "utf-8"
+        html = body_bytes.decode(charset, errors="ignore")
 
         return CrawlResult(
             url=str(response.url),
             status_code=response.status,
-            html=await response.text(errors="ignore"),
+            html=html,
             headers=dict(response.headers),
             cookies={k: v.value for k, v in response.cookies.items()},
             response_time=response_time,
-            metadata={"from_cache": False, "connection_pool_used": self._connection_pool is not None},
+            metadata={
+                "from_cache": False,
+                "connection_pool_used": self._connection_pool is not None,
+                "body_bytes": len(body_bytes),
+                "body_truncated": truncated,
+                "body_limit_bytes": body_limit,
+            },
         )
+
+    async def _read_response_body(
+        self,
+        response: aiohttp.ClientResponse,
+        limit_bytes: int,
+    ) -> tuple[bytes, bool]:
+        """
+        Stream response content with a hard cap so a single oversized page does not
+        blow up the Python process.
+        """
+        body = bytearray()
+        truncated = False
+
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            if not chunk:
+                continue
+            remaining = limit_bytes - len(body)
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(chunk) > remaining:
+                body.extend(chunk[:remaining])
+                truncated = True
+                break
+            body.extend(chunk)
+
+        if truncated:
+            response.close()
+
+        return bytes(body), truncated
 
     async def fetch_with_retry(
         self,

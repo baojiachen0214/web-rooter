@@ -8,17 +8,13 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 import logging
 
-from core.crawler import Crawler, CrawlResult
-from core.parser import Parser, ExtractedData
-from core.browser import BrowserManager, BrowserResult
 from core.search.engine import (
     SearchEngine,
-    SearchResponse,
     SearchResult,
     MultiSearchEngine,
 )
@@ -63,7 +59,13 @@ from core.command_ir import (
     has_lint_errors,
 )
 from core.trace_distill import distill_workflow_trace
+from core.runtime_state import PageSnapshot
+from core.research_kernel import ResearchKernel
 from config import crawler_config
+
+if TYPE_CHECKING:
+    from core.crawler import CrawlResult
+    from core.browser import BrowserResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -89,18 +91,6 @@ class AgentResponse:
             "metadata": self.metadata,
         }
 
-
-@dataclass
-class PageKnowledge:
-    """页面知识缓存"""
-    url: str
-    title: str
-    content: str
-    links: List[Dict[str, str]]
-    extracted_info: Dict[str, Any]
-    timestamp: datetime = field(default_factory=datetime.now)
-
-
 class WebAgent:
     """
     AI Web Agent
@@ -109,17 +99,11 @@ class WebAgent:
     """
 
     def __init__(self):
-        self._crawler: Optional[Crawler] = None
-        self._browser: Optional[BrowserManager] = None
-        self._browser_init_lock = asyncio.Lock()
+        self._kernel: Optional[ResearchKernel] = None
+        self._browser = None  # backward-compatible access for MCP helper paths
         self._search_engine: Optional[MultiSearchEngine] = None
         self._academic_engine: Optional[AcademicSearchEngine] = None
         self._form_filler: Optional[FormFiller] = None
-        self._cache: Dict[str, PageKnowledge] = {}
-        self._visited_urls: set = set()
-        self._knowledge_base: List[PageKnowledge] = []
-        self._search_cache: Dict[str, SearchResponse] = {}
-        self._academic_cache: Dict[str, List[PaperResult]] = {}
 
     async def __aenter__(self) -> "WebAgent":
         await self._init()
@@ -130,30 +114,30 @@ class WebAgent:
 
     async def _init(self):
         """初始化"""
-        self._crawler = Crawler()
+        if self._kernel is not None:
+            return
+        self._kernel = ResearchKernel()
+        await self._kernel.start()
         self._browser = None  # 延迟初始化
 
     async def _ensure_browser(self):
         """确保浏览器已初始化"""
-        if self._browser is not None:
-            return
-        async with self._browser_init_lock:
-            if self._browser is None:
-                self._browser = BrowserManager()
-                await self._browser.start()
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
+        self._browser = await self._kernel.ensure_browser()
 
     async def close(self):
         """关闭"""
-        if self._crawler:
-            await self._crawler.close()
-        if self._browser:
-            await self._browser.close()
+        if self._kernel:
+            await self._kernel.close()
         if self._search_engine:
             await self._search_engine.close()
         if self._academic_engine:
             await self._academic_engine.close()
         if self._form_filler:
             await self._form_filler.close()
+        self._kernel = None
         self._browser = None
         self._search_engine = None
         self._academic_engine = None
@@ -173,125 +157,24 @@ class WebAgent:
         Returns:
             AgentResponse: 访问结果
         """
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-
-        self._visited_urls.add(url)
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
 
         try:
-            if use_browser:
-                result = await self._browser_fetch(url)
-                # BrowserResult 使用 error 字段判断成功与否
-                if result.error is None and result.html:
-                    # 解析内容
-                    parser = Parser().parse(result.html, url)
-                    extracted = parser.extract()
-
-                    # 缓存知识
-                    knowledge = PageKnowledge(
-                        url=url,
-                        title=extracted.title,
-                        content=extracted.text,
-                        links=extracted.links[:20],  # 限制链接数量
-                        extracted_info=extracted.metadata,
-                    )
-                    self._cache[url] = knowledge
-                    self._knowledge_base.append(knowledge)
-
-                    return AgentResponse(
-                        success=True,
-                        content=f"已访问：{extracted.title}\n\n{extracted.text[:2000]}",
-                        data=extracted.to_dict(),
-                        urls=[link["href"] for link in extracted.links[:10]],
-                        metadata={
-                            "url": result.url,
-                            "title": result.title,
-                            "login_wall": (result.metadata or {}).get("login_wall"),
-                            "login_hint": (result.metadata or {}).get("login_hint"),
-                            "auth": (result.metadata or {}).get("auth"),
-                        },
-                    )
-                else:
-                    return AgentResponse(
-                        success=False,
-                        content=f"访问失败：{url}",
-                        error=result.error or "Empty content",
-                    )
-            else:
-                result = await self._crawler_fetch(url)
-
-                if result.success:
-                    # 解析内容
-                    parser = Parser().parse(result.html, url)
-                    extracted = parser.extract()
-
-                    # 缓存知识
-                    knowledge = PageKnowledge(
-                        url=url,
-                        title=extracted.title,
-                        content=extracted.text,
-                        links=extracted.links[:20],  # 限制链接数量
-                        extracted_info=extracted.metadata,
-                    )
-                    self._cache[url] = knowledge
-                    self._knowledge_base.append(knowledge)
-
-                    return AgentResponse(
-                        success=True,
-                        content=f"已访问：{extracted.title}\n\n{extracted.text[:2000]}",
-                        data=extracted.to_dict(),
-                        urls=[link["href"] for link in extracted.links[:10]],
-                        metadata={
-                            "status_code": result.status_code,
-                            "response_time": result.response_time,
-                            "fetch_mode": "http",
-                        },
-                    )
-                elif auto_fallback and self._should_fallback_to_browser(result):
-                    logger.info("HTTP fetch failed for %s, trying browser fallback", url)
-                    browser_result = await self._browser_fetch(url)
-
-                    if browser_result.error is None and browser_result.html:
-                        parser = Parser().parse(browser_result.html, url)
-                        extracted = parser.extract()
-
-                        knowledge = PageKnowledge(
-                            url=url,
-                            title=extracted.title,
-                            content=extracted.text,
-                            links=extracted.links[:20],
-                            extracted_info=extracted.metadata,
-                        )
-                        self._cache[url] = knowledge
-                        self._knowledge_base.append(knowledge)
-
-                        return AgentResponse(
-                            success=True,
-                            content=f"已访问：{extracted.title}\n\n{extracted.text[:2000]}",
-                            data=extracted.to_dict(),
-                            urls=[link["href"] for link in extracted.links[:10]],
-                            metadata={
-                                "url": browser_result.url,
-                                "title": browser_result.title,
-                                "fetch_mode": "browser_fallback",
-                                "fallback_reason": result.error or f"status={result.status_code}",
-                            },
-                        )
-
-                    return AgentResponse(
-                        success=False,
-                        content=f"访问失败：{url}",
-                        error=(
-                            f"HTTP失败：{result.error or result.status_code}; "
-                            f"浏览器兜底失败：{browser_result.error or 'Empty content'}"
-                        ),
-                    )
-                else:
-                    return AgentResponse(
-                        success=False,
-                        content=f"访问失败：{url}",
-                        error=result.error,
-                    )
+            result = await self._kernel.visit(url, use_browser=use_browser, auto_fallback=auto_fallback)
+            if not result.success or not result.payload:
+                normalized_url = self._kernel.normalize_url(url)
+                return AgentResponse(
+                    success=False,
+                    content=f"访问失败：{normalized_url}",
+                    error=result.error,
+                    metadata=result.metadata,
+                )
+            return self._build_visit_response(
+                payload=result.payload,
+                metadata=result.metadata,
+            )
 
         except Exception as e:
             logger.exception(f"Error visiting {url}")
@@ -315,95 +198,39 @@ class WebAgent:
         - visit 偏向结构化抽取与文本摘要
         - fetch_html 直接返回 HTML 片段，便于 AI 自行分析 DOM 结构
         """
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-
-        max_chars = max(1000, min(max_chars, 300000))
-        html = ""
-        title = ""
-        fetch_mode = "http"
-        final_url = url
-        status_code: Optional[int] = None
-        metadata: Dict[str, Any] = {}
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
 
         try:
-            if use_browser:
-                browser_result = await self._browser_fetch(url)
-                if browser_result.error:
-                    return AgentResponse(
-                        success=False,
-                        content=f"HTML 获取失败：{url}",
-                        error=browser_result.error,
-                    )
-                html = browser_result.html or ""
-                title = browser_result.title or ""
-                final_url = browser_result.url or url
-                fetch_mode = "browser"
-                metadata = browser_result.metadata or {}
-            else:
-                crawler_result = await self._crawler_fetch(url)
-                if crawler_result.success:
-                    html = crawler_result.html or ""
-                    status_code = crawler_result.status_code
-                    final_url = crawler_result.url or url
-                    fetch_mode = "http"
-                elif auto_fallback and self._should_fallback_to_browser(crawler_result):
-                    browser_result = await self._browser_fetch(url)
-                    if browser_result.error:
-                        return AgentResponse(
-                            success=False,
-                            content=f"HTML 获取失败：{url}",
-                            error=(
-                                f"HTTP失败（{crawler_result.error or crawler_result.status_code}）；"
-                                f"Browser失败（{browser_result.error}）"
-                            ),
-                        )
-                    html = browser_result.html or ""
-                    title = browser_result.title or ""
-                    final_url = browser_result.url or url
-                    fetch_mode = "browser_fallback"
-                    metadata = browser_result.metadata or {}
-                else:
-                    return AgentResponse(
-                        success=False,
-                        content=f"HTML 获取失败：{url}",
-                        error=crawler_result.error or f"status={crawler_result.status_code}",
-                    )
-
-            parser = Parser().parse(html, final_url)
-            extracted = parser.extract()
-            if not title:
-                title = extracted.title or ""
-            links = extracted.links[:50]
-            text_preview = (extracted.text or "")[:2000]
-
-            truncated = len(html) > max_chars
-            html_view = html[:max_chars]
+            result = await self._kernel.fetch_html(
+                url=url,
+                use_browser=use_browser,
+                auto_fallback=auto_fallback,
+                max_chars=max_chars,
+            )
+            if not result.success or not result.data:
+                normalized_url = self._kernel.normalize_url(url)
+                return AgentResponse(
+                    success=False,
+                    content=f"HTML 获取失败：{normalized_url}",
+                    error=result.error,
+                    metadata=result.metadata,
+                )
             return AgentResponse(
                 success=True,
                 content=(
-                    f"已获取 HTML：{title or final_url}\n"
-                    f"模式：{fetch_mode}\n"
-                    f"长度：{len(html)} 字符"
+                    f"已获取 HTML：{result.data.get('title') or result.data.get('url')}\n"
+                    f"模式：{result.data.get('fetch_mode')}\n"
+                    f"长度：{result.data.get('html_chars')} 字符"
                 ),
-                data={
-                    "url": final_url,
-                    "title": title,
-                    "html": html_view,
-                    "html_truncated": truncated,
-                    "html_chars": len(html),
-                    "text_preview": text_preview,
-                    "links": links,
-                    "fetch_mode": fetch_mode,
-                    "status_code": status_code,
-                },
-                urls=[item.get("href") for item in links if isinstance(item, dict) and item.get("href")][:30],
-                metadata={
-                    "fetch_mode": fetch_mode,
-                    "status_code": status_code,
-                    "login_wall": metadata.get("login_wall") if isinstance(metadata, dict) else None,
-                    "login_hint": metadata.get("login_hint") if isinstance(metadata, dict) else None,
-                },
+                data=result.data,
+                urls=[
+                    item.get("href")
+                    for item in (result.data.get("links", []) if isinstance(result.data.get("links"), list) else [])
+                    if isinstance(item, dict) and item.get("href")
+                ][:30],
+                metadata=result.metadata,
             )
         except Exception as e:
             logger.exception("Error fetching html from %s", url)
@@ -427,13 +254,17 @@ class WebAgent:
         results = []
 
         # 如果指定了 URL，先访问
-        if url and url not in self._cache:
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
+
+        if url and not self._kernel.has_page(url):
             visit_result = await self.visit(url)
             if not visit_result.success:
                 return visit_result
 
         # 在所有已知内容中搜索
-        for knowledge in self._knowledge_base:
+        for knowledge in self._kernel.iter_pages():
             if query.lower() in knowledge.content.lower():
                 # 找到相关段落
                 content_snippets = self._find_relevant_snippets(
@@ -475,7 +306,11 @@ class WebAgent:
         if not visit_result.success:
             return visit_result
 
-        knowledge = self._cache.get(url)
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
+
+        knowledge = self._kernel.get_page(url)
         if not knowledge:
             return AgentResponse(
                 success=False,
@@ -882,7 +717,10 @@ class WebAgent:
         # 第二步：访问结果页面（如果还没访问过）
         visited = []
         for url in search_result.urls[:num_results]:
-            if url not in self._visited_urls:
+            if self._kernel is None:
+                await self._init()
+            assert self._kernel is not None
+            if not self._kernel.has_visited(url):
                 visit_result = await self.visit(url)
                 if visit_result.success:
                     visited.append({
@@ -2280,9 +2118,6 @@ class WebAgent:
         if include_code and code_sources:
             code_projects = await self._academic_engine.search_code(query, code_sources, num_results)
 
-        # 缓存结果
-        self._academic_cache[query] = papers
-
         paper_dicts = [p.to_dict() for p in papers]
         code_dicts = [c.to_dict() for c in code_projects]
         citations = build_paper_citations(paper_dicts, query=query, prefix="P")
@@ -2586,41 +2421,27 @@ class WebAgent:
 
     # ==================== 内部方法 ====================
 
-    async def _crawler_fetch(self, url: str) -> CrawlResult:
+    async def _crawler_fetch(self, url: str) -> Any:
         """使用爬虫获取"""
-        return await self._crawler.fetch_with_retry(url)
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
+        return await self._kernel.crawler_fetch(url)
 
-    async def _browser_fetch(self, url: str) -> BrowserResult:
+    async def _browser_fetch(self, url: str) -> Any:
         """使用浏览器获取"""
-        await self._ensure_browser()
-        result = await self._browser.fetch(url)
-        if (
-            result.error is None
-            and result.cookies
-            and self._crawler is not None
-        ):
-            try:
-                injected = await self._crawler.seed_cookies(result.url or url, result.cookies)
-                if injected > 0:
-                    logger.info("已同步 %s 个浏览器 cookies 到 HTTP 会话: %s", injected, result.url or url)
-            except Exception as exc:
-                logger.debug("浏览器 cookie 同步失败（忽略） %s: %s", url, exc)
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
+        result = await self._kernel.browser_fetch(url)
+        self._browser = self._kernel.browser
         return result
 
-    def _should_fallback_to_browser(self, result: CrawlResult) -> bool:
+    def _should_fallback_to_browser(self, result: Any) -> bool:
         """判断是否需要从 HTTP 抓取兜底到浏览器抓取。"""
-        if result.success:
+        if self._kernel is None:
             return False
-
-        if result.status_code in {0, 401, 403, 404, 406, 408, 409, 410, 412, 418, 421, 425, 426, 429, 451, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525}:
-            return True
-
-        error_text = (result.error or "").lower()
-        fallback_keywords = [
-            "timeout", "ssl", "cloudflare", "captcha", "forbidden", "blocked",
-            "connection", "reset", "refused", "challenge", "javascript",
-        ]
-        return any(keyword in error_text for keyword in fallback_keywords)
+        return self._kernel.should_fallback_to_browser(result)
 
     def _find_relevant_snippets(
         self,
@@ -2656,10 +2477,32 @@ class WebAgent:
             output.append("")
         return "\n".join(output)
 
-    def _intelligent_extract(self, knowledge: PageKnowledge, target: str) -> str:
+    def _build_visit_response(
+        self,
+        *,
+        payload: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AgentResponse:
+        title = str(payload.get("title", "")).strip()
+        text = str(payload.get("text", ""))
+        links = payload.get("links", [])
+        urls = []
+        if isinstance(links, list):
+            for item in links[:10]:
+                if isinstance(item, dict) and item.get("href"):
+                    urls.append(str(item["href"]))
+
+        return AgentResponse(
+            success=True,
+            content=f"已访问：{title}\n\n{text[:2000]}",
+            data=payload,
+            urls=urls,
+            metadata=metadata or {},
+        )
+
+    def _intelligent_extract(self, knowledge: PageSnapshot, target: str) -> str:
         """智能提取信息"""
         content = knowledge.content
-        target_lower = target.lower()
 
         # 关键词匹配
         keywords = self._extract_keywords(target)
@@ -2686,19 +2529,106 @@ class WebAgent:
 
     def get_visited_urls(self) -> List[str]:
         """获取已访问的 URL"""
-        return list(self._visited_urls)
+        if self._kernel is None:
+            return []
+        return self._kernel.get_visited_urls()
 
     def get_knowledge_base(self) -> List[Dict[str, Any]]:
         """获取知识库"""
-        return [
-            {
-                "url": k.url,
-                "title": k.title,
-                "content_preview": k.content[:500],
-                "links_count": len(k.links),
+        if self._kernel is None:
+            return []
+        return self._kernel.get_knowledge_base()
+
+    def get_runtime_state_stats(self) -> Dict[str, Any]:
+        """获取运行时状态预算与占用情况。"""
+        if self._kernel is None:
+            return {}
+        return self._kernel.get_runtime_state_stats()
+
+    def get_runtime_events_snapshot(
+        self,
+        limit: int = 50,
+        event_type: Optional[str] = None,
+        source: Optional[str] = None,
+        since_seq: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """获取运行时事件流快照。"""
+        if self._kernel is None:
+            return {
+                "stats": {},
+                "filters": {
+                    "limit": max(1, limit),
+                    "event_type": event_type,
+                    "source": source,
+                    "since_seq": since_seq,
+                },
+                "events": [],
+                "truncated": False,
+                "next_cursor": since_seq or 0,
             }
-            for k in self._knowledge_base
-        ]
+        return self._kernel.get_runtime_events_snapshot(
+            limit=limit,
+            event_type=event_type,
+            source=source,
+            since_seq=since_seq,
+        )
+
+    def get_runtime_events_stats(self) -> Dict[str, Any]:
+        """获取运行时事件流统计。"""
+        if self._kernel is None:
+            return {}
+        return self._kernel.get_runtime_events_stats()
+
+    def get_runtime_pressure_snapshot(self, refresh: bool = True) -> Dict[str, Any]:
+        """获取运行时压力快照。"""
+        if self._kernel is None:
+            return {
+                "level": "normal",
+                "previous_level": "normal",
+                "changed": False,
+                "reason": "kernel_uninitialized",
+                "memory": {},
+                "errors": {},
+                "limits": {},
+            }
+        return self._kernel.get_runtime_pressure_snapshot(refresh=refresh)
+
+    def get_runtime_pressure_stats(self) -> Dict[str, Any]:
+        """获取运行时压力统计。"""
+        if self._kernel is None:
+            return {}
+        return self._kernel.get_runtime_pressure_stats()
+
+    def get_artifact_graph_snapshot(
+        self,
+        node_limit: int = 80,
+        edge_limit: int = 200,
+        node_kind: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """获取运行时 artifact graph 快照。"""
+        if self._kernel is None:
+            return {
+                "nodes": [],
+                "edges": [],
+                "stats": {},
+                "filters": {
+                    "node_kind": node_kind,
+                    "node_limit": max(1, node_limit),
+                    "edge_limit": max(1, edge_limit),
+                },
+                "truncated": {"nodes": False, "edges": False},
+            }
+        return self._kernel.get_artifact_graph_snapshot(
+            node_limit=node_limit,
+            edge_limit=edge_limit,
+            node_kind=node_kind,
+        )
+
+    def get_artifact_graph_stats(self) -> Dict[str, Any]:
+        """获取 artifact graph 占用统计。"""
+        if self._kernel is None:
+            return {}
+        return self._kernel.get_artifact_graph_stats()
 
     async def fetch_all(self, urls: List[str]) -> AgentResponse:
         """批量获取多个页面"""

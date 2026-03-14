@@ -70,19 +70,25 @@ class ResultQueue:
             print(item)
     """
 
-    def __init__(self, maxsize: int = 100):
+    def __init__(self, maxsize: int = 100, overflow_strategy: str = "block"):
         """
         初始化结果队列
 
         Args:
             maxsize: 队列最大大小 (用于背压控制), 0 表示无限制
+            overflow_strategy: 队列满时策略，支持 block/drop_oldest/drop_new
         """
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._closed = False
         self._consumers: Set[asyncio.Task] = set()
         self._items_put = 0
         self._items_got = 0
+        self._items_dropped = 0
         self._maxsize = maxsize
+        normalized_strategy = str(overflow_strategy or "block").strip().lower()
+        if normalized_strategy not in {"block", "drop_oldest", "drop_new"}:
+            normalized_strategy = "block"
+        self._overflow_strategy = normalized_strategy
 
     async def put(
         self,
@@ -108,6 +114,8 @@ class ResultQueue:
         stream_item = StreamItem(data=item, item_type=item_type)
 
         try:
+            if not self._prepare_put():
+                return False
             if timeout is not None:
                 await asyncio.wait_for(
                     self._queue.put(stream_item),
@@ -178,6 +186,8 @@ class ResultQueue:
 
         try:
             stream_item = StreamItem(data=item, item_type=item_type)
+            if not self._prepare_put():
+                return False
             self._queue.put_nowait(stream_item)
             self._items_put += 1
             return True
@@ -230,16 +240,35 @@ class ResultQueue:
         """是否已关闭"""
         return self._closed
 
+    def _prepare_put(self) -> bool:
+        if self._maxsize <= 0 or not self._queue.full():
+            return True
+
+        if self._overflow_strategy == "drop_new":
+            self._items_dropped += 1
+            return False
+
+        if self._overflow_strategy == "drop_oldest":
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+                self._items_dropped += 1
+            except asyncio.QueueEmpty:
+                return True
+        return True
+
     def get_stats(self) -> dict:
         """获取统计信息"""
         return {
             "items_put": self._items_put,
             "items_got": self._items_got,
+            "items_dropped": self._items_dropped,
             "current_size": self._queue.qsize(),
             "maxsize": self._maxsize,
             "is_full": self.is_full(),
             "is_empty": self.is_empty(),
             "closed": self._closed,
+            "overflow_strategy": self._overflow_strategy,
         }
 
 
@@ -320,4 +349,3 @@ class StreamConsumer:
             "consumer_count": len(self._tasks),
             "is_running": self._running,
         }
-

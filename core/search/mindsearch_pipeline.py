@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple, U
 from core.citation import build_comparison_summary, build_web_citations, format_reference_block
 from core.global_context import get_global_deep_context
 from core.postprocess import PostProcessContext, run_post_processors
+from core.result_queue import ResultQueue
 from core.search.advanced import DeepSearchEngine
 from core.search.research_planner import is_chinese_text, resolve_research_planner
 
@@ -88,6 +89,10 @@ class MindSearchPipeline:
         self.use_english = use_english
         self.channel_profiles = list(channel_profiles or [])
         self.max_nodes = max_nodes or int(os.getenv("WEB_ROOTER_MINDSEARCH_MAX_NODES", "14") or 14)
+        self.max_stream_queue_size = max(
+            1,
+            int(os.getenv("WEB_ROOTER_MINDSEARCH_STREAM_QUEUE_SIZE", "128") or 128),
+        )
         self.planner_name = (planner_name or "").strip() or None
         strict_env = str(os.getenv("WEB_ROOTER_MINDSEARCH_STRICT", "0") or "0").strip().lower()
         strict_default = strict_env in {"1", "true", "yes", "on"}
@@ -244,22 +249,32 @@ class MindSearchPipeline:
         """
         流式执行，输出 MindSearch 风格事件。
         """
-        queue: asyncio.Queue = asyncio.Queue()
+        queue = ResultQueue(
+            maxsize=self.max_stream_queue_size,
+            overflow_strategy="drop_oldest",
+        )
 
         async def _emit(event: str, data: Dict[str, Any]) -> None:
-            await queue.put({"event": event, "data": data})
+            item = {"event": event, "data": data}
+            queue.put_nowait(item, item_type="event")
 
         task = asyncio.create_task(self.run(query, event_callback=_emit))
         try:
             while True:
-                if task.done() and queue.empty():
+                if task.done() and queue.is_empty():
                     break
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=0.6)
-                    yield item
-                except asyncio.TimeoutError:
-                    continue
+                item = await queue.get(timeout=0.6)
+                if item is not None:
+                    yield item.data
             result = await task
+            queue_stats = queue.get_stats()
+            result.setdefault("stream", {})
+            result["stream"].update(
+                {
+                    "queue_max_size": self.max_stream_queue_size,
+                    "dropped_events": queue_stats["items_dropped"],
+                }
+            )
             yield {"event": "complete", "data": result}
         except Exception:
             if not task.done():

@@ -19,7 +19,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
-from playwright.async_api import Page
+try:
+    from playwright.async_api import Page
+except ModuleNotFoundError:  # pragma: no cover - optional runtime dependency
+    Page = Any  # type: ignore[misc,assignment]
 
 logger = logging.getLogger(__name__)
 

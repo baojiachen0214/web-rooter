@@ -11,6 +11,7 @@ import asyncio
 import pickle
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Set, Tuple
 from dataclasses import dataclass, field
@@ -22,6 +23,11 @@ from .request import Request
 from .response import Response
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SCHEDULER_MAX_QUEUE_SIZE = max(
+    1,
+    int(os.getenv("WEB_ROOTER_SCHEDULER_MAX_QUEUE_SIZE", "2048") or 2048),
+)
 
 
 @dataclass
@@ -236,7 +242,7 @@ class PriorityQueues:
 class SchedulerConfig:
     """调度器配置"""
     # 队列最大大小
-    max_queue_size: int = 0  # 0 表示无限制
+    max_queue_size: int = DEFAULT_SCHEDULER_MAX_QUEUE_SIZE
 
     # 域名请求限制
     max_requests_per_domain: int = 0  # 0 表示无限制
@@ -586,7 +592,7 @@ class Scheduler:
 
 async def create_scheduler(
     concurrent_requests: int = 16,
-    max_queue_size: int = 0,
+    max_queue_size: Optional[int] = None,
     max_per_domain: int = 0,
     download_delay: float = 0.0,
     persist: bool = False,
@@ -597,7 +603,7 @@ async def create_scheduler(
 
     Args:
         concurrent_requests: 并发请求数
-        max_queue_size: 队列最大大小
+        max_queue_size: 队列最大大小，None 时使用默认有界预算
         max_per_domain: 每域名最大请求数
         download_delay: 下载延迟
         persist: 是否持久化
@@ -608,7 +614,7 @@ async def create_scheduler(
     """
     config = SchedulerConfig(
         concurrent_requests=concurrent_requests,
-        max_queue_size=max_queue_size,
+        max_queue_size=DEFAULT_SCHEDULER_MAX_QUEUE_SIZE if max_queue_size is None else max_queue_size,
         max_requests_per_domain=max_per_domain,
         download_delay=download_delay,
         persist=persist,
@@ -617,4 +623,3 @@ async def create_scheduler(
     scheduler = Scheduler(config)
     await scheduler.open()
     return scheduler
-

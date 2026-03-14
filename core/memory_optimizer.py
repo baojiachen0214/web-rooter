@@ -10,12 +10,16 @@
 import asyncio
 import gc
 import logging
-import psutil
 import os
 from typing import Optional, Set, Dict, Any
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+try:
+    import psutil
+except ModuleNotFoundError:  # pragma: no cover - optional runtime dependency
+    psutil = None  # type: ignore[assignment]
 
 
 class MemoryOptimizer:
@@ -102,6 +106,16 @@ class MemoryOptimizer:
 
     def check_memory_usage(self) -> Dict[str, Any]:
         """检查当前内存使用情况"""
+        if psutil is None:
+            return {
+                "rss_mb": 0.0,
+                "vms_mb": 0.0,
+                "percent": 0.0,
+                "tracked_caches": len(self._tracked_caches),
+                "temp_results": len(self._temp_results),
+                "psutil_available": False,
+            }
+
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
 
@@ -111,6 +125,7 @@ class MemoryOptimizer:
             "percent": process.memory_percent(),
             "tracked_caches": len(self._tracked_caches),
             "temp_results": len(self._temp_results),
+            "psutil_available": True,
         }
 
     def should_cleanup(self) -> bool:

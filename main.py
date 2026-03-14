@@ -121,6 +121,15 @@ class WebRooterCLI:
         "mindsearch",
         "ms",
         "context",
+        "artifact",
+        "artifacts",
+        "graph",
+        "events",
+        "runtime-events",
+        "runtime_events",
+        "pressure",
+        "runtime-pressure",
+        "runtime_pressure",
         "processors",
         "postprocessors",
         "planners",
@@ -1080,6 +1089,80 @@ class WebRooterCLI:
 
             snapshot = self.agent.get_global_context_snapshot(limit=limit, event_type=event_type)
             self._print_result({"success": True, "context": snapshot})
+
+        elif command in {"artifact", "artifacts", "graph"}:
+            node_limit = 80
+            edge_limit = 200
+            node_kind: Optional[str] = None
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--nodes="):
+                    node_limit = self._parse_option_int(arg.split("=", 1)[1], node_limit)
+                elif arg == "--nodes" and i + 1 < len(args):
+                    i += 1
+                    node_limit = self._parse_option_int(args[i], node_limit)
+                elif arg.startswith("--edges="):
+                    edge_limit = self._parse_option_int(arg.split("=", 1)[1], edge_limit)
+                elif arg == "--edges" and i + 1 < len(args):
+                    i += 1
+                    edge_limit = self._parse_option_int(args[i], edge_limit)
+                elif arg.startswith("--kind="):
+                    node_kind = arg.split("=", 1)[1].strip() or None
+                elif arg == "--kind" and i + 1 < len(args):
+                    i += 1
+                    node_kind = args[i].strip() or None
+                i += 1
+
+            snapshot = self.agent.get_artifact_graph_snapshot(
+                node_limit=node_limit,
+                edge_limit=edge_limit,
+                node_kind=node_kind,
+            )
+            self._print_result({"success": True, "artifact_graph": snapshot})
+
+        elif command in {"events", "runtime-events", "runtime_events"}:
+            limit = 50
+            event_type: Optional[str] = None
+            source: Optional[str] = None
+            since_seq: Optional[int] = None
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg.startswith("--limit="):
+                    limit = self._parse_option_int(arg.split("=", 1)[1], limit)
+                elif arg == "--limit" and i + 1 < len(args):
+                    i += 1
+                    limit = self._parse_option_int(args[i], limit)
+                elif arg.startswith("--event="):
+                    event_type = arg.split("=", 1)[1].strip() or None
+                elif arg == "--event" and i + 1 < len(args):
+                    i += 1
+                    event_type = args[i].strip() or None
+                elif arg.startswith("--source="):
+                    source = arg.split("=", 1)[1].strip() or None
+                elif arg == "--source" and i + 1 < len(args):
+                    i += 1
+                    source = args[i].strip() or None
+                elif arg.startswith("--since="):
+                    since_seq = self._parse_option_int(arg.split("=", 1)[1], 0)
+                elif arg == "--since" and i + 1 < len(args):
+                    i += 1
+                    since_seq = self._parse_option_int(args[i], 0)
+                i += 1
+
+            snapshot = self.agent.get_runtime_events_snapshot(
+                limit=limit,
+                event_type=event_type,
+                source=source,
+                since_seq=since_seq,
+            )
+            self._print_result({"success": True, "runtime_events": snapshot})
+
+        elif command in {"pressure", "runtime-pressure", "runtime_pressure"}:
+            refresh = "--no-refresh" not in args
+            snapshot = self.agent.get_runtime_pressure_snapshot(refresh=refresh)
+            self._print_result({"success": True, "runtime_pressure": snapshot})
 
         elif command in {"processors", "postprocessors"}:
             specs: List[str] = []
@@ -2499,6 +2582,11 @@ Web-Rooter 可用命令:
                                   - 连接 GitHub 检查/选择并更新本地版本（git 仓库）
   doctor                          - 环境自检（依赖/浏览器/抓取链路）
   context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
+  artifact [--nodes=N] [--edges=N] [--kind=page|url|domain|request|session]
+                                  - 查看运行时 artifact graph 快照（有预算上限）
+  events [--limit=N] [--event=type] [--source=name] [--since=seq]
+                                  - 查看运行时事件流快照（支持游标增量拉取）
+  pressure [--no-refresh]         - 查看运行时压力级别与自适应降级限制
   processors [--load=module:obj] [--force] - 查看/加载抓取后处理扩展
   planners [--load=module:obj] [--force] - 查看/加载 MindSearch planner 扩展
   challenge-profiles              - 查看 challenge workflow 路由档案
@@ -2544,6 +2632,10 @@ Web-Rooter 可用命令:
   academic "RAG evaluation" --with-code --num-results=15 --source=github
   export "AI 新闻" ai_news.json
   context --limit=30
+  artifact --nodes=100 --edges=240 --kind=page
+  events --event=visit_complete --limit=30
+  events --since=120
+  pressure
   processors --load=plugins/post_processors/my_proc.py:create_processor --force
   planners --load=plugins/planners/my_planner.py:create_planner --force
   challenge-profiles

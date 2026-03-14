@@ -16,9 +16,40 @@ from datetime import datetime
 from urllib.parse import quote_plus, urlparse, urljoin
 import logging
 
-from core.crawler import Crawler, CrawlResult
-from core.parser import Parser, ExtractedData
-from core.browser import BrowserManager, BrowserResult
+try:
+    from core.parser import Parser, ExtractedData
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Parser = None  # type: ignore[assignment]
+    ExtractedData = Any  # type: ignore[misc,assignment]
+    _PARSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _PARSER_IMPORT_ERROR = None
+
+try:
+    from core.crawler import Crawler, CrawlResult
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    Crawler = None  # type: ignore[assignment]
+    CrawlResult = Any  # type: ignore[misc,assignment]
+    _CRAWLER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _CRAWLER_IMPORT_ERROR = None
+
+try:
+    from core.browser import BrowserManager, BrowserResult
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime dependency
+    BrowserManager = None  # type: ignore[assignment]
+    BrowserResult = Any  # type: ignore[misc,assignment]
+    _BROWSER_IMPORT_ERROR: Optional[Exception] = exc
+else:
+    _BROWSER_IMPORT_ERROR = None
+
+
+def _build_parser():
+    if Parser is None:
+        raise RuntimeError(
+            "HTML parser runtime is unavailable. Install optional dependencies from requirements.txt."
+        ) from _PARSER_IMPORT_ERROR
+    return Parser()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -107,11 +138,19 @@ class FormFiller:
 
     def __init__(self, browser: Optional[BrowserManager] = None):
         self._browser = browser
+        if Crawler is None:
+            raise RuntimeError(
+                "Form search runtime is unavailable. Install optional dependencies from requirements.txt."
+            ) from _CRAWLER_IMPORT_ERROR
         self._crawler = Crawler()
 
     async def _ensure_browser(self):
         """确保浏览器已初始化"""
         if self._browser is None:
+            if BrowserManager is None:
+                raise RuntimeError(
+                    "Browser runtime is unavailable. Install optional dependencies from requirements.txt."
+                ) from _BROWSER_IMPORT_ERROR
             self._browser = BrowserManager()
             await self._browser.start()
 
@@ -638,7 +677,7 @@ class FormFiller:
 
     def _parse_forms(self, html: str, base_url: str) -> List[SearchForm]:
         """解析页面表单"""
-        parser = Parser().parse(html, base_url)
+        parser = _build_parser().parse(html, base_url)
         forms = []
 
         for form_tag in parser.soup.find_all("form"):
@@ -705,7 +744,7 @@ class FormFiller:
         query: str,
     ) -> List[Dict[str, Any]]:
         """解析搜索结果"""
-        parser = Parser().parse(html, url)
+        parser = _build_parser().parse(html, url)
         results = []
         parsed_current = urlparse(url or "")
         host = (parsed_current.hostname or "").lower()

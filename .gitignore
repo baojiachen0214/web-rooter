@@ -45,6 +45,7 @@ temp/
 # Test outputs
 test_*.py
 deep_test*.py
+!tests/test_*.py
 
 # Examples (keep minimal, exclude detailed examples)
 examples/*
