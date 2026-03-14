@@ -1,272 +1,170 @@
 <div align="center">
-  <img src="./LOGO.png" alt="Web-Rooter Logo" width="240" />
+  <img src="./LOGO.png" alt="Web-Rooter Logo" width="220" />
   <h1>Web-Rooter</h1>
-  <p><strong>CLI-First 的「搜索 + 深度爬取 + 引用溯源」基础设施</strong></p>
-  <p>面向任意 AI 工具（Claude Code / Cursor / 本地 Agent），统一通过 CLI 调度</p>
+  <p><strong>给 AI 与人类都好用的网页搜索 + 抓取 CLI 工具</strong></p>
+  <p>一句命令，拿到可引用结果（含来源 URL 与 references_text）</p>
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
     <img src="https://img.shields.io/badge/version-v0.2.1-blue.svg" alt="Version v0.2.1">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
-    <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP%20%7C%20HTTP-orange.svg" alt="Interfaces">
-    <img src="https://img.shields.io/badge/playwright-✓-brightgreen.svg" alt="Playwright">
   </p>
 
   <p>
-    <a href="./README.zh-CN.md">简体中文</a> |
+    <a href="./README.zh-CN.md">简体中文（完整版）</a> |
     <a href="./README.en.md">English</a>
   </p>
 </div>
 
 ---
 
-## 为什么需要 Web-Rooter？
+## 这个项目能做什么？
 
-AI 编程助手在解决实际问题时，常常面临以下痛点：
+Web-Rooter 解决的是一个很实际的问题：  
+你想让 AI “上网查资料并给出处”，但普通搜索结果不稳定、没法引用、容易被反爬拦截。
 
-| 痛点 | Web-Rooter 解决方案 |
-|------|---------------------|
-| 搜索结果无法验证 | 自动抓取原始页面，提供 `citations` 溯源清单 |
-| 反爬页面获取失败 | HTTP + 浏览器双通道，挑战页自动切换 Playwright |
-| 信息来源单一 | 多引擎并行 + 渠道扩展（新闻/社交/电商/学术） |
-| 结果格式混乱 | 统一结构化输出，含 `references_text` 可直接引用 |
-| AI 工具切换成本高 | 以 CLI 为一等接口，MCP/HTTP 仅做适配层 |
+它提供统一 CLI，支持：
 
----
-
-## CLI First（推荐使用方式）
-
-Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
-
-- AI 只需调用 `python main.py ...` 或全局 `wr ...`
-- 同一套命令可在 Claude Code、Cursor、本地 Agent、CI 脚本中复用
-- MCP 保留为可选适配层，而不是默认工作流依赖
+- 多引擎搜索（`web / deep`）
+- 自动抓取页面正文（必要时自动切到浏览器模式）
+- 结构化输出 `citations` 和 `references_text`（可直接贴到报告）
+- 学术、社交、电商等垂直检索
 
 ---
 
-## 核心能力
+## 3 分钟上手
 
-### 技术栈
+### 方式 A：零依赖安装（推荐普通用户）
 
-- **Python 3.10+** + **AsyncIO** - 高性能异步爬虫引擎
-- **Playwright** - 浏览器自动化与反检测
-- **CLI Runtime** - AI 工具无关的一致入口
-- **Multi-Engine Search** - Google/Bing/Baidu/DuckDuckGo 并行
-
-### 亮点与特色
-
-1. **CLI-First 单入口 + 多模式** - `do` 统一入口，`quick/web/deep/...` 作为兼容与专项入口
-2. **智能反爬对抗** - HTTP 优先，遇挑战页自动切换 Playwright，成功率提升 80%+
-3. **引用溯源输出** - 自动生成可引用的参考文献格式，AI 直接可用
-4. **多源交叉验证** - `comparison.corroborated_results` 显示多源 corroborated 结果数
-5. **渠道扩展能力** - `--news/--platforms/--commerce` 一键扩展搜索渠道
-6. **学术模式增强** - 支持 10+ 学术数据库，论文+代码联合检索
-7. **MCP 可选集成** - 提供 15+ 工具适配，但推荐优先走 CLI
-8. **挑战页工作流路由** - 内置 `cloudflare_interstitial` / `cloudflare_turnstile` / `frame_checkbox`，支持 JSON 自定义 profile
-9. **MindSearch 图研究增强** - 产出 `mindsearch_compat`（`node`/`adjacency_list`/`ref2url`）兼容结构，便于外层 AI 推理
-10. **平台级挑战模板库** - 默认加载 `profiles/challenge_profiles/*.json`（含小红书/知乎/微博/抖音/电商模板）
-11. **可插拔扩展接口** - 支持 `postprocessors`（结果后处理）与 `planners`（研究规划器）热加载
-12. **登录态本地模板** - 支持 `auth-template`/`auth-profiles`/`auth-hint`，让 AI 明确引导用户补全需登录站点配置
-13. **AI 可编排 Workflow** - 用声明式 JSON 让 AI 动态决定每一步“搜什么、爬什么、怎么爬”
-14. **平台搜索模板 + Recovery 模式** - `profiles/search_templates/platform_profiles.json` 可配置平台入口与域名优先级，0 结果时可启用低置信兜底
-15. **Intent->Skill->IR 执行闭环** - 任务先编译成 IR，经 lint 校验后执行，减少 AI 误用 CLI 的概率
-16. **Safe Mode 命令防火墙** - strict 模式拦截低层命令，强制 AI 优先走 `do-plan`/`do`
-17. **长任务后台作业系统** - `do-submit/jobs/job-status/job-result` 让长链路异步执行、可轮询
-18. **错命令防误触** - 未知命令若疑似拼写错误会直接给建议，不再误当查询执行
-19. **阶段唤醒 Skills 契约** - `do-plan` 输出 `phase_wakeup + ai_contract`，帮助 AI 分阶段稳定执行
-20. **Skill 路由防误判** - `activation_keywords + min_score + min_margin` 抑制泛词误路由
-21. **统一预算遥测快照** - `telemetry`/`web_budget_telemetry` 输出 health/pressure/utilization/alerts
-22. **调度器有界化去重与队列** - 默认启用有界 `max_queue_size + max_dupefilter_entries`，避免长跑内存膨胀
-23. **Spider 自适应预算闭环** - 按内存与错误率压力自动收缩/恢复调度预算（critical 时主动 trim 队列）
-
----
-
-## 5 分钟快速体验
-
-### 安装
+1. 打开 Release 页面下载对应系统包：  
+   [https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.1](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.1)
+2. 解压并运行安装脚本：
+   - Windows：双击 `install-web-rooter.bat`
+   - macOS/Linux：`./install-web-rooter.sh`
+3. 验证：
 
 ```bash
-# Windows（一键）
-install.bat
-
-# macOS / Linux（一键）
-bash install.sh
-
-# 可选：同时配置 MCP
-install.bat --with-mcp
-bash install.sh --with-mcp
+wr --version
+wr help
 ```
 
-安装脚本会自动注入 CLI 操作 skills 到 Claude Code / Cursor / OpenCode / OpenClaw（best-effort，可手动重跑：`python scripts/setup_ai_skills.py --repo-root .`）。
-
-### 零依赖二进制安装（Release）
-
-- 如果机器非常干净（没有 Python/pip/git），可直接下载 GitHub Release 的平台包
-- Windows：解压后双击 `install-web-rooter.bat`
-- macOS/Linux：解压后执行 `./install-web-rooter.sh`
-
-### 典型工作流
+### 方式 B：源码一键安装（开发者常用）
 
 ```bash
-# 1. 快速查资料（忘记命令时用这个）
-python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-run
-python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
-python main.py do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
-python main.py safe-mode on --policy=strict
+# Windows
+install.bat
 
-# 2. 快速查资料（兼容入口）
-python main.py quick "OpenAI Agents SDK 最佳实践"
+# macOS / Linux
+bash install.sh
+```
 
-# 3. 多引擎搜索 + 自动抓取
-python main.py web "RAG 评估基准 2025" --crawl-pages=5
+验证：
 
-# 4. 深度研究（多查询变体 + 渠道扩展）
-python main.py deep "AI Agent 工程化" --variants=4 --crawl=5 --platforms --channel=news
+```bash
+python main.py doctor
+python main.py help
+```
 
-# 5. 社交媒体舆情
-python main.py social "iPhone 17 评测" --platform=xiaohongshu --platform=zhihu
+---
 
-# 6. 学术研究（带引用格式）
-python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
+## 第一次使用（直接复制）
 
-# 7. MindSearch 图研究（可切换 planner）
-python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
+```bash
+# 1) 快速查一个问题
+python main.py quick "OpenAI Agents SDK best practices"
 
-# 8. 站点定向爬取
-python main.py crawl "https://docs.python.org/3/" 20 2 --pattern="/3/library/" --no-subdomains
+# 2) 做可引用的多源搜索
+python main.py web "RAG benchmark 2026" --crawl-pages=5
 
-# 9. 查看扩展与挑战页路由（不需要记住内部细节）
-python main.py skills --resolve "抓取知乎评论区观点并给出处" --compact
-python main.py skills --resolve "抓取知乎评论区观点并给出处" --full
-python main.py ir-lint .web-rooter/workflow.social.json
-python main.py planners
-python main.py challenge-profiles
-python main.py auth-template
-python main.py auth-hint https://www.zhihu.com
-python main.py workflow-schema
-python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
-python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8 --dry-run
-python main.py context --limit=20
+# 3) 让系统自动规划执行步骤（推荐）
+python main.py do "对比 3 篇 RAG 评测文章并给出处" --dry-run
+python main.py do "对比 3 篇 RAG 评测文章并给出处" --strict
 
-# 10. skills A/B 回归（默认只做 compile+linter 对照）
-python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining
-
-# 11. 长任务异步执行（避免阻塞超时）
-python main.py do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
-python main.py jobs --status=running
-python main.py job-status <job_id>
-python main.py job-result <job_id>
-
-# 12. 查看运行时预算遥测（health/pressure/utilization/alerts）
+# 4) 看运行健康（排查卡慢/爆内存）
 python main.py telemetry
 ```
 
-### 维护者：一键构建零依赖发布包
-
-```bash
-# macOS / Linux
-bash scripts/release/package-release.sh
-bash scripts/release/package-release.sh --format both
-
-# Windows
-scripts\release\package-release.bat
-scripts\release\package-release.bat --format both
-```
-
-产物位于 `dist/release/`。
+如果你安装的是二进制版本，把 `python main.py` 换成 `wr` 即可。
 
 ---
 
-## 输出示例
+## 命令怎么选？
 
-### 深度搜索输出结构
+| 你的目标 | 用这个命令 |
+|---|---|
+| 我就想先查一下 | `quick` |
+| 要多引擎结果 + 页面抓取 | `web` |
+| 要更深、更全（多变体） | `deep` |
+| 让系统自动规划整个流程 | `do` |
+| 长任务避免阻塞终端 | `do-submit` + `jobs/job-status/job-result` |
+| 学术论文检索 | `academic` |
+| 社交平台观点检索 | `social` |
+| 查看资源压力与预算 | `telemetry` |
 
-```json
-{
-  "query": "AI Agent 工程实践",
-  "total_results": 42,
-  "citations": [
-    {
-      "id": "P1",
-      "title": "Building Effective AI Agents",
-      "url": "https://www.anthropic.com/research/building-effective-agents",
-      "source": "anthropic",
-      "corroborated": true,
-      "corroborated_by": ["P3", "P7"]
-    }
-  ],
-  "references_text": "参考文献 / References:\n[P1] Building Effective AI Agents (anthropic) https://...\n[P3] AI Agent Patterns 2025 (github) https://...",
-  "comparison": {
-    "total_results": 42,
-    "corroborated_results": 11,
-    "domain_coverage": 17,
-    "engines_used": ["google", "bing", "duckduckgo"]
-  },
-  "crawled_content": [
-    {
-      "url": "https://...",
-      "title": "...",
-      "content": "...",
-      "citation_id": "P1"
-    }
-  ]
-}
-```
+---
 
-### 学术搜索输出
+## 常用场景示例
 
-```json
-{
-  "query": "RAG evaluation",
-  "papers": [
-    {
-      "id": "S1",
-      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP",
-      "authors": ["Lewis et al."],
-      "venue": "NeurIPS 2020",
-      "url": "https://arxiv.org/abs/2005.11401",
-      "source": "arxiv"
-    }
-  ],
-  "references_text": "学术论文 / Papers:\n[S1] Lewis et al. Retrieval-Augmented Generation... (NeurIPS 2020) https://..."
-}
+```bash
+# 学术检索（论文 + 引用）
+python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
+
+# 社交观点（指定平台）
+python main.py social "iPhone 17 评测" --platform=xiaohongshu --platform=zhihu
+
+# 深度主题研究
+python main.py deep "AI Agent 工程化" --variants=4 --crawl=5 --platforms --channel=news
+
+# 提交后台任务（不阻塞）
+python main.py do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
+python main.py jobs --status=running
+python main.py job-result <job_id>
 ```
 
 ---
 
-## MCP 集成（Claude Code 即装即用）
+## 输出怎么看？
 
-### 自动安装
+重点看这两个字段：
 
-```bash
-# Windows
-scripts\windows\setup-claude-mcp.bat
+- `citations`: 每条结论对应的来源 URL 与标题
+- `references_text`: 已格式化好的参考文献文本
 
-# macOS / Linux
-chmod +x scripts/unix/setup-claude-mcp.sh
-./scripts/unix/setup-claude-mcp.sh
-```
+这意味着：你可以把结果直接贴进报告，不用再手工整理出处。
 
-### 手动配置
+---
 
-在 Claude 配置文件中添加：
+## 常见问题
 
-```json
-{
-  "mcpServers": {
-    "web-rooter": {
-      "command": "python",
-      "args": ["main.py", "--mcp"],
-      "cwd": "/path/to/web-rooter",
-      "env": {
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    }
-  }
-}
-```
+1. `deep/social` 偶尔超时
+   - 先试 `--crawl=0`（先拿搜索结果）
+   - 或改用 `web` / `quick --js`
+
+2. 想要更稳的长期运行（避免爆内存）
+   - 本版本默认已启用有界队列和去重预算
+   - 用 `python main.py telemetry` 查看 `pressure/utilization/alerts`
+
+3. 需要接入 Claude Code / MCP
+   - 先跑安装脚本，MCP 可选开启：
+     - `install.bat --with-mcp`
+     - `bash install.sh --with-mcp`
+
+---
+
+## 进阶文档
+
+- CLI 参数全集：[`docs/guide/CLI.md`](./docs/guide/CLI.md)
+- 安装细节：[`docs/guide/INSTALLATION.md`](./docs/guide/INSTALLATION.md)
+- MCP 工具表：[`docs/reference/MCP_TOOLS.md`](./docs/reference/MCP_TOOLS.md)
+- 中文完整版介绍：[`README.zh-CN.md`](./README.zh-CN.md)
+
+---
+
+## 分支说明
+
+仓库默认分支已回到 `main`，用于正式版本发布与稳定迭代。  
+`v0.2.1` 正式版已发布，可直接使用上面的 Release 链接下载安装。
 
 ### MCP 工具清单
 
