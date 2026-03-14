@@ -432,6 +432,9 @@ class WebRooterCLI:
             isinstance(exc, RuntimeError)
             and "runtime is unavailable" in message.lower()
         ) or "install optional dependencies from requirements.txt" in message.lower():
+            skills_cmd = build_cli_command('skills --resolve "<goal>" --compact')
+            do_plan_cmd = build_cli_command('do-plan "<goal>"')
+            dry_run_cmd = build_cli_command('do "<goal>" --dry-run')
             return {
                 "success": False,
                 "error": "runtime_unavailable",
@@ -440,9 +443,9 @@ class WebRooterCLI:
                 "hint": (
                     f"先执行 `{build_cli_command('doctor')}` 检查缺失依赖。"
                     f"如需先让 AI 规划任务，可继续使用 "
-                    f"`{build_cli_command('skills --resolve \"<goal>\" --compact')}`、"
-                    f"`{build_cli_command('do-plan \"<goal>\"')}`、"
-                    f"`{build_cli_command('do \"<goal>\" --dry-run')}`。"
+                    f"`{skills_cmd}`、"
+                    f"`{do_plan_cmd}`、"
+                    f"`{dry_run_cmd}`。"
                 ),
             }
         return {
