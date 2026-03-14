@@ -1,350 +1,156 @@
 <div align="center">
-  <img src="./LOGO.png" alt="Web-Rooter Logo" width="240" />
+  <img src="./LOGO.png" alt="Web-Rooter Logo" width="220" />
   <h1>Web-Rooter</h1>
-  <p><strong>CLI-First 的网页搜索与深度爬虫基础设施</strong></p>
-  <p>面向任意 AI 工具（Claude Code / Cursor / 本地 Agent），统一通过 CLI 调度</p>
+  <p><strong>面向 AI 代理调用的可引用搜索 CLI</strong></p>
+  <p>安装后请默认使用 <code>wr</code> 命令</p>
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
     <img src="https://img.shields.io/badge/version-v0.2.1-blue.svg" alt="Version v0.2.1">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
-    <img src="https://img.shields.io/badge/interface-CLI%20%7C%20MCP%20%7C%20HTTP-orange.svg" alt="Interfaces">
-    <img src="https://img.shields.io/badge/playwright-✓-brightgreen.svg" alt="Playwright">
   </p>
 
   <p>
-    <a href="./README.md">入口页</a> |
+    <a href="./README.md">简体中文（用户版）</a> |
     <a href="./README.en.md">English</a>
   </p>
 </div>
 
 ---
 
-## 项目定位
+## 定位说明
 
-Web-Rooter 不是"单纯抓网页"的工具，而是一个给 AI 工作流使用的检索基础设施：
+Web-Rooter 不是让用户长期手敲命令的独立工具，  
+而是给 Claude/Cursor 等 AI 工具调用的“联网检索 + 抓取 + 引用”能力层。
 
-- 先用多引擎高召回搜索找到候选来源
-- 再对关键页面做可控深爬与解析
-- 最终输出可引用、可对照、可追溯的结构化结果
+它会统一输出：
 
-### 解决的核心痛点
-
-| 痛点 | Web-Rooter 方案 |
-|------|-----------------|
-| 搜索结果无法验证 | 自动抓取原始页面，提供 `citations` 溯源清单 |
-| 反爬页面获取失败 | HTTP + 浏览器双通道，挑战页自动切换 Playwright |
-| 信息来源单一 | 多引擎并行 + 渠道扩展（新闻/社交/电商/学术） |
-| 结果格式混乱 | 统一结构化输出，含 `references_text` 可直接引用 |
-| AI 工具切换成本高 | 以 CLI 为一等接口，MCP/HTTP 仅做适配层 |
+- `citations`（来源列表）
+- `references_text`（可直接粘贴的参考文献文本）
 
 ---
 
-## CLI First（推荐）
+## AI 工具协同（关键）
 
-Web-Rooter 的主接口是 CLI，不绑定某一个 AI 客户端：
+安装脚本会自动注入 skills（best-effort）到：
 
-- AI 只需调用 `python main.py ...` 或全局 `wr ...`
-- 同一套命令可在 Claude Code、Cursor、本地 Agent、CI 脚本中复用
-- MCP 保留为可选适配层，而不是默认工作流依赖
+- Claude Code / Claude Desktop
+- Cursor
+- OpenCode
+- OpenClaw
 
----
-
-## 核心能力
-
-### 技术栈
-
-- **Python 3.10+** + **AsyncIO** - 高性能异步爬虫引擎
-- **Playwright** - 浏览器自动化与反检测
-- **CLI Runtime** - AI 工具无关的一致入口
-- **Multi-Engine Search** - Google/Bing/Baidu/DuckDuckGo 并行
-
-### 亮点与特色
-
-1. **CLI-First 单入口 + 多模式** - `do` 统一入口，`quick/web/deep/...` 作为兼容与专项入口
-2. **智能反爬对抗** - HTTP 优先，遇挑战页自动切换 Playwright，成功率提升 80%+
-3. **引用溯源输出** - 自动生成可引用的参考文献格式，AI 直接可用
-4. **多源交叉验证** - `comparison.corroborated_results` 显示多源 corroborated 结果数
-5. **渠道扩展能力** - `--news/--platforms/--commerce` 一键扩展搜索渠道
-6. **学术模式增强** - 支持 10+ 学术数据库，论文+代码联合检索
-7. **MCP 可选集成** - 提供 15+ 工具适配，但推荐优先走 CLI
-8. **挑战页 workflow 路由** - 内置 Cloudflare/通用挑战页 profile，支持 JSON 自定义
-9. **MindSearch 兼容图输出** - 提供 `mindsearch_compat`（`node` / `adjacency_list` / `ref2url`）
-10. **平台级挑战模板库** - 默认加载 `profiles/challenge_profiles/*.json`（含小红书/知乎/微博/抖音/电商模板）
-11. **可插拔扩展机制** - `postprocessors` + `planners` 双注册中心，支持热加载
-12. **登录态本地模板** - `auth-template` / `auth-profiles` / `auth-hint` 支持需登录站点配置
-13. **AI 可编排 Workflow** - 用声明式 JSON 让 AI 动态决定每一步“搜什么、爬什么、怎么爬”
-14. **平台搜索模板 + Recovery 模式** - `profiles/search_templates/platform_profiles.json` 可配置平台入口与域名优先级，0 结果时可启用低置信兜底
-15. **Intent->Skill->IR 执行闭环** - 任务先编译成 IR，经 lint 校验后执行，减少 AI 误用 CLI 的概率
-16. **Safe Mode 命令防火墙** - strict 模式拦截低层命令，强制 AI 优先走 `do-plan`/`do`
-17. **长任务后台作业系统** - `do-submit/jobs/job-status/job-result` 支持异步执行与轮询
-18. **错命令防误触** - 疑似命令拼写错误会直接给建议，不再被误当查询执行
-19. **阶段唤醒 Skills 契约** - `do-plan` 输出 `phase_wakeup + ai_contract`，指导 AI 分阶段执行
-20. **Skill 路由防误判** - 通过 `activation_keywords + min_score + min_margin` 抑制泛词误路由
-21. **统一预算遥测快照** - `telemetry`/`web_budget_telemetry` 输出 health/pressure/utilization/alerts
-22. **调度器有界化去重与队列** - 默认启用有界 `max_queue_size + max_dupefilter_entries`，避免长跑内存膨胀
-23. **Spider 自适应预算闭环** - 按内存与错误率压力自动收缩/恢复调度预算（critical 时主动 trim 队列）
-
-### 已知限制
-
-- **网络超时**：`deep` / `social` 命令在部分网络环境下可能遇到超时（由反爬/挑战页导致），建议：
-  - 使用 `--crawl=0` 跳过页面抓取，仅获取搜索结果
-  - 优先使用 `web` 命令作为替代
-  - 检查网络连接或尝试切换网络环境
+推荐让 AI 固定走：`skills -> do-plan -> do --dry-run -> do`
 
 ---
 
-## 快速开始
+## 如何让 AI 不忘记用 `wr`
 
-### 安装
+把这段贴进你的项目规则（Claude Project Instructions / Cursor Rules）：
+
+```text
+只要涉及联网检索、网页抓取、引用输出，必须优先使用 Web-Rooter（wr）。
+固定流程：
+1) wr skills --resolve "<用户目标>" --compact
+2) wr do-plan "<用户目标>"
+3) wr do "<用户目标>" --dry-run
+4) wr do "<用户目标>" --strict
+禁止跳过 wr 直接给无来源结论。
+```
+
+如果 AI 仍然跑偏，再补一句：
+
+```text
+请先执行 wr help，并先给出你要执行的 wr 命令序列。
+```
+
+---
+
+## 3 分钟安装与验证
+
+### 方案 A：预编译安装（推荐）
+
+Release 页面：  
+[https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.1](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.1)
+
+- Windows：运行 `install-web-rooter.bat`
+- macOS/Linux：运行 `./install-web-rooter.sh`
+
+验证：
 
 ```bash
-# Windows（一键）
+wr --version
+wr doctor
+wr help
+```
+
+### 方案 B：源码一键安装
+
+```bash
+# Windows
 install.bat
 
-# macOS / Linux（一键）
-bash install.sh
-
-# 可选：同时配置 MCP
-install.bat --with-mcp
-bash install.sh --with-mcp
-```
-
-安装脚本会自动注入 CLI 操作 skills 到 Claude Code / Cursor / OpenCode / OpenClaw（best-effort，可手动重跑：`python scripts/setup_ai_skills.py --repo-root .`）。
-
-### 零依赖二进制安装（Release）
-
-- 如果机器非常干净（没有 Python/pip/git），可直接下载 GitHub Release 的平台包
-- Windows：解压后双击 `install-web-rooter.bat`
-- macOS/Linux：解压后执行 `./install-web-rooter.sh`
-
-### 5 分钟体验
-
-```bash
-# 1. 单入口（推荐）
-python main.py do "抓取知乎和小红书评论区观点并给出处" --dry-run
-python main.py do "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict
-python main.py do-plan "抓取知乎评论区观点并给出处" --skill=social_comment_mining
-python main.py safe-mode on --policy=strict
-
-# 2. 快速查资料（兼容入口）
-python main.py quick "OpenAI Agents SDK"
-
-# 3. 多引擎搜索 + 页面摘要
-python main.py web "RAG benchmark 2026" --crawl-pages=5
-
-# 4. 深度搜索（多查询变体 + 渠道扩展）
-python main.py deep "AI Agent 工程实践" --platforms --channel=news,commerce --crawl=5
-
-# 5. 社交媒体搜索
-python main.py social "iPhone 17" --platform=xiaohongshu --platform=zhihu
-
-# 6. 电商搜索
-python main.py shopping "羽绒服 轻量" --platform=taobao --platform=jd
-
-# 7. 学术搜索（带引用格式）
-python main.py academic "RAG evaluation" --papers-only --source=arxiv --source=semantic_scholar
-
-# 8. MindSearch 图研究（可切换 planner）
-python main.py mindsearch "多模态大模型 工程化落地" --turns=3 --branches=4 --planner=heuristic --strict-expand --channel=news,platforms
-
-# 9. 查看扩展与挑战页路由
-python main.py skills --resolve "抓取知乎评论区观点并给出处" --compact
-python main.py skills --resolve "抓取知乎评论区观点并给出处" --full
-python main.py ir-lint .web-rooter/workflow.social.json
-python main.py planners
-python main.py challenge-profiles
-python main.py auth-template
-python main.py auth-hint https://www.zhihu.com
-python main.py workflow-schema
-python main.py workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
-python main.py workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var top_hits=8 --dry-run
-python main.py context --limit=20
-
-# 10. skills A/B 回归（默认仅 compile+linter 对照）
-python scripts/regression/run_skill_ab.py --arm-a=auto --arm-b=social_comment_mining
-
-# 11. 长任务异步执行（避免阻塞超时）
-python main.py do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
-python main.py jobs --status=running
-python main.py job-status <job_id>
-python main.py job-result <job_id>
-
-# 12. 查看运行时预算遥测（health/pressure/utilization/alerts）
-python main.py telemetry
-```
-
-### 维护者：一键构建零依赖发布包
-
-```bash
 # macOS / Linux
-bash scripts/release/package-release.sh
-bash scripts/release/package-release.sh --format both
-
-# Windows
-scripts\release\package-release.bat
-scripts\release\package-release.bat --format both
-```
-
-产物位于 `dist/release/`。
-
----
-
-## MCP 集成（Claude Code 即装即用）
-
-### 自动安装
-
-```bash
-# Windows
-scripts\windows\setup-claude-mcp.bat
-
-# macOS / Linux
-chmod +x scripts/unix/setup-claude-mcp.sh
-./scripts/unix/setup-claude-mcp.sh
-```
-
-### 手动配置
-
-在 Claude 配置文件（`%APPDATA%\Claude\config.json`）中添加：
-
-```json
-{
-  "mcpServers": {
-    "web-rooter": {
-      "command": "python",
-      "args": ["main.py", "--mcp"],
-      "cwd": "/path/to/web-rooter",
-      "env": {
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    }
-  }
-}
-```
-
-### MCP 工具清单
-
-| 工具 | 用途 |
-|------|------|
-| `web_search_internet` | 多引擎互联网搜索 |
-| `web_research` | 主题深度研究 |
-| `web_search_academic` | 学术文献搜索 |
-| `web_mindsearch` | MindSearch 图研究 |
-| `web_search_social` | 社交媒体搜索 |
-| `web_search_commerce` | 电商/本地生活搜索 |
-| `web_fetch` / `web_fetch_js` | HTTP / 浏览器页面获取 |
-| `web_crawl` | 站点深度爬取 |
-| `web_extract` | 目标信息提取 |
-| `web_context_snapshot` | 查看全局深度抓取上下文 |
-| `web_postprocessors` / `web_planners` | 加载后处理器 / 研究规划器扩展 |
-| `web_challenge_profiles` | 查看挑战页 workflow 路由档案 |
-| `web_auth_profiles` / `web_auth_hint` / `web_auth_template` | 管理需登录站点的本地登录态模板 |
-
----
-
-## 安装与配置（按系统）
-
-### Windows
-
-- 一键安装（CLI First）：`install.bat`
-- 安装全局 `wr` 命令：`scripts\windows\install-system-cli.bat`
-- Claude MCP 安装：`scripts\windows\setup-claude-mcp.bat`
-
-### macOS / Linux
-
-```bash
 bash install.sh
+```
 
-# 可选 MCP
-bash install.sh --with-mcp
+安装后同样使用：
+
+```bash
+wr doctor
+wr help
 ```
 
 ---
 
-## 目录总览
+## 新用户先跑这几条
 
-```
-web-rooter/
-├── main.py                 # CLI/MCP/HTTP 总入口
-├── agents/                 # 编排层（visit/search/research/crawl）
-│   └── web_agent.py
-├── core/                   # 搜索、爬虫、浏览器、解析核心
-│   ├── crawler.py          # HTTP 抓取
-│   ├── browser.py          # Playwright 浏览器
-│   ├── challenge_workflow.py # 挑战页 workflow 路由与动作编排
-│   ├── command_ir.py       # 命令 IR 与 lint 校验
-│   ├── skills.py           # skill 契约加载与意图路由
-│   ├── trace_distill.py    # 执行轨迹蒸馏（紧凑记忆）
-│   ├── global_context.py   # 全局深度抓取事件存储
-│   ├── postprocess.py      # 抓取后处理扩展注册中心
-│   ├── search/             # 搜索引擎
-│   │   ├── engine_base.py
-│   │   ├── advanced.py
-│   │   ├── mindsearch_pipeline.py
-│   │   ├── research_planner.py
-│   │   └── universal_parser.py
-│   ├── academic_search.py  # 学术搜索
-│   └── citation.py         # 引用生成
-├── plugins/                # 用户扩展（示例）
-│   ├── post_processors/
-│   └── planners/
-├── profiles/               # 内置可配置模板
-│   ├── challenge_profiles/ # 平台级挑战页 profile JSON
-│   ├── skills/             # AI skills 契约（意图->模板/策略）
-│   ├── search_templates/   # 平台搜索入口/backup 优先级模板 JSON
-│   └── auth/               # 登录态模板 JSON
-├── tools/                  # MCP 工具适配
-│   └── mcp_tools.py
-├── scripts/                # 跨平台安装与回归脚本
-│   ├── regression/         # 真实回归与 skills A/B
-│   ├── windows/
-│   └── unix/
-├── docs/                   # 当前有效文档
-│   ├── guide/              # 使用指南
-│   ├── reference/          # API 参考
-│   └── architecture/       # 架构文档
-├── tests/                  # 自动化测试
-└── temp/                   # 参考项目快照（非运行时依赖）
+```bash
+wr quick "OpenAI Agents SDK best practices"
+wr web "RAG benchmark 2026" --crawl-pages=5
+wr do "对比 3 篇 RAG 评测文章并给出处" --dry-run
+wr do "对比 3 篇 RAG 评测文章并给出处" --strict
+wr telemetry
 ```
 
 ---
 
-## 文档导航
+## 命令选择速查
 
-| 文档 | 内容 |
-|------|------|
-| [docs/README.md](./docs/README.md) | 文档总览 |
-| [docs/guide/INSTALLATION.md](./docs/guide/INSTALLATION.md) | 详细安装指南 |
-| [docs/guide/CONFIGURATION.md](./docs/guide/CONFIGURATION.md) | 配置说明 |
-| [docs/guide/CLI.md](./docs/guide/CLI.md) | CLI 完整命令参考 |
-| [docs/guide/MCP.md](./docs/guide/MCP.md) | MCP 集成指南 |
-| [docs/reference/MCP_TOOLS.md](./docs/reference/MCP_TOOLS.md) | MCP 工具详细说明 |
-| [docs/architecture/PROJECT_STRUCTURE.md](./docs/architecture/PROJECT_STRUCTURE.md) | 项目架构设计 |
-
----
-
-## 开源参考与致谢
-
-本项目在搜索/爬虫方向参考了多个优秀开源项目，详见 [ACKNOWLEDGMENTS.md](./ACKNOWLEDGMENTS.md)。
+| 目标 | 命令 |
+|---|---|
+| 先快速查 | `wr quick` |
+| 搜索 + 抓取 | `wr web` |
+| 深度研究 | `wr deep` |
+| AI 自动规划执行 | `wr do` |
+| 后台长任务 | `wr do-submit` + `wr jobs` |
+| 学术检索 | `wr academic` |
+| 社交观点 | `wr social` |
+| 看压力与预算 | `wr telemetry` |
 
 ---
 
-## 使用声明
+## 常见问题
 
-**本项目专为辅助 Vibe Coding 工具（如 Claude Code、Cursor 等）进行资料检索和文献查找而开发。**
+1. 为什么不推荐 `python main.py`？
+   - 用户侧统一入口就是 `wr`；
+   - `python main.py` 仅作为开发调试或兜底手段。
 
-⚠️ **严禁将本项目二次开发成具有网络危害的攻击性程序，包括但不限于：**
-- 大规模恶意爬虫用于 DDoS 攻击
-- 自动化注册/刷量/薅羊毛工具
-- 绕过安全机制进行未授权数据抓取
-- 任何违反目标网站服务条款的滥用行为
+2. `deep/social` 超时怎么办？
+   - 先试 `--crawl=0`；
+   - 或先用 `wr web`、`wr quick --js`。
 
-使用者应遵守相关法律法规和目标网站的 robots.txt 及服务条款。
+3. skills 注入失败怎么办？
+   - 手动执行：`python scripts/setup_ai_skills.py --repo-root .`
 
 ---
 
-## License
+## 进阶文档
 
-MIT License - 详见 [LICENSE](./LICENSE)
+- CLI 参数：[`docs/guide/CLI.md`](./docs/guide/CLI.md)
+- 安装细节：[`docs/guide/INSTALLATION.md`](./docs/guide/INSTALLATION.md)
+- MCP 工具：[`docs/reference/MCP_TOOLS.md`](./docs/reference/MCP_TOOLS.md)
+
+---
+
+默认分支为 `main`，当前稳定版为 `v0.2.1`。
