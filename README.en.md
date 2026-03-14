@@ -19,6 +19,14 @@
 
 ---
 
+## TL;DR
+
+- Built for AI agents to call, not for manual day-to-day shell work.
+- After install, use `wr` as the default entry.
+- Outputs are citation-ready (`citations` + `references_text`).
+
+---
+
 ## What Is This?
 
 Web-Rooter is not a “manual-only crawler tool”.  
@@ -27,6 +35,17 @@ It is a capability layer for AI coding assistants (Claude/Cursor/etc.) to:
 - search across multiple sources,
 - crawl pages reliably (with anti-bot fallback),
 - return citation-ready output (`citations`, `references_text`).
+
+---
+
+## Why Teams Use It
+
+| Problem | Web-Rooter Approach |
+|---|---|
+| AI returns uncited claims | Always returns source-aware fields |
+| Search quality is unstable | Multi-source search + crawl combination |
+| Anti-bot breaks scraping | HTTP-first with browser fallback |
+| Agent command drift | Skill-guided `do-plan -> do` workflow |
 
 ---
 
