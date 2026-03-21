@@ -184,7 +184,7 @@ class AdvancedSearchEngineClient:
 
         # 社交媒体
         AdvancedSearchEngine.XIAOHONGSHU: "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_explore_feed",
-        AdvancedSearchEngine.BILIBILI: "https://search.bilibili.com/all?keyword={query}&page={count}",
+        AdvancedSearchEngine.BILIBILI: "https://search.bilibili.com/all?keyword={query}",
         AdvancedSearchEngine.ZHIHU: "https://www.zhihu.com/search?type=content&q={query}",
         AdvancedSearchEngine.TIEBA: "https://tieba.baidu.com/f/search/res?ie=utf-8&qw={query}",
         AdvancedSearchEngine.DOUYIN: "https://www.douyin.com/search/{query}",
@@ -221,7 +221,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.YANDEX: "li.serp-item",
 
         # 社交媒体
-        AdvancedSearchEngine.BILIBILI: "div.video-card",
+        AdvancedSearchEngine.BILIBILI: "div.video-card, .bili-video-card, .video-list-item, .bili-video-card__wrap",
         AdvancedSearchEngine.ZHIHU: "div.List-item, div.SearchResult",
         AdvancedSearchEngine.WEIBO: "div.card-wrap",
         AdvancedSearchEngine.REDDIT: "shreddit-post, post-timestamp",
@@ -258,7 +258,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.SOGOU: "h3 a, a[href*='wenwen']",
         AdvancedSearchEngine.YANDEX: "h2 a",
 
-        AdvancedSearchEngine.BILIBILI: "a[href*='/video/']",
+        AdvancedSearchEngine.BILIBILI: "a[href*='/video/'] h3, .bili-video-card__info--tit, a[href*='/video/']",
         AdvancedSearchEngine.ZHIHU: "h2 a, .ContentItem-title a",
         AdvancedSearchEngine.WEIBO: "p.txt a",
         AdvancedSearchEngine.REDDIT: "h3 a, shreddit-title a",
@@ -328,7 +328,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.SOGOU: "p.txt-info",
         AdvancedSearchEngine.YANDEX: "div.Path",
 
-        AdvancedSearchEngine.BILIBILI: "span.desc",
+        AdvancedSearchEngine.BILIBILI: "span.desc, .bili-video-card__info--desc, p",
         AdvancedSearchEngine.ZHIHU: "div.RichText, div.excerpt",
         AdvancedSearchEngine.WEIBO: "p.txt",
         AdvancedSearchEngine.REDDIT: "shreddit-post",
@@ -526,6 +526,8 @@ class AdvancedSearchEngineClient:
             AdvancedSearchEngine.BAIDU: "baidu",
             AdvancedSearchEngine.QUARK: "quark",
             AdvancedSearchEngine.DUCKDUCKGO: "duckduckgo",
+            AdvancedSearchEngine.XIAOHONGSHU: "xiaohongshu",
+            AdvancedSearchEngine.BILIBILI: "bilibili",
             AdvancedSearchEngine.ZHIHU: "zhihu",
         }
         engine_id = engine_map.get(engine)
@@ -1536,6 +1538,14 @@ _ENGINE_URL_FALLBACK_TEMPLATES: Dict[str, List[str]] = {
         "https://www.douyin.com/search/{query}",
         "https://www.iesdouyin.com/share/search/{query}",
     ],
+    "bilibili": [
+        "https://search.bilibili.com/all?keyword={query}",
+        "https://search.bilibili.com/video?keyword={query}",
+    ],
+    "xiaohongshu": [
+        "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_explore_feed",
+        "https://www.xiaohongshu.com/search_result?keyword={query}",
+    ],
 }
 
 _PLATFORM_PROFILE_CACHE: Optional[Dict[str, Any]] = None
@@ -1851,7 +1861,9 @@ def _platform_signal_score(
         # 平台特异高信号：帖子/视频/问答详情页
         if host.endswith("bilibili.com") and path.startswith("/video/"):
             score += 6
-        if host.endswith("xiaohongshu.com") and re.match(r"^/explore/[a-z0-9]+", path):
+        if host.endswith("bilibili.com") and (path.startswith("/read/cv") or path.startswith("/opus/")):
+            score += 5
+        if host.endswith("xiaohongshu.com") and re.match(r"^/(explore|discovery/item)/[a-z0-9]+", path):
             score += 6
         if host.endswith("zhihu.com") and "/question/" in path:
             score += 6

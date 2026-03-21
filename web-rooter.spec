@@ -19,6 +19,10 @@ a = Analysis(
     datas=[
         # 搜索引擎配置文件
         (str(ROOT / 'core' / 'engine-config'), 'core/engine-config'),
+        # 运行时 profiles 资源
+        (str(ROOT / 'profiles' / 'auth'), 'profiles/auth'),
+        (str(ROOT / 'profiles' / 'search_templates'), 'profiles/search_templates'),
+        (str(ROOT / 'profiles' / 'challenge_profiles'), 'profiles/challenge_profiles'),
         # .env.example 作为参考
         (str(ROOT / '.env.example'), '.'),
     ],

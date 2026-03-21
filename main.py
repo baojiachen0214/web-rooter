@@ -2363,7 +2363,7 @@ class WebRooterCLI:
         自更新命令：
         - wr update --check
         - wr update --list
-        - wr update --to v0.2.2 --yes
+        - wr update --to v0.2.3 --yes
         - wr update               (交互式选择版本)
         """
         env_repo = str(os.getenv("WEB_ROOTER_GITHUB_REPO", "")).strip()

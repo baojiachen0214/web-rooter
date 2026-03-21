@@ -17,6 +17,8 @@ import logging
 
 import aiohttp
 
+from core.http_ssl import build_client_ssl_context
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,8 +148,10 @@ class ConnectionPool:
 
     async def _create_connections(self, count: int):
         """创建连接"""
+        ssl_context = build_client_ssl_context()
+        connector_args = {**self._connector_args, "ssl": ssl_context}
         for _ in range(count):
-            connector = aiohttp.TCPConnector(**self._connector_args)
+            connector = aiohttp.TCPConnector(**connector_args)
             session = aiohttp.ClientSession(connector=connector)
 
             info = ConnectionInfo(connector=connector)
@@ -252,7 +256,9 @@ class ConnectionPool:
 
             # 没有现有连接，创建新的
             if len(self._connectors) < self._max_size:
-                connector = aiohttp.TCPConnector(**self._connector_args)
+                ssl_context = build_client_ssl_context()
+                connector_args = {**self._connector_args, "ssl": ssl_context}
+                connector = aiohttp.TCPConnector(**connector_args)
                 session = aiohttp.ClientSession(connector=connector)
 
                 key = f"{host}_{self._created}"
@@ -273,7 +279,8 @@ class ConnectionPool:
                     return self._sessions[key]
 
             # 都没有，创建临时连接
-            connector = aiohttp.TCPConnector(limit=1)
+            ssl_context = build_client_ssl_context()
+            connector = aiohttp.TCPConnector(limit=1, ssl=ssl_context)
             session = aiohttp.ClientSession(connector=connector)
             self._requests += 1
             logger.debug("Created temporary connection")
@@ -469,4 +476,3 @@ class PooledSession:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._session:
             await self._pool.return_connection(self._session, self._url)
-

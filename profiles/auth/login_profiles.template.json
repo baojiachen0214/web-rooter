@@ -69,6 +69,20 @@
       "notes": "抖音网页常有登录门槛，建议优先 storage_state。"
     },
     {
+      "name": "bilibili_local_auth",
+      "enabled": false,
+      "priority": 220,
+      "domains": ["bilibili.com"],
+      "mode": "auto",
+      "login_url": "https://www.bilibili.com/",
+      "storage_state_file": "./.web-rooter/auth/bilibili_state.json",
+      "cookies_file": "./.web-rooter/auth/bilibili_cookies.json",
+      "headers": {},
+      "cookies": [],
+      "local_storage": {},
+      "notes": "B 站网页常在搜索和详情页触发登录或风控，建议优先导出 storage_state，并保留 cookies 作为兜底。"
+    },
+    {
       "name": "commerce_local_auth",
       "enabled": false,
       "priority": 210,

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from config import crawler_config, CrawlerConfig, ProxyConfig, ProxyRotationStrategy
 from core.cache import RequestCache
 from core.connection_pool import ConnectionPool, PooledSession
+from core.http_ssl import build_client_ssl_context
 
 try:
     from curl_cffi import requests as curl_requests
@@ -326,10 +327,14 @@ class Crawler:
         """初始化 HTTP 会话"""
         if self._session is None:
             timeout = aiohttp.ClientTimeout(total=self.config.TIMEOUT)
+            # 优先使用显式 CA/证书包，缺失时自动回退系统证书链。
+            ssl_context = build_client_ssl_context()
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
             self._session = aiohttp.ClientSession(
                 headers={"User-Agent": self._base_user_agent},
                 timeout=timeout,
-                cookie_jar=aiohttp.CookieJar()
+                cookie_jar=aiohttp.CookieJar(),
+                connector=connector
             )
 
     async def close(self):

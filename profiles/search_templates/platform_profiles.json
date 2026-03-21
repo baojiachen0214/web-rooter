@@ -16,6 +16,14 @@
     "douyin": [
       "https://www.douyin.com/search/{query}",
       "https://www.iesdouyin.com/share/search/{query}"
+    ],
+    "bilibili": [
+      "https://search.bilibili.com/all?keyword={query}",
+      "https://search.bilibili.com/video?keyword={query}"
+    ],
+    "xiaohongshu": [
+      "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_explore_feed",
+      "https://www.xiaohongshu.com/search_result?keyword={query}"
     ]
   },
   "backup_domain_priority": {
