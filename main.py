@@ -35,6 +35,7 @@ from core.job_system import get_job_store, spawn_job_worker
 from core.version import APP_VERSION
 from core.terminal_logo import render_logo_from_png
 from core.cli_entry import build_cli_command
+from core.http_ssl import is_insecure_ssl_enabled
 from core.updater import (
     compare_semver_tags,
     fetch_github_releases,
@@ -2603,6 +2604,15 @@ class WebRooterCLI:
                 return message.splitlines()[0]
             return exc.__class__.__name__
 
+        def http_failure_fix(detail: str) -> str:
+            normalized = detail.upper()
+            if "CERTIFICATE_VERIFY_FAILED" in normalized or "UNABLE TO GET LOCAL ISSUER CERTIFICATE" in normalized:
+                return (
+                    "若本机/代理使用自定义根证书，请设置 WEB_ROOTER_SSL_CA_FILE=/path/to/ca.pem；"
+                    "若浏览器运行时可用，可尝试 visit <url> --js"
+                )
+            return "检查网络/DNS；若浏览器运行时可用，可尝试 visit <url> --js"
+
         def detect_local_recommended_python() -> Optional[str]:
             candidates: List[Path] = []
             if sys.platform.startswith("win"):
@@ -2717,6 +2727,14 @@ class WebRooterCLI:
             "执行: playwright install chromium",
         )
 
+        insecure_ssl_enabled = is_insecure_ssl_enabled()
+        add_check(
+            "TLS 证书校验",
+            not insecure_ssl_enabled,
+            "已启用证书校验" if not insecure_ssl_enabled else "已禁用证书校验（WEB_ROOTER_INSECURE_SSL=1）",
+            "仅在可信内网或临时排障时使用；恢复后请移除 WEB_ROOTER_INSECURE_SSL",
+        )
+
         if not module_status.get("aiohttp", False):
             add_check(
                 "HTTP 抓取链路",
@@ -2734,22 +2752,24 @@ class WebRooterCLI:
                     self.agent._crawler_fetch("https://example.com"),
                     timeout=12,
                 )
+                http_detail = (
+                    f"status={http_result.status_code}"
+                    if http_result.success
+                    else (http_result.error or f"status={http_result.status_code}")
+                )
                 add_check(
                     "HTTP 抓取链路",
                     http_result.success,
-                    (
-                        f"status={http_result.status_code}"
-                        if http_result.success
-                        else (http_result.error or f"status={http_result.status_code}")
-                    ),
-                    "检查网络/DNS；若浏览器运行时可用，可尝试 visit <url> --js",
+                    http_detail,
+                    http_failure_fix(http_detail),
                 )
             except Exception as e:
+                error_text = short_error(e)
                 add_check(
                     "HTTP 抓取链路",
                     False,
-                    short_error(e),
-                    "检查网络连接；若浏览器运行时可用，可尝试 visit <url> --js",
+                    error_text,
+                    http_failure_fix(error_text),
                 )
 
         success_count = sum(1 for ok in checks if ok)
