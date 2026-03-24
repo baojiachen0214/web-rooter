@@ -183,7 +183,7 @@ class AdvancedSearchEngineClient:
         AdvancedSearchEngine.YANDEX: "https://yandex.com/search/?text={query}&lr={count}",
 
         # 社交媒体
-        AdvancedSearchEngine.XIAOHONGSHU: "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_explore_feed",
+        AdvancedSearchEngine.XIAOHONGSHU: "https://www.xiaohongshu.com/search_result/?keyword={query}&source=web_search_result_notes&type=51",
         AdvancedSearchEngine.BILIBILI: "https://search.bilibili.com/all?keyword={query}",
         AdvancedSearchEngine.ZHIHU: "https://www.zhihu.com/search?type=content&q={query}",
         AdvancedSearchEngine.TIEBA: "https://tieba.baidu.com/f/search/res?ie=utf-8&qw={query}",
@@ -569,6 +569,11 @@ class AdvancedSearchEngineClient:
             raw_url = item.get("link") or item.get("url") or ""
             normalized_url = self._normalize_result_url(raw_url, engine)
             title = (item.get("title") or "").strip()
+            
+            # 新增：过滤导航类结果
+            if not self._is_valid_result(title, normalized_url, engine):
+                continue
+            
             if title and normalized_url:
                 parsed_results.append(
                     SearchResult(
@@ -694,6 +699,11 @@ class AdvancedSearchEngineClient:
                         snippet = snippet_elem.get_text(strip=True)[:500]
 
                 normalized_url = self._normalize_result_url(url, engine)
+                
+                # 新增：过滤导航类标题和 URL
+                if not self._is_valid_result(title, normalized_url, engine):
+                    continue
+                
                 if title and normalized_url:
                     results.append(SearchResult(
                         title=title,
@@ -707,6 +717,69 @@ class AdvancedSearchEngineClient:
                 continue
 
         return results
+
+    def _is_valid_result(self, title: str, url: str, engine: AdvancedSearchEngine) -> bool:
+        """
+        验证搜索结果是否有效（排除导航/功能页面）。
+        """
+        if not title or not url:
+            return False
+        
+        title_clean = title.strip().lower()
+        url_lower = url.lower()
+        
+        # 排除导航类标题
+        excluded_titles = {
+            "直播", "livelist", "lives",
+            "首页", "home",
+            "发现", "explore",
+            "搜索", "search",
+            "通知", "notification",
+            "消息", "messages",
+            "我的", "profile", "me",
+            "登录", "login",
+            "注册", "signup", "register",
+            "更多", "more",
+            "综合", "全部", "all",
+            "实时", "热门", "视频", "图片", "用户",
+        }
+        
+        if title_clean in excluded_titles:
+            logger.debug(f"过滤导航标题: {title}")
+            return False
+        
+        # 排除导航类 URL 路径（精确匹配根路径，不匹配子路径）
+        # 例如：/explore 是发现页（排除），/explore/abc123 是笔记（保留）
+        excluded_root_paths = [
+            "/livelist", "/live",
+            "/notification", "/notifications",
+            "/search", "/search_result",
+            "/home", "/index",
+            "/login", "/signup", "/register",
+            "/profile", "/me", "/user",
+            "/explore",  # 只排除 /explore，不排除 /explore/xxx
+        ]
+        
+        try:
+            parsed = urlparse(url)
+            path = parsed.path.rstrip("/")
+            
+            # 只精确匹配根路径
+            if path in excluded_root_paths:
+                logger.debug(f"过滤导航 URL: {url}")
+                return False
+            
+            # 排除 /live/xxx 这样的路径
+            excluded_prefixes = ["/livelist/", "/live/", "/notification/", "/search/"]
+            for prefix in excluded_prefixes:
+                if path.startswith(prefix):
+                    logger.debug(f"过滤导航 URL: {url}")
+                    return False
+                    
+        except Exception:
+            pass
+        
+        return True
 
     def _normalize_result_url(self, raw_url: str, engine: AdvancedSearchEngine) -> str:
         """标准化搜索结果 URL，尽量转成可直接抓取的 http(s) 链接。"""
@@ -1543,7 +1616,7 @@ _ENGINE_URL_FALLBACK_TEMPLATES: Dict[str, List[str]] = {
         "https://search.bilibili.com/video?keyword={query}",
     ],
     "xiaohongshu": [
-        "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_explore_feed",
+        "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_search_result_notes",
         "https://www.xiaohongshu.com/search_result?keyword={query}",
     ],
 }

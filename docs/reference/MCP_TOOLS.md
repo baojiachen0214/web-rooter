@@ -48,3 +48,19 @@
 - `web_budget_telemetry` 返回 `health_score`、`pressure.level`、`utilization` 与 `alerts`
 - `web_search_academic.sources` 支持：
   - `arxiv`, `google_scholar`, `semantic_scholar`, `pubmed`, `ieee`, `cnki`, `wanfang`, `paper_with_code`, `github`, `gitee`
+
+
+## High-level do runtime
+
+- `do_task(task, ...)`：与 CLI `wr do` 复用同一套 do runtime
+- `plan_task(task, ...)`：与 CLI `wr do-plan` 复用同一套 do runtime
+
+这两个入口适合把 MCP 作为高层编排适配层时使用，而不是在上层重复实现一份 do 逻辑。
+
+
+## Runtime hints
+
+高层 `do_task` / `plan_task` 返回结果现在会附带 `micro_skills` 与 completion 相关信息：
+
+- `micro_skills`：当前任务该优先用哪些高层工具、避免哪些低层工具
+- `completion` / `completion_contract`：执行后完成度、缺失项、是否建议 fallback

@@ -16,7 +16,7 @@ import re
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import logging
 
 from agents.web_agent import WebAgent
@@ -35,6 +35,7 @@ from core.job_system import get_job_store, spawn_job_worker
 from core.version import APP_VERSION
 from core.terminal_logo import render_logo_from_png
 from core.cli_entry import build_cli_command
+from core.do_runtime import build_skill_playbook_payload, execute_do_task
 from core.http_ssl import is_insecure_ssl_enabled
 from core.updater import (
     compare_semver_tags,
@@ -44,6 +45,10 @@ from core.updater import (
     select_latest_release,
     update_git_to_tag,
 )
+from core.cookie_sync import get_cookie_sync_manager
+from core.auth_profiles import get_auth_profile_registry
+from core.ai_tool_skills import doctor_skills, install_skills, register_skills_dir
+from core.micro_skills import build_micro_skill_hints
 
 try:
     from rich.console import Console
@@ -107,6 +112,20 @@ if (
 
 class WebRooterCLI:
     """命令行界面"""
+    # 需要在执行前自动同步 cookie 的命令列表
+    _AUTO_COOKIE_SYNC_COMMANDS = {
+        # 低层抓取命令
+        "visit", "html", "dom", "fetch",
+        # 搜索/爬取命令
+        "search", "extract", "crawl", "links", "kb", "knowledge",
+        # 引擎类命令
+        "web", "deep", "research", "mindsearch", "ms",
+        "social", "shopping", "shop", "commerce", "tech", "academic", "site",
+        # 编排命令（会间接执行爬虫）
+        "do", "do-plan", "do_plan", "plan", "do-submit", "do_submit",
+        # 快捷命令
+        "quick", "q", "task", "orchestrate", "auto",
+    }
     _KNOWN_COMMAND_ALIASES = {
         "visit",
         "html",
@@ -190,6 +209,12 @@ class WebRooterCLI:
         "skills",
         "skill-profiles",
         "skill_profiles",
+        "skills-install",
+        "skills_install",
+        "install-skills",
+        "install_skills",
+        "add-skills-dir",
+        "add_skills_dir",
         "ir-lint",
         "ir_lint",
         "lint-ir",
@@ -215,8 +240,20 @@ class WebRooterCLI:
         "safe-mode",
         "safe_mode",
         "guard",
+        "cookie",
+        "cookies",
     }
     _DEFAULT_COMMAND_TIMEOUT_SEC = 240
+    _COMMAND_TIMEOUT_DEFAULTS = {
+        "quick": 300,
+        "q": 300,
+        "task": 300,
+        "research": 420,
+        "mindsearch": 420,
+        "ms": 420,
+        "deep": 360,
+        "do": 300,
+    }
     _COMMAND_TIMEOUT_TARGETS = {
         "visit",
         "html",
@@ -260,6 +297,19 @@ class WebRooterCLI:
         self.tools: Optional[WebTools] = None
         self._safe_mode = get_safe_mode_manager()
         self._job_store = get_job_store()
+
+        # Auto cookie sync configuration
+        self._auto_cookie_sync_enabled = str(os.getenv("WEB_ROOTER_AUTO_COOKIE_SYNC", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        self._cookie_synced_commands: set = set()  # Track commands that have synced cookies in this session
+
+        # AI hint configuration - periodic friendly reminders during long tasks
+        self._ai_hint_enabled = str(os.getenv("WEB_ROOTER_AI_HINT_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        self._ai_hint_interval = int(str(os.getenv("WEB_ROOTER_AI_HINT_INTERVAL_SEC", "30")).strip() or "30")
+        self._ai_hint_commands = {
+            "do", "do-submit", "web", "deep", "research", "mindsearch",
+            "social", "shopping", "academic", "crawl", "quick", "task", "orchestrate", "auto"
+        }
+
         rich_disabled = str(os.getenv("WEB_ROOTER_NO_RICH", "0")).strip().lower() in {"1", "true", "yes", "on"}
         force_rich = str(os.getenv("WEB_ROOTER_FORCE_RICH", "0")).strip().lower() in {"1", "true", "yes", "on"}
         is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
@@ -330,8 +380,70 @@ class WebRooterCLI:
             self.tools = WebTools()
             await self.tools.initialize()
 
+    def _should_show_ai_hint(self, command: str) -> bool:
+        """判断是否应该显示 AI 提示"""
+        if not self._ai_hint_enabled:
+            return False
+        normalized = str(command or "").strip().lower()
+        return normalized in self._ai_hint_commands
+
+    def _get_ai_hint_message(self, command: str, elapsed_sec: int) -> str:
+        """获取 AI 提示消息"""
+        # 友好的提示语，告诉 AI 这不是报错
+        hints = [
+            "💡 任务正在执行中，这可能需要一些时间。你可以继续等待，或者去执行其他并行任务。",
+            "📌 提醒：wr 的标准流程是 `wr skills --resolve` → `wr do-plan` → `wr do --dry-run` → `wr do`。",
+            "⏳ 长任务建议使用 `wr do-submit` 后台执行，然后用 `wr jobs` 和 `wr job-status` 查看进度。",
+            "🔍 如需更多帮助，运行 `wr help` 查看完整命令列表。",
+        ]
+
+        if elapsed_sec >= self._ai_hint_interval * 2:
+            hint = "任务执行时间较长，建议：\n"
+            hint += "  1. 使用 `wr do-submit` 改为后台异步执行\n"
+            hint += "  2. 用 `wr jobs --status=running` 查看进度\n"
+            hint += "  3. 或者先处理其他任务，稍后再回来检查结果"
+        elif elapsed_sec >= self._ai_hint_interval:
+            hint = "任务正在正常执行中，请耐心等候。如果你需要同时处理其他任务，可以考虑使用并行执行。"
+        else:
+            hint = "任务执行中..."
+
+        return f"""
+╔══════════════════════════════════════════════════════════════╗
+║  ⏰  任务执行中（已运行 {elapsed_sec} 秒）                        ║
+║                                                              ║
+║  【这不是报错，是友好提醒】                                   ║
+║  {hint}
+║                                                              ║
+║  常用命令回顾：                                               ║
+║  • wr help                     查看完整命令列表               ║
+║  • wr skills --resolve "目标"  解析应使用的 skill             ║
+║  • wr do-plan "目标"           生成执行计划                  ║
+║  • wr do "目标" --dry-run      预演执行（不实际抓取）         ║
+║  • wr do-submit "目标"         后台异步执行长任务             ║
+║  • wr jobs                     查看作业列表                   ║
+║  • wr job-status <id>          查看作业状态                   ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+
+    async def _ai_hint_loop(self, command: str, stop_event: asyncio.Event) -> None:
+        """后台 AI 提示循环"""
+        elapsed = 0
+        while not stop_event.is_set():
+            await asyncio.sleep(min(10, self._ai_hint_interval - (elapsed % self._ai_hint_interval)))
+            elapsed += 10
+            if elapsed >= self._ai_hint_interval and stop_event.is_set() is False:
+                hint = self._get_ai_hint_message(command, elapsed)
+                self._print_line(hint, level="info")
+
     async def run_command_safely(self, command: str, args: list[str]) -> bool:
         sanitized_args, command_timeout_sec = self._extract_command_timeout(command, args)
+
+        # Start AI hint loop if enabled
+        hint_task: Optional[asyncio.Task] = None
+        stop_event = asyncio.Event()
+        if self._should_show_ai_hint(command):
+            hint_task = asyncio.create_task(self._ai_hint_loop(command, stop_event))
+
         try:
             if command_timeout_sec and command_timeout_sec > 0:
                 return await asyncio.wait_for(
@@ -345,6 +457,15 @@ class WebRooterCLI:
         except Exception as exc:
             self._print_result(self._build_command_exception_payload(command, exc))
             return True
+        finally:
+            # Stop the hint loop
+            if hint_task and not hint_task.done():
+                stop_event.set()
+                hint_task.cancel()
+                try:
+                    await hint_task
+                except asyncio.CancelledError:
+                    pass
 
     @classmethod
     def _is_timeout_managed_command(cls, command: str) -> bool:
@@ -402,12 +523,34 @@ class WebRooterCLI:
         if not manage_timeout:
             return sanitized, None
 
+        fallback_default = cls._command_default_timeout(normalized)
         env_default = cls._parse_option_int(
-            str(os.getenv("WEB_ROOTER_COMMAND_TIMEOUT_SEC", cls._DEFAULT_COMMAND_TIMEOUT_SEC)),
-            cls._DEFAULT_COMMAND_TIMEOUT_SEC,
+            str(os.getenv("WEB_ROOTER_COMMAND_TIMEOUT_SEC", fallback_default)),
+            fallback_default,
         )
         timeout_sec = max(0, int(env_default))
         return sanitized, (timeout_sec if timeout_sec > 0 else None)
+
+    @classmethod
+    def _command_default_timeout(cls, command: str) -> int:
+        normalized = str(command or "").strip().lower()
+        if not normalized:
+            return cls._DEFAULT_COMMAND_TIMEOUT_SEC
+        env_key = f"WEB_ROOTER_COMMAND_TIMEOUT_{normalized.replace('-', '_').upper()}_SEC"
+        env_specific = cls._parse_option_int(
+            str(os.getenv(env_key, "")).strip() or str(cls._COMMAND_TIMEOUT_DEFAULTS.get(normalized, cls._DEFAULT_COMMAND_TIMEOUT_SEC)),
+            cls._COMMAND_TIMEOUT_DEFAULTS.get(normalized, cls._DEFAULT_COMMAND_TIMEOUT_SEC),
+        )
+        return max(0, int(env_specific))
+
+    def _attach_micro_skill_hints(self, payload: Any, command: str, text: str = "") -> Dict[str, Any]:
+        if hasattr(payload, "to_dict"):
+            payload = payload.to_dict()
+        if not isinstance(payload, dict):
+            payload = {"result": payload}
+        enriched = dict(payload)
+        enriched["micro_skills"] = build_micro_skill_hints(command, text)
+        return enriched
 
     def _build_command_timeout_payload(self, command: str, timeout_sec: Optional[int]) -> Dict[str, Any]:
         normalized = str(command or "").strip().lower() or command
@@ -468,6 +611,64 @@ class WebRooterCLI:
         else:
             print("Bye 再见!")
 
+    async def _maybe_sync_cookie(self, command: str) -> None:
+        """
+        在执行爬虫/查找命令前自动同步 cookie（如果启用了自动同步）。
+
+        逻辑：
+        1. 检查是否启用了 WEB_ROOTER_AUTO_COOKIE_SYNC
+        2. 检查命令是否在需要同步的列表中
+        3. 检查是否有已保存的 auth profile
+        4. 如果有，则从浏览器刷新 cookie
+        """
+        if not self._auto_cookie_sync_enabled:
+            return
+
+        normalized = str(command or "").strip().lower()
+        if normalized not in self._AUTO_COOKIE_SYNC_COMMANDS:
+            return
+
+        # 避免重复合步
+        if normalized in self._cookie_synced_commands:
+            return
+
+        # 检查是否有已保存的 auth profile
+        registry = get_auth_profile_registry()
+        profiles = registry.list_profiles()
+        if not profiles:
+            return  # 没有已保存的 profile，无需同步
+
+        # 标记为已同步（无论成功与否，避免重复尝试）
+        self._cookie_synced_commands.add(normalized)
+
+        try:
+            manager = get_cookie_sync_manager()
+            available_browsers = manager.get_available_browsers()
+            if not available_browsers:
+                logger.debug("Auto cookie sync skipped: no available browsers")
+                return
+
+            # 从所有可用浏览器刷新 cookie
+            for browser_id in available_browsers:
+                try:
+                    extractor = manager.extractors.get(browser_id)
+                    if extractor:
+                        # 提取所有 cookie（不指定域名过滤）
+                        cookies = extractor.extract_cookies()
+                        if cookies:
+                            logger.debug(f"Auto cookie sync: extracted {len(cookies)} cookies from {browser_id}")
+                except Exception as e:
+                    logger.debug(f"Auto cookie sync: failed to extract from {browser_id}: {e}")
+
+            if self._console:
+                self._console.print("[dim]Auto cookie sync completed[/dim]")
+            else:
+                logger.info("Auto cookie sync completed")
+
+        except Exception as e:
+            logger.debug(f"Auto cookie sync failed: {e}")
+            # 不阻塞主命令执行
+
     async def run_command(self, command: str, args: list[str]) -> bool:
         """运行命令"""
         if command in {"safe-mode", "safe_mode", "guard"}:
@@ -485,6 +686,9 @@ class WebRooterCLI:
                 }
             )
             return True
+
+        # Auto cookie sync: run before search/crawl commands if enabled
+        await self._maybe_sync_cookie(command)
 
         if command == "visit" and args:
             url = args[0]
@@ -571,7 +775,8 @@ class WebRooterCLI:
                 self._print_usage("用法：do <goal> [--skill=name] [--dry-run] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--command-timeout-sec=N] [--html-first|--no-html-first]")
                 return True
 
-            result = await self.agent.run_do_task(
+            result = await execute_do_task(
+                self.agent,
                 task=task_text,
                 html_first=html_first,
                 top_results=top_results,
@@ -639,7 +844,8 @@ class WebRooterCLI:
                 self._print_usage("用法：do-plan <goal> [--skill=name] [--strict] [--js] [--top=N] [--crawl-assist] [--crawl-pages=N] [--html-first|--no-html-first]")
                 return True
 
-            payload = self.agent.build_skill_playbook(
+            payload = build_skill_playbook_payload(
+                self.agent,
                 task=task_text,
                 explicit_skill=explicit_skill,
                 html_first=html_first,
@@ -897,6 +1103,36 @@ class WebRooterCLI:
                 catalog = self.agent.get_skill_profiles()
                 payload = {"success": True, **catalog}
             self._print_result(payload)
+
+        elif command in {"skills-install", "skills_install", "install-skills", "install_skills"}:
+            include_home = True
+            if "--no-home" in args:
+                include_home = False
+            payload = {"success": True, **install_skills(Path.cwd(), include_home=include_home)}
+            self._print_result(self._attach_micro_skill_hints(payload, "skills-install", ""))
+
+        elif command in {"add-skills-dir", "add_skills_dir"}:
+            target_path: Optional[str] = None
+            tool_name = "generic"
+            write_now = True
+            i = 0
+            while i < len(args):
+                arg = str(args[i]).strip()
+                if arg.startswith("--tool="):
+                    tool_name = arg.split("=", 1)[1].strip() or "generic"
+                elif arg == "--tool" and i + 1 < len(args):
+                    i += 1
+                    tool_name = str(args[i]).strip() or "generic"
+                elif arg == "--register-only":
+                    write_now = False
+                elif not arg.startswith("--") and target_path is None:
+                    target_path = arg
+                i += 1
+            if not target_path:
+                self._print_usage("用法：add-skills-dir <path> [--tool=claude|codex|cursor|generic] [--register-only]")
+                return True
+            payload = register_skills_dir(Path.cwd(), target_path, tool=tool_name, write_now=write_now)
+            self._print_result(self._attach_micro_skill_hints(payload, "add-skills-dir", target_path))
 
         elif command in {"ir-lint", "ir_lint", "lint-ir", "lint_ir"} and args:
             raw_input = " ".join(args).strip()
@@ -1211,7 +1447,7 @@ class WebRooterCLI:
                     )
                 finally:
                     await deep_search.close()
-                self._print_result(result)
+                self._print_result(self._attach_micro_skill_hints(result, "web", query))
             else:
                 result = await self.agent.search_internet(
                     query,
@@ -1219,12 +1455,12 @@ class WebRooterCLI:
                     auto_crawl=auto_crawl,
                     crawl_pages=crawl_pages,
                 )
-                self._print_result(result)
+                self._print_result(self._attach_micro_skill_hints(result, "web", query))
 
         elif command == "research" and args:
             topic = " ".join(args)
             result = await self.agent.research_topic(topic)
-            self._print_result(result)
+            self._print_result(self._attach_micro_skill_hints(result, "research", topic))
 
         elif command in {"mindsearch", "ms"} and args:
             use_en = False
@@ -1688,7 +1924,7 @@ class WebRooterCLI:
                 include_code=include_code,
                 fetch_abstracts=fetch_abstracts,
             )
-            self._print_result(result)
+            self._print_result(self._attach_micro_skill_hints(result, "academic", query))
 
         elif command == "site" and len(args) >= 2:
             url = args[0]
@@ -1795,7 +2031,7 @@ class WebRooterCLI:
                 )
             finally:
                 await deep_search.close()
-            self._print_result(result)
+            self._print_result(self._attach_micro_skill_hints(result, "deep", query))
 
         elif command == "social":
             platforms = []
@@ -1826,7 +2062,7 @@ class WebRooterCLI:
 
             logger.info(f"搜索社交媒体：{query}, 平台：{platforms or '全部'}")
             result = await search_social_media(query, platforms or None)
-            self._print_result(result)
+            self._print_result(self._attach_micro_skill_hints(result, "social", query))
 
         elif command in {"shopping", "shop", "commerce"}:
             platforms = []
@@ -1853,7 +2089,7 @@ class WebRooterCLI:
 
             logger.info(f"搜索电商平台：{query}, 平台：{platforms or '全部'}")
             result = await search_commerce(query, platforms or None)
-            self._print_result(result)
+            self._print_result(self._attach_micro_skill_hints(result, "shopping", query))
 
         elif command == "tech":
             sources = []
@@ -1906,6 +2142,10 @@ class WebRooterCLI:
 
         elif command == "doctor":
             await self._run_doctor()
+
+        elif command in {"cookie", "cookies"}:
+            payload = await self._run_cookie_command(args)
+            self._print_result(payload)
 
         elif command in {"update", "upgrade", "self-update", "self_update"}:
             payload = await self._run_update_command(args)
@@ -1981,7 +2221,8 @@ class WebRooterCLI:
                     auto_crawl=True,
                     crawl_pages=max(0, crawl_pages),
                 )
-            self._print_result(result)
+            payload = result.to_dict() if hasattr(result, "to_dict") else result
+            self._print_result(self._attach_micro_skill_hints(payload if isinstance(payload, dict) else {"result": payload}, "quick", raw_input))
             return
 
         result = await self.agent.orchestrate_task(
@@ -1993,7 +2234,8 @@ class WebRooterCLI:
             crawl_pages=max(1, crawl_pages),
             strict=strict,
         )
-        self._print_result(result)
+        payload = result.to_dict() if hasattr(result, "to_dict") else result
+        self._print_result(self._attach_micro_skill_hints(payload if isinstance(payload, dict) else {"result": payload}, "quick", raw_input))
 
     def _evaluate_safe_mode_guard(self, command: str, args: List[str]) -> Dict[str, Any]:
         state = self._safe_mode.get_state()
@@ -2209,6 +2451,7 @@ class WebRooterCLI:
                 "quarkcn": AdvancedSearchEngine.QUARK,
                 "quark_sm": AdvancedSearchEngine.QUARK,
                 "xhs": AdvancedSearchEngine.XIAOHONGSHU,
+                "小红书": AdvancedSearchEngine.XIAOHONGSHU,
                 "bili": AdvancedSearchEngine.BILIBILI,
                 "x": AdvancedSearchEngine.TWITTER,
                 "jdcom": AdvancedSearchEngine.JD,
@@ -2364,7 +2607,7 @@ class WebRooterCLI:
         自更新命令：
         - wr update --check
         - wr update --list
-        - wr update --to v0.2.4 --yes
+        - wr update --to v0.3.0 --yes
         - wr update               (交互式选择版本)
         """
         env_repo = str(os.getenv("WEB_ROOTER_GITHUB_REPO", "")).strip()
@@ -2570,6 +2813,409 @@ class WebRooterCLI:
         idx = max(1, min(len(items), idx))
         return str(getattr(items[idx - 1], "tag_name", "") or "")
 
+    async def _run_cookie_command(self, args: List[str]) -> Dict[str, Any]:
+        """
+        Cookie 同步命令：自动检测浏览器并提取 Cookie 到 Web-Rooter 配置
+        
+        用法:
+          wr cookie                          # 检测可用浏览器并列出
+          wr cookie <platform>               # 提取指定平台的 Cookie (如 xiaohongshu, zhihu)
+          wr cookie <platform> --browser=safari   # 指定浏览器
+          wr cookie <platform> --output=path      # 指定输出路径
+          wr cookie <platform> --dry-run          # 预览但不保存
+        """
+        from core.cookie_sync import get_cookie_sync_manager
+        
+        manager = get_cookie_sync_manager()
+        
+        # 解析参数
+        platform: Optional[str] = None
+        browser_filter: Optional[str] = None
+        output_path: Optional[str] = None
+        dry_run = False
+        list_browsers = False
+        
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            lower = arg.lower()
+            
+            if lower.startswith("--browser="):
+                browser_filter = arg.split("=", 1)[1].strip() or None
+            elif lower == "--browser" and i + 1 < len(args):
+                i += 1
+                browser_filter = str(args[i]).strip() or None
+            elif lower.startswith("--output="):
+                output_path = arg.split("=", 1)[1].strip() or None
+            elif lower == "--output" and i + 1 < len(args):
+                i += 1
+                output_path = str(args[i]).strip() or None
+            elif lower == "--dry-run":
+                dry_run = True
+            elif lower in {"--list", "-l"}:
+                list_browsers = True
+            elif not arg.startswith("--") and platform is None:
+                platform = arg.strip()
+            
+            i += 1
+        
+        # 列出可用浏览器
+        available = manager.get_available_browsers()
+        
+        if list_browsers or (not platform and not available):
+            return {
+                "success": True,
+                "mode": "list_browsers",
+                "available_browsers": available,
+                "total": len(available),
+                "hint": "使用 'wr cookie <platform>' 提取指定平台的 Cookie" if available else "未检测到可用浏览器",
+            }
+        
+        if not platform:
+            # 如果是交互式终端，进入交互模式
+            if sys.stdin.isatty():
+                return await self._run_cookie_interactive(manager, available)
+            # 非交互式，返回错误
+            return {
+                "success": False,
+                "error": "missing_platform",
+                "hint": "请指定平台，如: wr cookie xiaohongshu\n可用浏览器: " + ", ".join(available),
+                "available_browsers": available,
+            }
+        
+        if not available:
+            return {
+                "success": False,
+                "error": "no_browser_available",
+                "hint": "未检测到可用浏览器。请确保已安装 Chrome/Safari/Firefox/Edge 等浏览器",
+            }
+        
+        # 提取 Cookie
+        try:
+            result = manager.generate_auth_profile(
+                platform=platform,
+                browser_id=browser_filter,
+                output_path=Path(output_path) if output_path else None,
+            )
+            
+            if not result.get("success"):
+                return result
+            
+            if dry_run:
+                # 读取生成的配置但不保存（删除临时文件）
+                output_file = Path(result["output_path"])
+                if output_file.exists():
+                    config_text = output_file.read_text(encoding="utf-8")
+                    # 恢复原始配置（如果有）
+                    try:
+                        import json
+                        config = json.loads(config_text)
+                        # 找到刚添加的 profile
+                        profiles = config.get("profiles", [])
+                        new_profile = None
+                        for p in profiles:
+                            if p.get("name") == result.get("profile_name"):
+                                new_profile = p
+                                break
+                        
+                        return {
+                            "success": True,
+                            "mode": "dry_run",
+                            "platform": platform,
+                            "profile": new_profile,
+                            "cookies_count": result.get("cookies_count"),
+                            "domains": result.get("domains"),
+                            "hint": "预览模式：配置未保存。去掉 --dry-run 以保存",
+                        }
+                    finally:
+                        # 干跑模式下不保留更改，恢复原始文件
+                        pass
+            
+            # 成功保存
+            return {
+                "success": True,
+                "mode": "extract_and_save",
+                "platform": platform,
+                "browser": result.get("browser"),
+                "profile_name": result.get("profile_name"),
+                "output_path": result.get("output_path"),
+                "cookies_count": result.get("cookies_count"),
+                "domains": result.get("domains"),
+                "hint": f"已保存到 {result.get('output_path')}\n现在可以使用 'wr social \"{platform} 关键词\" --platform={platform}' 访问",
+            }
+            
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"cookie_extraction_failed:{exc.__class__.__name__}",
+                "detail": str(exc),
+                "hint": "请确保已在浏览器中登录目标平台",
+            }
+
+    async def _run_cookie_interactive(
+        self, 
+        manager: Any, 
+        available_browsers: List[str]
+    ) -> Dict[str, Any]:
+        """
+        交互式 Cookie 配置向导
+        
+        4步流程：
+        1. 检测浏览器
+        2. 扫描平台登录状态
+        3. 用户选择
+        4. 生成配置
+        """
+        from core.cookie_sync import CookieSyncManager
+        
+        # 打印标题
+        self._print_cookie_header()
+        
+        # Step 1: 检测浏览器
+        self._print_line("")
+        self._print_line("[1/4] 检测可用浏览器...")
+        browser_status = self._get_browser_display_names(available_browsers)
+        for name, available in browser_status:
+            icon = "✓" if available else "✗"
+            status = "" if available else " (未安装)"
+            self._print_line(f"  {icon} {name}{status}")
+        
+        if not available_browsers:
+            self._print_line("")
+            self._print_line("未检测到可用浏览器。请安装 Chrome、Safari、Firefox 或 Edge。", level="error")
+            return {
+                "success": False,
+                "error": "no_browser_available",
+                "hint": "请安装 Chrome、Safari、Firefox 或 Edge 浏览器",
+            }
+        
+        # Step 2: 扫描平台登录状态
+        self._print_line("")
+        self._print_line("[2/4] 发现已登录的平台...")
+        
+        platforms = self._scan_platforms_for_interactive(manager, available_browsers)
+        
+        if not platforms:
+            self._print_line("")
+            self._print_line("未检测到任何已登录的平台。", level="warn")
+            self._print_line("请在浏览器中登录以下平台之一：", level="dim")
+            for platform_id in CookieSyncManager.PLATFORM_DOMAINS.keys():
+                self._print_line(f"  • {self._get_platform_display_name(platform_id)}", level="dim")
+            self._print_line("")
+            self._print_line("然后重新运行: wr cookie", level="dim")
+            return {
+                "success": False,
+                "error": "no_logged_in_platforms",
+                "hint": "请在浏览器中登录目标平台后重试",
+            }
+        
+        # 显示检测到的平台
+        for p in platforms:
+            icon = "✓"
+            cookie_info = f", {p['cookies_count']} cookies" if p['cookies_count'] > 0 else ""
+            self._print_line(f"  {icon} {p['display_name']} ({p['domain']}) - {p['browser']}{cookie_info}")
+        
+        # Step 3: 用户选择
+        self._print_line("")
+        self._print_line("[3/4] 选择要配置的平台：")
+        
+        for i, p in enumerate(platforms, 1):
+            self._print_line(f"  {i}. {p['display_name']} ({p['cookies_count']} cookies)")
+        
+        self._print_line(f"  a. 全部配置")
+        self._print_line(f"  q. 取消")
+        self._print_line("")
+        
+        # 获取用户输入
+        try:
+            user_input = input("  请输入序号 (1-{}, a, q, 回车默认全部): ".format(len(platforms))).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            self._print_line("")
+            self._print_line("已取消", level="warn")
+            return {"success": False, "error": "cancelled_by_user"}
+        
+        # 处理用户选择
+        selected_platforms: List[Dict] = []
+        
+        if user_input == "q":
+            self._print_line("")
+            self._print_line("已取消", level="warn")
+            return {"success": False, "error": "cancelled_by_user"}
+        elif user_input == "a" or user_input == "":
+            # 全部配置
+            selected_platforms = platforms
+        else:
+            # 单个选择
+            try:
+                idx = int(user_input)
+                if 1 <= idx <= len(platforms):
+                    selected_platforms = [platforms[idx - 1]]
+                else:
+                    raise ValueError()
+            except (ValueError, IndexError):
+                self._print_line("")
+                self._print_line(f"无效选择: {user_input}", level="error")
+                return {"success": False, "error": "invalid_selection"}
+        
+        # Step 4: 生成配置
+        self._print_line("")
+        self._print_line("[4/4] 生成配置...")
+        
+        results = []
+        output_file: Optional[Path] = None
+        
+        for p in selected_platforms:
+            try:
+                result = manager.generate_auth_profile(
+                    platform=p['id'],
+                    browser_id=p['browser_id'],
+                    output_path=None,  # 使用默认路径
+                )
+                
+                if result.get("success"):
+                    results.append({
+                        "platform": p['display_name'],
+                        "cookies_count": result.get("cookies_count"),
+                        "success": True,
+                    })
+                    output_file = Path(result.get("output_path", ""))
+                else:
+                    results.append({
+                        "platform": p['display_name'],
+                        "success": False,
+                        "error": result.get("error", "unknown"),
+                    })
+            except Exception as e:
+                results.append({
+                    "platform": p['display_name'],
+                    "success": False,
+                    "error": str(e),
+                })
+        
+        # 显示结果
+        self._print_line("")
+        for r in results:
+            if r['success']:
+                self._print_line(f"  ✓ {r['platform']}: 提取 {r['cookies_count']} 个 Cookie → 已保存", level="success")
+            else:
+                self._print_line(f"  ✗ {r['platform']}: 失败 - {r.get('error', 'unknown')}", level="error")
+        
+        # 成功汇总
+        successful = [r for r in results if r['success']]
+        
+        if successful:
+            self._print_line("")
+            self._print_line("═" * 58)
+            self._print_line("配置完成！", level="success")
+            self._print_line("")
+            self._print_line("已配置的平台:")
+            for r in successful:
+                self._print_line(f"  • {r['platform']}")
+            self._print_line("")
+            self._print_line("使用方法:")
+            for r in successful:
+                platform_id = next((p['id'] for p in selected_platforms if p['display_name'] == r['platform']), '')
+                if platform_id:
+                    self._print_line(f"  wr social \"关键词\" --platform={platform_id}")
+            self._print_line("═" * 58)
+            
+            return {
+                "success": True,
+                "mode": "interactive_config",
+                "configured_platforms": [r['platform'] for r in successful],
+                "total": len(successful),
+                "output_path": str(output_file) if output_file else None,
+            }
+        else:
+            return {
+                "success": False,
+                "error": "all_platforms_failed",
+                "results": results,
+            }
+    
+    def _print_cookie_header(self) -> None:
+        """打印 Cookie 配置向导标题"""
+        if self._console and Panel is not None:
+            self._console.print(Panel.fit("Web-Rooter Cookie 智能配置", border_style="cyan"))
+        else:
+            print("")
+            print("╔" + "═" * 56 + "╗")
+            print("║" + " " * 13 + "Web-Rooter Cookie 智能配置" + " " * 13 + "║")
+            print("╚" + "═" * 56 + "╝")
+    
+    def _get_browser_display_names(self, available: List[str]) -> List[Tuple[str, bool]]:
+        """获取浏览器显示名称和可用状态"""
+        all_browsers = [
+            ("Safari", "safari" in available),
+            ("Chrome", "chrome" in available),
+            ("Edge", "edge" in available),
+            ("Firefox", "firefox" in available),
+            ("Brave", "brave" in available),
+        ]
+        # 只显示系统支持的浏览器
+        import sys
+        if sys.platform != "darwin":
+            all_browsers = [b for b in all_browsers if b[0] != "Safari"]
+        return all_browsers
+    
+    def _scan_platforms_for_interactive(
+        self, 
+        manager: Any, 
+        browsers: List[str]
+    ) -> List[Dict]:
+        """扫描所有支持平台的登录状态（用于交互模式）"""
+        from core.cookie_sync import CookieSyncManager
+        
+        platforms = []
+        
+        for platform_id in CookieSyncManager.PLATFORM_DOMAINS.keys():
+            try:
+                # 尝试从第一个可用浏览器提取
+                cookies_by_browser = manager.extract_platform_cookies(
+                    platform_id, 
+                    browser_filter=browsers[:1]  # 优先使用第一个浏览器
+                )
+                
+                if cookies_by_browser:
+                    browser_id = list(cookies_by_browser.keys())[0]
+                    cookies = cookies_by_browser[browser_id]
+                    domains = CookieSyncManager.PLATFORM_DOMAINS.get(platform_id, [platform_id])
+                    
+                    platforms.append({
+                        "id": platform_id,
+                        "display_name": self._get_platform_display_name(platform_id),
+                        "domain": domains[0],
+                        "browser_id": browser_id,
+                        "browser": self._get_browser_display_name(browser_id),
+                        "cookies_count": len(cookies),
+                    })
+            except Exception:
+                continue
+        
+        return platforms
+    
+    def _get_platform_display_name(self, platform_id: str) -> str:
+        """获取平台的显示名称"""
+        names = {
+            "xiaohongshu": "小红书",
+            "zhihu": "知乎",
+            "bilibili": "Bilibili",
+            "weibo": "微博",
+            "douyin": "抖音",
+        }
+        return names.get(platform_id, platform_id)
+    
+    def _get_browser_display_name(self, browser_id: str) -> str:
+        """获取浏览器的显示名称"""
+        names = {
+            "safari": "Safari",
+            "chrome": "Chrome",
+            "edge": "Edge",
+            "firefox": "Firefox",
+            "brave": "Brave",
+        }
+        return names.get(browser_id, browser_id)
+
     async def _run_doctor(self):
         """运行本地环境诊断，减少 CLI 集成的试错成本。"""
         if self._console and Panel is not None:
@@ -2772,6 +3418,35 @@ class WebRooterCLI:
                     http_failure_fix(error_text),
                 )
 
+        try:
+            skills_report = doctor_skills(Path.cwd(), include_home=True)
+            checks_payload = skills_report.get("checks") if isinstance(skills_report, dict) else []
+            if isinstance(checks_payload, list):
+                total_skills = len(checks_payload)
+                ok_skills = sum(1 for item in checks_payload if isinstance(item, dict) and item.get("ok"))
+                add_check(
+                    "AI Skills 安装",
+                    ok_skills > 0,
+                    f"{ok_skills}/{total_skills} 个 skills 目标可被发现",
+                    "运行: wr skills-install 或 wr add-skills-dir <path> --tool=claude",
+                )
+                for item in checks_payload[:8]:
+                    if not isinstance(item, dict):
+                        continue
+                    add_check(
+                        f"skills/{item.get('tool')}",
+                        bool(item.get("ok")),
+                        str(item.get("path") or ""),
+                        str(item.get("fix") or ""),
+                    )
+        except Exception as exc:
+            add_check(
+                "AI Skills 安装",
+                False,
+                short_error(exc),
+                "运行: wr skills-install",
+            )
+
         success_count = sum(1 for ok in checks if ok)
         if self._console and Table is not None:
             table = Table(show_header=True, header_style="bold cyan")
@@ -2904,6 +3579,9 @@ Web-Rooter 可用命令:
                                   - 运行声明式工作流（AI 可自主决策每一步）
   skills [--resolve "<goal>"] [--compact|--full]
                                   - skills 探针（默认紧凑模式，可切换完整目录）
+  skills-install [--no-home]      - 将 AI skills 写入常见工具目录
+  add-skills-dir <path> [--tool=claude|codex|cursor|generic] [--register-only]
+                                  - 显式登记并写入额外 skills 目录
   ir-lint <ir-file|json|workflow-file|workflow-json>
                                   - 对 command IR / workflow 进行 lint（执行前校验）
   jobs [--limit=N] [--status=queued|running|completed|failed]
@@ -2917,7 +3595,7 @@ Web-Rooter 可用命令:
                                   - AI 命令防火墙（strict 模式只允许高层命令）
   update [--check|--list] [--to vX.Y.Z] [--yes] [--prerelease]
                                   - 连接 GitHub 检查/选择并更新本地版本（git 仓库）
-  doctor                          - 环境自检（依赖/浏览器/抓取链路）
+  doctor                          - 环境自检（依赖/浏览器/抓取链路/skills 可发现性）
   [通用] --command-timeout-sec=N  - 覆盖单条命令超时（默认读取 WEB_ROOTER_COMMAND_TIMEOUT_SEC）
   context [--limit=N] [--event=type] - 查看全局深度抓取上下文事件
   artifact [--nodes=N] [--edges=N] [--kind=page|url|domain|request|session]
@@ -2932,6 +3610,11 @@ Web-Rooter 可用命令:
   auth-profiles                   - 查看本地登录态 profile
   auth-hint <url>                 - 查看指定站点登录态匹配与提示
   auth-template [path] [--force]  - 导出本地登录模板 JSON
+  cookie [platform] [--browser=x] [--output=path] [--dry-run]
+                                  - 从本机浏览器提取 Cookie 并生成登录配置
+                                    支持平台: xiaohongshu, zhihu, bilibili, weibo, douyin
+                                    支持浏览器: safari, chrome, edge, brave, firefox
+                                    直接运行 wr cookie 进入交互式配置向导
 
 【其他】
   --version                       - 显示版本
@@ -2947,6 +3630,8 @@ Web-Rooter 可用命令:
   do-submit "分析 RAG benchmark 论文关系并给引用" --skill=academic_relation_mining --strict --timeout-sec=1200
   skills --resolve "抓取知乎评论区观点并给出处" --compact
   skills --resolve "抓取知乎评论区观点并给出处" --full
+  skills-install
+  add-skills-dir .claude/skills --tool=claude
   jobs --status=running
   jobs-clean --keep=80 --days=7
   job-status <job_id>
@@ -2984,6 +3669,11 @@ Web-Rooter 可用命令:
   auth-template
   auth-template .web-rooter/login_profiles.json --force
   auth-hint https://www.zhihu.com
+  cookie                                # 交互式配置向导（推荐）
+  cookie xiaohongshu                    # 直接从小红书提取 Cookie
+  cookie xiaohongshu --browser=safari   # 指定 Safari 浏览器
+  cookie zhihu --dry-run                # 预览但不保存
+  cookie --list                         # 列出可用浏览器
   workflow-schema
   workflow-template .web-rooter/workflow.social.json --scenario=social_comments --force
   workflow .web-rooter/workflow.social.json --var topic=\"手机 评测\" --var top_hits=8

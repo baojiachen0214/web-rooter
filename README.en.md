@@ -6,7 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
-    <img src="https://img.shields.io/badge/version-v0.2.4-blue.svg" alt="Version v0.2.4">
+    <img src="https://img.shields.io/badge/version-v0.3.0-blue.svg" alt="Version v0.3.0">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
   </p>
@@ -68,7 +68,7 @@ This helps the AI follow a stable route:
 ### Option A: Prebuilt binaries (recommended)
 
 1. Download from release:  
-   [https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.4](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.4)
+   [https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.0](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.0)
 2. Unzip and run installer:
    - Windows: `install-web-rooter.bat`
    - macOS/Linux: `./install-web-rooter.sh`
@@ -155,4 +155,4 @@ Run wr help first, then show your planned wr command sequence before continuing.
 
 ---
 
-Default branch is `main`. `v0.2.4` is the current stable release.
+Default branch is `main`. `v0.3.0` is the current stable release.

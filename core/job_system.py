@@ -212,9 +212,10 @@ class JobStore:
         record = self.get_job(job_id)
         if not isinstance(record, dict):
             return None
+        explicit_updated_at = fields.pop("updated_at", None)
         for key, value in fields.items():
             record[key] = value
-        record["updated_at"] = _utc_now_iso()
+        record["updated_at"] = explicit_updated_at if explicit_updated_at is not None else _utc_now_iso()
         self._meta_path(job_id).write_text(
             json.dumps(record, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -358,7 +359,11 @@ class JobStore:
 
             data = self._reconcile_job_state(data, persist=True)
             status = str(data.get("status") or "").strip().lower()
-            created = _parse_utc_iso(data.get("created_at")) or _parse_utc_iso(data.get("updated_at"))
+            created = (
+                _parse_utc_iso(data.get("updated_at"))
+                or _parse_utc_iso(data.get("finished_at"))
+                or _parse_utc_iso(data.get("created_at"))
+            )
 
             can_delete = _is_terminal_status(status) or include_running
             if not can_delete:
@@ -470,6 +475,9 @@ class JobStore:
 
     def _auto_prune_jobs(self) -> None:
         try:
+            job_dirs = [p for p in self._root_dir.glob("*") if p.is_dir()]
+            if len(job_dirs) <= self._auto_keep_recent():
+                return
             self.cleanup_jobs(
                 keep_recent=self._auto_keep_recent(),
                 older_than_days=self._auto_max_age_days(),

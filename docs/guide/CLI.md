@@ -15,10 +15,11 @@ wr doctor
 
 ## Philosophy
 
-- `do` 是一号入口：Intent -> Skill -> IR -> Lint -> Execute
+- `do` 是一号入口：Intent -> Skill -> IR -> Lint -> Execute -> Completion Post-check
 - `quick` 是兼容入口：内部仍走编排层
-- CLI 是一等接口：MCP 只是适配层
+- CLI 是一等接口：agent / MCP 复用 CLI 同源的 do runtime
 - URL 访问优先 `visit`，跨站研究优先 `web/deep/do`
+- 社交详情页优先走平台专用 reader，而不是先假设通用 HTML 可读
 
 ## Core Commands
 
@@ -38,6 +39,8 @@ wr job-result <job_id>
 
 wr safe-mode [status|on|off] [--policy=strict]
 wr skills [--resolve "<goal>"] [--compact|--full]
+wr skills-install [--no-home]
+wr add-skills-dir <path> [--tool=claude|codex|cursor|generic] [--register-only]
 wr ir-lint <ir-file|json|workflow-file|workflow-json>
 
 wr quick <url|query> [--js] [--top=N] [--crawl-pages=N] [--strict] [--command-timeout-sec=N]
@@ -71,6 +74,13 @@ wr artifact [--nodes=N] [--edges=N] [--kind=page|url|domain|request|session]
 ## Typical Workflows
 
 ### 1) AI-first single entry
+
+对于小红书 / Bilibili 这类详情页任务，建议仍优先走 `do-plan -> do`，因为：
+
+- planner 会把详情 URL 识别成 `social_detail`
+- 小红书详情页会落到 `xiaohongshu_detail` strategy
+- Bilibili 视频详情页会落到 `bilibili_detail` strategy
+- workflow 结束后会给 completion 百分比、缺失项和 fallback 建议
 
 ```bash
 wr skills --resolve "抓取知乎评论区观点并给出处" --compact
@@ -113,3 +123,53 @@ wr workflow .web-rooter/workflow.social.json --var topic="手机 评测" --var t
 - `jobs-clean` 用于回收历史作业目录，避免长期磁盘堆积
 - `safe-mode strict` 会限制低层命令，强制 AI 走高层入口
 - `telemetry` 可查看预算健康度（pressure/utilization/alerts）
+
+
+## Completion Post-check
+
+当 workflow spec 内含 `completion_contract` 时，`wr do` / `wr workflow` 在执行后会自动做一次 post-check。
+
+当前主要检查：
+
+- `body`
+- `author`
+- `engagement`
+- `comments`
+- `search_hits_required`
+- `browser_required`
+- `auth_hint_checked`
+- `comment_capture_preferred`
+
+典型结果：
+
+- `complete`：需要的输出都拿到了
+- `partial`：步骤大体成功，但正文/评论等仍有缺失
+- `incomplete`：关键输出基本没拿到
+
+这一步的目标是避免把“页面打开成功”误判成“任务已经完成”。
+
+
+## AI skills discovery
+
+Web-Rooter 现在把 AI skills 发现问题显式化了：
+
+- `wr skills-install`：把 skills 写到常见 AI 工具约定位置
+- `wr add-skills-dir <path> --tool=...`：显式登记并写入额外 skills 目录
+- `wr doctor`：检查 skills 是否真的可被工具发现
+
+默认覆盖的常见位置包括：
+
+- `.claude/skills/web-rooter/SKILL.md`
+- `AGENTS.md`
+- `.agents/skills/web-rooter/SKILL.md`
+- `.cursor/rules/web-rooter-cli.mdc`
+
+## Micro skills
+
+`wr skills --resolve`、`wr do-plan`、`wr do` 等高层命令会在结构化输出中附带 `micro_skills`。
+
+用途：
+
+- 给 AI 一个短而硬的执行提示
+- 约束“当前任务优先哪些命令、避免哪些命令”
+- 降低把 `crawl` / `site` / `extract` 误用于社交详情页或复杂任务的概率

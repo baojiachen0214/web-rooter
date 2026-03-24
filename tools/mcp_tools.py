@@ -3,6 +3,7 @@ MCP 工具定义 - 让 AI 可以调用网页爬取功能
 """
 import asyncio
 import json
+import re
 from typing import Optional, Dict, Any, List
 import logging
 
@@ -10,6 +11,7 @@ from agents.web_agent import WebAgent, AgentResponse
 from core.search.engine import SearchEngine
 from core.academic_search import AcademicSource, is_academic_query
 from core.search.advanced import DeepSearchEngine, search_social_media, search_tech, search_commerce
+from core.do_runtime import build_skill_playbook_payload, execute_do_task
 
 try:
     from core.crawler import Crawler
@@ -69,6 +71,7 @@ class WebTools:
     async def fetch(self, url: str) -> Dict[str, Any]:
         """
         获取网页内容
+        对社交媒体详情页自动使用浏览器（带登录态）
 
         Args:
             url: 要访问的 URL
@@ -77,8 +80,39 @@ class WebTools:
             包含页面标题、内容和链接的字典
         """
         await self._ensure_initialized()
-        result = await self._agent.visit(url)
+        
+        # 检测是否是社交媒体详情页，强制使用浏览器
+        if self._is_social_detail_url(url):
+            logger.info(f"检测到社交媒体详情页，使用浏览器访问: {url}")
+            result = await self._agent.visit(url, use_browser=True)
+        else:
+            result = await self._agent.visit(url)
+        
         return result.to_dict()
+    
+    def _is_social_detail_url(self, url: str) -> bool:
+        """检测 URL 是否是社交媒体详情页"""
+        social_patterns = [
+            # 小红书笔记详情页
+            (r"xiaohongshu\.com/explore/[a-z0-9]+", "xiaohongshu"),
+            (r"xiaohongshu\.com/discovery/item/[a-z0-9]+", "xiaohongshu"),
+            # 知乎问答/文章详情页
+            (r"zhihu\.com/question/\d+", "zhihu"),
+            (r"zhihu\.com/p/\d+", "zhihu"),
+            # 微博详情页
+            (r"weibo\.com/\d+/[a-zA-Z0-9]+", "weibo"),
+            (r"weibo\.com/ttarticle/p/show\?id=\d+", "weibo"),
+            # B站视频详情页
+            (r"bilibili\.com/video/[a-zA-Z0-9]+", "bilibili"),
+            (r"b23\.tv/[a-zA-Z0-9]+", "bilibili"),
+            # 贴吧帖子详情页
+            (r"tieba\.baidu\.com/p/\d+", "tieba"),
+        ]
+        
+        for pattern, platform in social_patterns:
+            if re.search(pattern, url):
+                return True
+        return False
 
     async def fetch_html(
         self,
@@ -698,6 +732,64 @@ class WebTools:
             电商平台搜索结果
         """
         return await search_commerce(query, platforms)
+
+
+    async def do_task(
+        self,
+        task: str,
+        *,
+        strict: bool = False,
+        dry_run: bool = False,
+        skill: Optional[str] = None,
+        html_first: Optional[bool] = None,
+        top_results: Optional[int] = None,
+        use_browser: Optional[bool] = None,
+        crawl_assist: Optional[bool] = None,
+        crawl_pages: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """高层任务入口：与 CLI `wr do` 共用同一套 do runtime。"""
+        await self._ensure_initialized()
+        result = await execute_do_task(
+            self._agent,
+            task=task,
+            html_first=html_first,
+            top_results=top_results,
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=crawl_pages,
+            strict=strict,
+            dry_run=dry_run,
+            explicit_skill=skill,
+            command_name="mcp-do",
+        )
+        return result.to_dict()
+
+    async def plan_task(
+        self,
+        task: str,
+        *,
+        strict: bool = False,
+        skill: Optional[str] = None,
+        html_first: Optional[bool] = None,
+        top_results: Optional[int] = None,
+        use_browser: Optional[bool] = None,
+        crawl_assist: Optional[bool] = None,
+        crawl_pages: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """高层规划入口：与 CLI `wr do-plan` 共用同一套 do runtime。"""
+        await self._ensure_initialized()
+        return build_skill_playbook_payload(
+            self._agent,
+            task=task,
+            explicit_skill=skill,
+            html_first=html_first,
+            top_results=top_results,
+            use_browser=use_browser,
+            crawl_assist=crawl_assist,
+            crawl_pages=crawl_pages,
+            strict=strict,
+            command_name="mcp-do-plan",
+        )
 
     async def _ensure_initialized(self):
         """确保已初始化"""

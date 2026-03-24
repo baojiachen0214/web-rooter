@@ -6,7 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
-    <img src="https://img.shields.io/badge/version-v0.2.4-blue.svg" alt="Version v0.2.4">
+    <img src="https://img.shields.io/badge/version-v0.3.0-blue.svg" alt="Version v0.3.0">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
   </p>
@@ -52,6 +52,17 @@ Web-Rooter 不是让用户长期手敲命令的独立工具，
 
 ## AI 工具协同（关键）
 
+现在 `do` 已经不是单纯的“固定拼接命令”，而是：
+
+- CLI 作为基底
+- agent / MCP 复用同一套 do runtime
+- workflow 执行后自动做 completion post-check
+
+也就是说，`do` 会区分：
+
+- 只是“步骤跑完了”
+- 还是“正文 / 作者 / 互动 / 评论真的拿到了”
+
 安装脚本会自动注入 skills（best-effort）到：
 
 - Claude Code / Claude Desktop
@@ -83,6 +94,18 @@ Web-Rooter 不是让用户长期手敲命令的独立工具，
 请先执行 wr help，并先给出你要执行的 wr 命令序列。
 ```
 
+### 执行时微提示（micro skills）
+
+`wr do` / `wr do-plan` / `wr skills --resolve` 等命令返回结果中会附带 `micro_skills`，动态指导 AI：
+
+| 任务类型 | 优先命令 | 避免命令 |
+|---------|---------|---------|
+| 社交详情页/评论区 | `do` / `social` / `auth-hint` | `crawl` / `site` |
+| 学术文献 | `academic` / `do --skill=academic_relation_mining` | 通用搜索 |
+| 电商比价 | `shopping` / `do --skill=commerce_review_mining` | 通用爬取 |
+
+这让 AI 获得上下文感知的动态指导，而不只是静态规则。
+
 ---
 
 ## 3 分钟安装与验证
@@ -90,7 +113,7 @@ Web-Rooter 不是让用户长期手敲命令的独立工具，
 ### 方案 A：预编译安装（推荐）
 
 Release 页面：  
-[https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.4](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.2.4)
+[https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.0](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.0)
 
 - Windows：运行 `install-web-rooter.bat`
 - macOS/Linux：运行 `./install-web-rooter.sh`
@@ -123,6 +146,12 @@ wr help
 ---
 
 ## 新用户先跑这几条
+
+补充说明：
+
+- 对小红书帖子详情页，`wr do` / `wr html` / `wr extract` 会优先走专门 reader
+- 对 Bilibili 视频详情页与评论区，也会优先走专门 reader
+- 执行结果里会携带 completion 信息，便于判断“只拿到正文”还是“正文+评论都拿到了”
 
 ```bash
 wr quick "OpenAI Agents SDK best practices"
@@ -160,7 +189,11 @@ wr telemetry
    - 或先用 `wr web`、`wr quick --js`。
 
 3. skills 注入失败怎么办？
-   - 手动执行：`python scripts/setup_ai_skills.py --repo-root .`
+   - 先执行：`wr skills-install`
+   - 如需显式注册目录：`wr add-skills-dir .claude/skills --tool=claude`
+   - Codex / AGENTS 兼容目录可执行：`wr add-skills-dir .agents/skills --tool=codex`
+   - 也可以手动执行：`python scripts/setup_ai_skills.py --repo-root .`
+   - `wr doctor` 现在会额外检查 AI skills 是否真的可被发现。
 
 ---
 
@@ -172,4 +205,6 @@ wr telemetry
 
 ---
 
-默认分支为 `main`，当前稳定版为 `v0.2.4`。
+默认分支为 `main`，当前稳定版为 `v0.3.0`。
+
+

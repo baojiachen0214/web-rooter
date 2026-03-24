@@ -59,10 +59,30 @@ from core.command_ir import (
     has_lint_errors,
 )
 from core.trace_distill import distill_workflow_trace
+from core.workflow_completion import evaluate_completion_contract, summarize_completion_report
 from core.runtime_state import PageSnapshot
 from core.research_kernel import ResearchKernel
 from core.metrics import set_budget_telemetry_provider, clear_budget_telemetry_provider
 from core.cli_entry import build_cli_command
+from core.social import (
+    is_bilibili_detail_url,
+    is_xiaohongshu_detail_url,
+    read_bilibili_detail,
+    read_xiaohongshu_note,
+)
+from core.do_runtime import build_skill_playbook_payload, execute_do_task
+from core.micro_skills import build_micro_skill_hints
+from core.do_planner import (
+    PlannerOptions,
+    TaskSpec,
+    classify_task_route,
+    detect_social_platforms,
+    extract_urls_from_text,
+    get_do_planner_registry,
+    has_comment_intent,
+    looks_like_url,
+    resolve_task_target_url,
+)
 from config import crawler_config
 
 if TYPE_CHECKING:
@@ -209,6 +229,91 @@ class WebAgent:
         assert self._kernel is not None
 
         try:
+            normalized_url = self._kernel.normalize_url(url)
+            if normalized_url and is_xiaohongshu_detail_url(normalized_url):
+                browser = await self._kernel.ensure_browser()
+                assert browser is not None
+                xhs_result = await read_xiaohongshu_note(browser, normalized_url)
+                if xhs_result.get("success"):
+                    note_detail = xhs_result.get("note_detail") if isinstance(xhs_result.get("note_detail"), dict) else {}
+                    comments = xhs_result.get("comments") if isinstance(xhs_result.get("comments"), list) else []
+                    content = (
+                        f"已读取小红书详情页：{note_detail.get('title') or xhs_result.get('title') or normalized_url}\n"
+                        f"正文长度：{len(str(note_detail.get('body') or ''))} 字符\n"
+                        f"评论捕获：{len(comments)} 条\n"
+                        f"详情来源：{xhs_result.get('detail_source')} / 评论来源：{xhs_result.get('comments_source')}"
+                    )
+                    return AgentResponse(
+                        success=True,
+                        content=content,
+                        data={
+                            "url": xhs_result.get("url") or normalized_url,
+                            "title": note_detail.get("title") or xhs_result.get("title") or "",
+                            "html": "",
+                            "html_truncated": False,
+                            "html_chars": 0,
+                            "text_preview": xhs_result.get("summary") or "",
+                            "links": [],
+                            "fetch_mode": "browser_xiaohongshu_specialized",
+                            "status_code": None,
+                            "platform": "xiaohongshu",
+                            "social_detail": xhs_result,
+                            "note_detail": note_detail,
+                            "comments": comments,
+                        },
+                        urls=[xhs_result.get("url")] if xhs_result.get("url") else [],
+                        metadata={
+                            "fetch_mode": "browser_xiaohongshu_specialized",
+                            "platform": "xiaohongshu",
+                            "detail_source": xhs_result.get("detail_source"),
+                            "comments_source": xhs_result.get("comments_source"),
+                            "captured_api_count": xhs_result.get("captured_api_count"),
+                            "login_wall": xhs_result.get("login_wall"),
+                        },
+                    )
+
+            if normalized_url and is_bilibili_detail_url(normalized_url):
+                browser = await self._kernel.ensure_browser()
+                assert browser is not None
+                bili_result = await read_bilibili_detail(browser, normalized_url)
+                if bili_result.get("success"):
+                    video_detail = bili_result.get("video_detail") if isinstance(bili_result.get("video_detail"), dict) else {}
+                    comments = bili_result.get("comments") if isinstance(bili_result.get("comments"), list) else []
+                    content = (
+                        f"已读取 Bilibili 详情页：{video_detail.get('title') or bili_result.get('title') or normalized_url}\n"
+                        f"正文长度：{len(str(video_detail.get('body') or ''))} 字符\n"
+                        f"评论捕获：{len(comments)} 条\n"
+                        f"详情来源：{bili_result.get('detail_source')} / 评论来源：{bili_result.get('comments_source')}"
+                    )
+                    return AgentResponse(
+                        success=True,
+                        content=content,
+                        data={
+                            "url": bili_result.get("url") or normalized_url,
+                            "title": video_detail.get("title") or bili_result.get("title") or "",
+                            "html": "",
+                            "html_truncated": False,
+                            "html_chars": 0,
+                            "text_preview": bili_result.get("summary") or "",
+                            "links": [],
+                            "fetch_mode": "browser_bilibili_specialized",
+                            "status_code": None,
+                            "platform": "bilibili",
+                            "social_detail": bili_result,
+                            "video_detail": video_detail,
+                            "comments": comments,
+                        },
+                        urls=[bili_result.get("url")] if bili_result.get("url") else [],
+                        metadata={
+                            "fetch_mode": "browser_bilibili_specialized",
+                            "platform": "bilibili",
+                            "detail_source": bili_result.get("detail_source"),
+                            "comments_source": bili_result.get("comments_source"),
+                            "captured_endpoints": bili_result.get("captured_endpoints"),
+                            "login_wall": bili_result.get("login_wall"),
+                        },
+                    )
+
             result = await self._kernel.fetch_html(
                 url=url,
                 use_browser=use_browser,
@@ -307,14 +412,101 @@ class WebAgent:
         Returns:
             AgentResponse: 提取结果
         """
+        if self._kernel is None:
+            await self._init()
+        assert self._kernel is not None
+
+        normalized_url = self._kernel.normalize_url(url)
+        if normalized_url and is_xiaohongshu_detail_url(normalized_url):
+            browser = await self._kernel.ensure_browser()
+            assert browser is not None
+            xhs_result = await read_xiaohongshu_note(browser, normalized_url)
+            if xhs_result.get("success"):
+                note_detail = xhs_result.get("note_detail") if isinstance(xhs_result.get("note_detail"), dict) else {}
+                comments = xhs_result.get("comments") if isinstance(xhs_result.get("comments"), list) else []
+                target_lower = str(target_info or "").lower()
+                comment_focus = any(token in target_lower for token in ["评论", "comment", "comments", "discussion", "反馈"])
+                body_focus = any(token in target_lower for token in ["正文", "body", "内容", "content", "title", "标题"])
+                lines = []
+                if body_focus or not comment_focus:
+                    lines.append(f"标题：{note_detail.get('title') or ''}")
+                    lines.append(f"作者：{note_detail.get('author_name') or ''}")
+                    lines.append("正文：")
+                    lines.append(str(note_detail.get('body') or '')[:3000])
+                if comment_focus or not body_focus:
+                    lines.append("评论区：")
+                    for idx, comment in enumerate(comments[:20], 1):
+                        author = comment.get("author_name") or "匿名"
+                        content = str(comment.get("content") or "").strip()
+                        if not content:
+                            continue
+                        lines.append(f"{idx}. {author}: {content}")
+                extracted = "\n".join(line for line in lines if line is not None)
+                return AgentResponse(
+                    success=True,
+                    content=f"从小红书详情页提取的信息：\n\n{extracted}",
+                    data={
+                        "extracted": extracted,
+                        "platform": "xiaohongshu",
+                        "social_detail": xhs_result,
+                        "note_detail": note_detail,
+                        "comments": comments,
+                    },
+                    urls=[xhs_result.get("url")] if xhs_result.get("url") else [],
+                    metadata={
+                        "platform": "xiaohongshu",
+                        "detail_source": xhs_result.get("detail_source"),
+                        "comments_source": xhs_result.get("comments_source"),
+                    },
+                )
+
+        if normalized_url and is_bilibili_detail_url(normalized_url):
+            browser = await self._kernel.ensure_browser()
+            assert browser is not None
+            bili_result = await read_bilibili_detail(browser, normalized_url)
+            if bili_result.get("success"):
+                video_detail = bili_result.get("video_detail") if isinstance(bili_result.get("video_detail"), dict) else {}
+                comments = bili_result.get("comments") if isinstance(bili_result.get("comments"), list) else []
+                target_lower = str(target_info or "").lower()
+                comment_focus = any(token in target_lower for token in ["评论", "comment", "comments", "discussion", "反馈", "弹幕"])
+                body_focus = any(token in target_lower for token in ["正文", "简介", "body", "内容", "content", "title", "标题"])
+                lines = []
+                if body_focus or not comment_focus:
+                    lines.append(f"标题：{video_detail.get('title') or ''}")
+                    lines.append(f"UP主：{video_detail.get('author_name') or ''}")
+                    lines.append("简介：")
+                    lines.append(str(video_detail.get('body') or '')[:3000])
+                if comment_focus or not body_focus:
+                    lines.append("评论区：")
+                    for idx, comment in enumerate(comments[:20], 1):
+                        author = comment.get("author_name") or "匿名"
+                        content = str(comment.get("content") or "").strip()
+                        if not content:
+                            continue
+                        lines.append(f"{idx}. {author}: {content}")
+                extracted = "\n".join(line for line in lines if line is not None)
+                return AgentResponse(
+                    success=True,
+                    content=f"从 Bilibili 详情页提取的信息：\n\n{extracted}",
+                    data={
+                        "extracted": extracted,
+                        "platform": "bilibili",
+                        "social_detail": bili_result,
+                        "video_detail": video_detail,
+                        "comments": comments,
+                    },
+                    urls=[bili_result.get("url")] if bili_result.get("url") else [],
+                    metadata={
+                        "platform": "bilibili",
+                        "detail_source": bili_result.get("detail_source"),
+                        "comments_source": bili_result.get("comments_source"),
+                    },
+                )
+
         # 访问页面
         visit_result = await self.visit(url)
         if not visit_result.success:
             return visit_result
-
-        if self._kernel is None:
-            await self._init()
-        assert self._kernel is not None
 
         knowledge = self._kernel.get_page(url)
         if not knowledge:
@@ -1036,6 +1228,10 @@ class WebAgent:
             variable_overrides=variable_overrides,
             strict=strict,
         )
+        completion_contract = spec.get("completion_contract") if isinstance(spec.get("completion_contract"), dict) else {}
+        if completion_contract:
+            completion_report = evaluate_completion_contract(payload, completion_contract)
+            payload["completion"] = completion_report
         trace = distill_workflow_trace(payload)
         payload["trace_distilled"] = trace
         try:
@@ -1075,6 +1271,8 @@ class WebAgent:
                 "name": payload.get("name"),
                 "failed_step": failed_step,
                 "strict": strict,
+                "completion_status": (payload.get("completion", {}) or {}).get("status") if isinstance(payload.get("completion"), dict) else None,
+                "completion_percent": (payload.get("completion", {}) or {}).get("completion_percent") if isinstance(payload.get("completion"), dict) else None,
             },
         )
 
@@ -1137,7 +1335,8 @@ class WebAgent:
         command_name: str = "do-plan",
     ) -> Dict[str, Any]:
         """构建阶段化执行剧本，供外层 AI 短上下文稳定调用。"""
-        compiled = self.compile_task_ir(
+        return build_skill_playbook_payload(
+            self,
             task=task,
             explicit_skill=explicit_skill,
             html_first=html_first,
@@ -1146,16 +1345,8 @@ class WebAgent:
             crawl_assist=crawl_assist,
             crawl_pages=crawl_pages,
             strict=strict,
-            dry_run=True,
             command_name=command_name,
         )
-        if not compiled.get("success"):
-            return {
-                "success": False,
-                "error": compiled.get("error"),
-                "compiled": compiled,
-            }
-        return self._compose_playbook_from_compiled(task=task, compiled=compiled, strict=strict)
 
     def build_skill_probe(
         self,
@@ -1254,6 +1445,7 @@ class WebAgent:
             "success": True,
             "task": task_text,
             "selected_skill": str(ir.get("skill") or "default_general_research"),
+            "micro_skills": build_micro_skill_hints(command_name, task_text),
             "route": str(ir.get("route") or "general"),
             "confidence": {
                 "min_margin": skill_resolution.get("min_margin"),
@@ -1293,7 +1485,19 @@ class WebAgent:
                     if isinstance(playbook.get("ai_contract"), dict)
                     else {}
                 ),
+                "planning": (
+                    playbook.get("planning")
+                    if isinstance(playbook.get("planning"), dict)
+                    else {}
+                ),
+                "task_spec": (
+                    playbook.get("task_spec")
+                    if isinstance(playbook.get("task_spec"), dict)
+                    else {}
+                ),
             },
+            "task_spec": compiled.get("task_spec", {}),
+            "planning": compiled.get("planning", {}),
             "skill_resolution": compact_resolution,
         }
 
@@ -1401,6 +1605,9 @@ class WebAgent:
                 "skill_resolution": skill_resolution,
             }
 
+        planner_registry = get_do_planner_registry()
+        task_spec = planner_registry.analyze_task(task_text)
+
         skill_defaults = profile.default_options if isinstance(profile, SkillProfile) else {}
         resolved_html_first = (
             self._coerce_bool(html_first, True)
@@ -1427,21 +1634,30 @@ class WebAgent:
             if crawl_pages is not None
             else self._coerce_int(skill_defaults.get("crawl_pages"), 2)
         )
+        planner_options = PlannerOptions(
+            html_first=resolved_html_first,
+            top_results=resolved_top_results,
+            use_browser=resolved_use_browser,
+            crawl_assist=resolved_crawl_assist,
+            crawl_pages=resolved_crawl_pages,
+        )
 
         route_override: Optional[str] = None
-        inferred_route = self._classify_task_route(task_text)
+        inferred_route = task_spec.route_family
         if profile and str(profile.route).strip().lower() not in {"", "auto"}:
             candidate_route = str(profile.route).strip().lower()
             # First-principles guard:
             # - explicit skill can always override route
-            # - inferred/default skill should not downgrade URL tasks to general search
+            # - inferred/default skill should not downgrade URL/detail tasks to general search
             if explicit_skill:
                 route_override = candidate_route
-            elif inferred_route != "url" and profile.name != "default_general_research":
+            elif inferred_route not in {"url", "social"} and profile.name != "default_general_research":
                 route_override = candidate_route
 
         try:
+            planning: Dict[str, Any] = {}
             if profile and profile.workflow_template:
+                base_decision = planner_registry.plan(task_spec, planner_options, route_override=route_override)
                 route, spec = self._build_skill_template_spec(
                     task=task_text,
                     profile=profile,
@@ -1451,17 +1667,27 @@ class WebAgent:
                     crawl_assist=resolved_crawl_assist,
                     crawl_pages=resolved_crawl_pages,
                     route_override=route_override,
+                    task_spec=task_spec,
                 )
+                planning = {
+                    "planner": "skill_template",
+                    "strategy_name": base_decision.strategy_name,
+                    "template_name": profile.workflow_template,
+                    "task_spec": task_spec.to_dict(),
+                    "completion_contract": spec.get("completion_contract", {}) or base_decision.completion_contract,
+                    "route_override": route_override,
+                    "base_strategy": base_decision.to_dict(),
+                }
             else:
-                route, spec = self._build_default_orchestration_spec(
-                    task=task_text,
-                    html_first=resolved_html_first,
-                    top_results=resolved_top_results,
-                    use_browser=resolved_use_browser,
-                    crawl_assist=resolved_crawl_assist,
-                    crawl_pages=resolved_crawl_pages,
-                    route_override=route_override,
-                )
+                decision = planner_registry.plan(task_spec, planner_options, route_override=route_override)
+                route = decision.route
+                spec = decision.workflow_spec
+                planning = {
+                    **decision.to_dict(),
+                    "planner": decision.metadata.get("planner", "registry"),
+                    "route_override": route_override,
+                    "strategies_available": planner_registry.describe_strategies(),
+                }
                 if profile:
                     self._merge_skill_variables(spec, profile.default_variables)
         except Exception as exc:
@@ -1470,6 +1696,7 @@ class WebAgent:
                 "error": f"build_spec_failed:{exc}",
                 "skill_resolution": skill_resolution,
                 "skill": (profile.to_dict() if profile else None),
+                "task_spec": task_spec.to_dict(),
             }
 
         options = {
@@ -1491,6 +1718,11 @@ class WebAgent:
             metadata={
                 "skill_source": (profile.source if profile else "fallback"),
                 "skill_resolution_mode": skill_resolution.get("mode"),
+                "planner": planning.get("planner"),
+                "strategy_name": planning.get("strategy_name"),
+                "intent": task_spec.intent,
+                "target_kind": task_spec.target_kind,
+                "platform": task_spec.platform,
             },
         )
         issues = lint_command_ir(ir, workflow_schema=get_workflow_schema())
@@ -1506,6 +1738,8 @@ class WebAgent:
             },
             "skill_resolution": skill_resolution,
             "skill": (profile.to_dict() if profile else None),
+            "task_spec": task_spec.to_dict(),
+            "planning": planning,
         }
         return result
 
@@ -1519,6 +1753,8 @@ class WebAgent:
         ir = compiled.get("ir") if isinstance(compiled.get("ir"), dict) else {}
         skill = compiled.get("skill") if isinstance(compiled.get("skill"), dict) else {}
         lint = compiled.get("lint") if isinstance(compiled.get("lint"), dict) else {}
+        planning = compiled.get("planning") if isinstance(compiled.get("planning"), dict) else {}
+        task_spec = compiled.get("task_spec") if isinstance(compiled.get("task_spec"), dict) else {}
 
         selected_skill = str(ir.get("skill") or "default_general_research")
         route = str(ir.get("route") or "general")
@@ -1541,6 +1777,16 @@ class WebAgent:
             commands=commands,
         )
 
+        contract_rules = [
+            "Run phases in order and do not skip dry-run checks.",
+            "Prefer `do-plan`/`do` over low-level commands for unstable sites.",
+            "When auth/challenge hints exist, surface them before execution.",
+        ]
+        if planning.get("strategy_name"):
+            contract_rules.append(f"Use planner strategy `{planning.get('strategy_name')}` as the execution spine.")
+        if planning.get("completion_contract"):
+            contract_rules.append("Check completion contract before trusting partial success.")
+
         return {
             "success": True,
             "selected_skill": selected_skill,
@@ -1549,13 +1795,12 @@ class WebAgent:
             "phases": phases,
             "recommended_cli_sequence": commands,
             "phase_wakeup": phase_wakeup,
+            "task_spec": task_spec,
+            "planning": planning,
             "ai_contract": {
                 "mode": "phase_serial",
-                "rules": [
-                    "Run phases in order and do not skip dry-run checks.",
-                    "Prefer `do-plan`/`do` over low-level commands for unstable sites.",
-                    "When auth/challenge hints exist, surface them before execution.",
-                ],
+                "rules": contract_rules,
+                "completion_contract": planning.get("completion_contract", {}),
             },
         }
 
@@ -1678,243 +1923,20 @@ class WebAgent:
         crawl_pages: int,
         route_override: Optional[str] = None,
     ) -> tuple[str, Dict[str, Any]]:
-        route = str(route_override or self._classify_task_route(task)).strip().lower()
-        top_hits = max(1, min(int(top_results), 20))
-        assist_pages = max(1, min(int(crawl_pages), 10))
-
-        if route == "url":
-            spec: Dict[str, Any] = {
-                "name": "default-url-analysis",
-                "description": "Analyze a target URL with auth hint and HTML-first reading.",
-                "variables": {
-                    "target_url": task,
-                    "use_browser": use_browser,
-                    "top_hits": top_hits,
-                },
-                "steps": [
-                    {
-                        "id": "auth_hint",
-                        "tool": "auth_hint",
-                        "continue_on_error": True,
-                        "args": {"url": "${vars.target_url}"},
-                    },
-                    {
-                        "id": "read_target",
-                        "tool": "fetch_html" if html_first else "visit",
-                        "args": {
-                            "url": "${vars.target_url}",
-                            "use_browser": "${vars.use_browser}",
-                            "auto_fallback": True,
-                            "max_chars": 80000,
-                        },
-                    },
-                ],
-            }
-            if crawl_assist:
-                spec["steps"].append(
-                    {
-                        "id": "crawl_assist",
-                        "tool": "crawl",
-                        "continue_on_error": True,
-                        "args": {
-                            "url": "${vars.target_url}",
-                            "max_pages": assist_pages,
-                            "max_depth": 2,
-                            "allow_external": False,
-                            "allow_subdomains": True,
-                        },
-                    }
-                )
-            return route, spec
-
-        if route == "academic":
-            spec = build_workflow_template("academic_relations")
-            spec.setdefault("variables", {})
-            spec["variables"]["topic"] = task
-            spec["variables"]["crawl_top_papers"] = top_hits
-            if html_first:
-                spec["steps"][-1] = {
-                    "id": "read_top_papers_html",
-                    "tool": "fetch_html",
-                    "for_each": "${steps.academic_search.data.papers}",
-                    "item_alias": "paper",
-                    "max_items": "${vars.crawl_top_papers}",
-                    "continue_on_error": True,
-                    "args": {
-                        "url": "${local.paper.url}",
-                        "use_browser": False,
-                        "auto_fallback": True,
-                        "max_chars": 60000,
-                    },
-                }
-            return route, spec
-
-        if route == "social":
-            social_query = task if any(k in task.lower() for k in ("评论", "comment", "反馈", "discussion")) else f"{task} 评论 用户反馈"
-            spec = {
-                "name": "default-social-analysis",
-                "description": "Search social platforms then inspect top pages in HTML-first mode.",
-                "variables": {
-                    "query": social_query,
-                    "platforms": ["xiaohongshu", "zhihu", "tieba", "douyin", "bilibili", "weibo"],
-                    "top_hits": top_hits,
-                    "use_browser": use_browser,
-                },
-                "steps": [
-                    {
-                        "id": "social_search",
-                        "tool": "social",
-                        "args": {
-                            "query": "${vars.query}",
-                            "platforms": "${vars.platforms}",
-                        },
-                    },
-                    {
-                        "id": "read_top_pages",
-                        "tool": "fetch_html" if html_first else "visit",
-                        "for_each": "${steps.social_search.results}",
-                        "item_alias": "hit",
-                        "max_items": "${vars.top_hits}",
-                        "continue_on_error": True,
-                        "args": {
-                            "url": "${local.hit.url}",
-                            "use_browser": "${vars.use_browser}",
-                            "auto_fallback": True,
-                            "max_chars": 60000,
-                        },
-                    },
-                ],
-            }
-            if crawl_assist:
-                spec["steps"].append(
-                    {
-                        "id": "crawl_assist",
-                        "tool": "crawl",
-                        "for_each": "${steps.read_top_pages.items}",
-                        "item_alias": "page",
-                        "max_items": 1,
-                        "continue_on_error": True,
-                        "args": {
-                            "url": "${local.page.input.url}",
-                            "max_pages": assist_pages,
-                            "max_depth": 2,
-                            "allow_external": False,
-                            "allow_subdomains": True,
-                        },
-                    }
-                )
-            return route, spec
-
-        if route == "commerce":
-            commerce_query = task if any(k in task.lower() for k in ("价格", "评价", "review", "price")) else f"{task} 价格 评价"
-            spec = {
-                "name": "default-commerce-analysis",
-                "description": "Search commerce platforms then inspect top pages in HTML-first mode.",
-                "variables": {
-                    "query": commerce_query,
-                    "platforms": ["taobao", "jd", "pinduoduo", "meituan"],
-                    "top_hits": top_hits,
-                    "use_browser": use_browser,
-                },
-                "steps": [
-                    {
-                        "id": "commerce_search",
-                        "tool": "commerce",
-                        "args": {
-                            "query": "${vars.query}",
-                            "platforms": "${vars.platforms}",
-                        },
-                    },
-                    {
-                        "id": "read_top_pages",
-                        "tool": "fetch_html" if html_first else "visit",
-                        "for_each": "${steps.commerce_search.results}",
-                        "item_alias": "hit",
-                        "max_items": "${vars.top_hits}",
-                        "continue_on_error": True,
-                        "args": {
-                            "url": "${local.hit.url}",
-                            "use_browser": "${vars.use_browser}",
-                            "auto_fallback": True,
-                            "max_chars": 60000,
-                        },
-                    },
-                ],
-            }
-            if crawl_assist:
-                spec["steps"].append(
-                    {
-                        "id": "crawl_assist",
-                        "tool": "crawl",
-                        "for_each": "${steps.read_top_pages.items}",
-                        "item_alias": "page",
-                        "max_items": 1,
-                        "continue_on_error": True,
-                        "args": {
-                            "url": "${local.page.input.url}",
-                            "max_pages": assist_pages,
-                            "max_depth": 2,
-                            "allow_external": False,
-                            "allow_subdomains": True,
-                        },
-                    }
-                )
-            return route, spec
-
-        spec = {
-            "name": "default-general-analysis",
-            "description": "General web analysis with search + HTML-first reading.",
-            "variables": {
-                "query": task,
-                "top_hits": top_hits,
-                "num_results": max(8, top_hits * 2),
-                "use_browser": use_browser,
-            },
-            "steps": [
-                {
-                    "id": "web_search",
-                    "tool": "search_internet",
-                    "args": {
-                        "query": "${vars.query}",
-                        "num_results": "${vars.num_results}",
-                        "auto_crawl": False,
-                    },
-                },
-                {
-                    "id": "read_top_pages",
-                    "tool": "fetch_html" if html_first else "visit",
-                    "for_each": "${steps.web_search.data.results}",
-                    "item_alias": "hit",
-                    "max_items": "${vars.top_hits}",
-                    "continue_on_error": True,
-                    "args": {
-                        "url": "${local.hit.url}",
-                        "use_browser": "${vars.use_browser}",
-                        "auto_fallback": True,
-                        "max_chars": 60000,
-                    },
-                },
-            ],
-        }
-        if crawl_assist:
-            spec["steps"].append(
-                {
-                    "id": "crawl_assist",
-                    "tool": "crawl",
-                    "for_each": "${steps.read_top_pages.items}",
-                    "item_alias": "page",
-                    "max_items": 1,
-                    "continue_on_error": True,
-                    "args": {
-                        "url": "${local.page.input.url}",
-                        "max_pages": assist_pages,
-                        "max_depth": 2,
-                        "allow_external": False,
-                        "allow_subdomains": True,
-                    },
-                }
-            )
-        return route, spec
+        planner = get_do_planner_registry()
+        task_spec = planner.analyze_task(task)
+        decision = planner.plan(
+            task_spec,
+            PlannerOptions(
+                html_first=html_first,
+                top_results=top_results,
+                use_browser=use_browser,
+                crawl_assist=crawl_assist,
+                crawl_pages=crawl_pages,
+            ),
+            route_override=route_override,
+        )
+        return decision.route, decision.workflow_spec
 
     def _build_skill_template_spec(
         self,
@@ -1926,6 +1948,7 @@ class WebAgent:
         crawl_assist: bool,
         crawl_pages: int,
         route_override: Optional[str] = None,
+        task_spec: Optional[TaskSpec] = None,
     ) -> tuple[str, Dict[str, Any]]:
         """按 skill 模板构建编排 spec。"""
         spec = deepcopy(build_workflow_template(profile.workflow_template or "social_comments"))
@@ -1949,9 +1972,18 @@ class WebAgent:
         if crawl_assist:
             self._append_template_crawl_assist(spec, crawl_pages=max(1, min(int(crawl_pages), 10)))
 
-        route = str(route_override or profile.route or self._classify_task_route(task)).strip().lower()
+        effective_task_spec = task_spec or get_do_planner_registry().analyze_task(task)
+        route = str(route_override or profile.route or effective_task_spec.route_family).strip().lower()
         if route in {"", "auto"}:
-            route = self._classify_task_route(task)
+            route = effective_task_spec.route_family
+        if route == "social":
+            self._specialize_social_spec_for_task(
+                spec,
+                task=task,
+                html_first=html_first,
+                use_browser=use_browser,
+                top_results=top_results,
+            )
         return route, spec
 
     @staticmethod
@@ -2020,6 +2052,109 @@ class WebAgent:
         )
 
     @staticmethod
+    def _extract_urls_from_text(text: str) -> List[str]:
+        return extract_urls_from_text(text)
+
+    def _resolve_task_target_url(self, task: str) -> str:
+        return resolve_task_target_url(task)
+
+    @staticmethod
+    def _has_comment_intent(task: str) -> bool:
+        return has_comment_intent(task)
+
+    @staticmethod
+    def _detect_social_platforms(task: str) -> List[str]:
+        return detect_social_platforms(task)
+
+    def _specialize_social_spec_for_task(
+        self,
+        spec: Dict[str, Any],
+        *,
+        task: str,
+        html_first: bool,
+        use_browser: bool,
+        top_results: int,
+    ) -> None:
+        if not isinstance(spec, dict):
+            return
+        variables = spec.setdefault("variables", {})
+        if not isinstance(variables, dict):
+            return
+
+        comment_intent = self._has_comment_intent(task)
+        target_url = self._resolve_task_target_url(task)
+        platforms = self._detect_social_platforms(task)
+        variables["platforms"] = platforms
+        variables["use_browser"] = bool(use_browser or bool(target_url and is_xiaohongshu_detail_url(target_url)))
+        if "query" in variables:
+            variables["query"] = task if comment_intent else f"{task} 评论 用户反馈"
+        if "topic" in variables and not target_url:
+            variables["topic"] = task
+        if "top_hits" in variables:
+            variables["top_hits"] = max(1, min(int(top_results), 20))
+        if target_url:
+            variables["target_url"] = target_url
+
+        steps = spec.get("steps")
+        if not isinstance(steps, list):
+            return
+        target_text = "提取帖子正文、作者、互动数据、评论区观点、代表性原句、评论作者与点赞数据" if comment_intent else "提取帖子正文、作者、互动数据、代表性评论与用户反馈"
+        spec["completion_contract"] = {
+            "required_outputs": ["body", "author", "engagement"] + (["comments"] if comment_intent else []),
+            "quality_gates": {"comment_capture_preferred": bool(comment_intent)},
+            "fallback_chain": ["auth_hint", "html_read", "generic_extract"],
+        }
+        if target_url:
+            spec["name"] = "skill-social-detail-analysis"
+            spec["description"] = "Skill-driven direct social detail analysis with body/comment extraction."
+            spec["steps"] = [
+                {
+                    "id": "auth_hint",
+                    "tool": "auth_hint",
+                    "continue_on_error": True,
+                    "args": {"url": "${vars.target_url}"},
+                },
+                {
+                    "id": "read_target",
+                    "tool": "fetch_html" if html_first else "visit",
+                    "args": {
+                        "url": "${vars.target_url}",
+                        "use_browser": "${vars.use_browser}",
+                        "auto_fallback": True,
+                        "max_chars": 80000,
+                    },
+                },
+                {
+                    "id": "extract_social_signals",
+                    "tool": "extract",
+                    "args": {
+                        "url": "${vars.target_url}",
+                        "target": target_text,
+                    },
+                },
+            ]
+            return
+
+        if not any(isinstance(step, dict) and step.get("id") == "extract_social_signals" for step in steps):
+            source_step = "visit_top_hits"
+            if any(isinstance(step, dict) and step.get("id") == "read_top_pages" for step in steps):
+                source_step = "read_top_pages"
+            steps.append(
+                {
+                    "id": "extract_social_signals",
+                    "tool": "extract",
+                    "for_each": f"${{steps.{source_step}.items}}",
+                    "item_alias": "page",
+                    "max_items": "${vars.top_hits}",
+                    "continue_on_error": True,
+                    "args": {
+                        "url": "${local.page.input.url}",
+                        "target": target_text,
+                    },
+                }
+            )
+
+    @staticmethod
     def _coerce_bool(value: Any, default: bool) -> bool:
         if value is None:
             return default
@@ -2042,44 +2177,11 @@ class WebAgent:
             return default
 
     def _classify_task_route(self, task: str) -> str:
-        value = str(task or "").strip()
-        lower = value.lower()
-        if self._looks_like_url(value):
-            return "url"
-
-        if is_academic_query(value) or any(
-            token in lower
-            for token in [
-                "paper", "arxiv", "doi", "citation", "benchmark", "ablation",
-                "论文", "文献", "引文", "引用", "基准", "实验",
-            ]
-        ):
-            return "academic"
-
-        if any(
-            token in lower
-            for token in [
-                "xiaohongshu", "zhihu", "weibo", "douyin", "bilibili", "tieba", "reddit", "twitter",
-                "小红书", "知乎", "微博", "抖音", "b站", "贴吧", "评论区", "弹幕", "话题",
-            ]
-        ):
-            return "social"
-
-        if any(
-            token in lower
-            for token in [
-                "taobao", "jd", "jingdong", "pinduoduo", "meituan", "dianping",
-                "淘宝", "京东", "拼多多", "美团", "点评", "价格", "促销", "购买", "比价",
-            ]
-        ):
-            return "commerce"
-
-        return "general"
+        return classify_task_route(task)
 
     @staticmethod
     def _looks_like_url(text: str) -> bool:
-        normalized = str(text or "").strip().lower()
-        return normalized.startswith(("http://", "https://", "www."))
+        return looks_like_url(text)
 
     # ==================== 学术模式搜索方法 ====================
 
@@ -2286,17 +2388,21 @@ class WebAgent:
 
     def _select_search_engines(self, query: str) -> List[SearchEngine]:
         """根据查询选择搜索引擎"""
-        engines = [SearchEngine.BING]  # Bing 默认
+        engines = [SearchEngine.BING]  # Bing 默认更稳
 
-        # 中文优先百度
-        if re.search(r"[\u4e00-\u9fff]", query):
-            engines.append(SearchEngine.BAIDU)
+        # 中文查询优先夸克，再补百度
+        if re.search(r"[一-鿿]", query):
+            engines.extend([SearchEngine.QUARK, SearchEngine.BAIDU])
 
         # 学术相关
         if any(kw in query.lower() for kw in ["paper", "research", "论文", "研究", "学术", "journal"]):
             engines.append(SearchEngine.GOOGLE_SCHOLAR)
 
-        return engines
+        deduped: List[SearchEngine] = []
+        for engine in engines:
+            if engine not in deduped:
+                deduped.append(engine)
+        return deduped
 
     def _format_academic_results(
         self,

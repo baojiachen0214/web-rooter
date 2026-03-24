@@ -22,8 +22,8 @@
       "https://search.bilibili.com/video?keyword={query}"
     ],
     "xiaohongshu": [
-      "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_explore_feed",
-      "https://www.xiaohongshu.com/search_result?keyword={query}"
+      "https://www.xiaohongshu.com/search_result/?keyword={query}&source=web_search_result_notes&type=51",
+      "https://www.xiaohongshu.com/search_result?keyword={query}&source=web_search_result_notes"
     ]
   },
   "backup_domain_priority": {

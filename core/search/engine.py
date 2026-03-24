@@ -45,6 +45,7 @@ class SearchEngine(Enum):
     GOOGLE = "google"
     BING = "bing"
     BAIDU = "baidu"
+    QUARK = "quark"
     DUCKDUCKGO = "duckduckgo"
     SOGOU = "sogou"
     GOOGLE_SCHOLAR = "google_scholar"
@@ -101,6 +102,7 @@ class SearchEngineClient:
         SearchEngine.GOOGLE: "https://www.google.com/search?q={query}&num={count}&hl=zh-CN",
         SearchEngine.BING: "https://www.bing.com/search?q={query}&count={count}&cc=cn&setlang=zh-CN",
         SearchEngine.BAIDU: "https://www.baidu.com/s?wd={query}&rn={count}&ie=utf-8",
+        SearchEngine.QUARK: "https://www.quark.cn/s?q={query}",
         SearchEngine.DUCKDUCKGO: "https://html.duckduckgo.com/html/?q={query}",
         SearchEngine.SOGOU: "https://www.sogou.com/web?query={query}&num={count}",
         SearchEngine.GOOGLE_SCHOLAR: "https://scholar.google.com/scholar?q={query}&num={count}&hl=zh-CN",
@@ -109,6 +111,7 @@ class SearchEngineClient:
         SearchEngine.GOOGLE: "https://www.google.com",
         SearchEngine.BING: "https://www.bing.com",
         SearchEngine.BAIDU: "https://www.baidu.com",
+        SearchEngine.QUARK: "https://www.quark.cn",
         SearchEngine.DUCKDUCKGO: "https://duckduckgo.com",
         SearchEngine.SOGOU: "https://www.sogou.com",
         SearchEngine.GOOGLE_SCHOLAR: "https://scholar.google.com",
@@ -119,6 +122,7 @@ class SearchEngineClient:
         SearchEngine.GOOGLE: "div.g",
         SearchEngine.BING: "li.b_algo",
         SearchEngine.BAIDU: "div.c-container",
+        SearchEngine.QUARK: "div[class*='result'], div[class*='result-item'], .search-content .pc-s-grid-content-left-content",
         SearchEngine.DUCKDUCKGO: "div.result",
         SearchEngine.SOGOU: "div.fb-hint",
         SearchEngine.GOOGLE_SCHOLAR: "div.gs_ri",
@@ -441,9 +445,10 @@ class MultiSearchEngine:
         self._client = SearchEngineClient()
         self._engine_priority = {
             SearchEngine.BING: 1,      # Bing 最稳定
-            SearchEngine.GOOGLE: 2,
-            SearchEngine.DUCKDUCKGO: 3,
-            SearchEngine.BAIDU: 4,     # 百度适合中文
+            SearchEngine.QUARK: 2,      # 夸克对中文搜索更友好
+            SearchEngine.GOOGLE: 3,
+            SearchEngine.DUCKDUCKGO: 4,
+            SearchEngine.BAIDU: 5,     # 百度适合中文
             SearchEngine.SOGOU: 5,
             SearchEngine.GOOGLE_SCHOLAR: 1,  # 学术搜索专用
         }
@@ -504,9 +509,9 @@ class MultiSearchEngine:
         """根据查询自动选择引擎"""
         engines = [SearchEngine.BING, SearchEngine.GOOGLE]
 
-        # 中文查询优先百度
+        # 中文查询优先夸克+百度
         if re.search(r"[\u4e00-\u9fff]", query):
-            engines.insert(1, SearchEngine.BAIDU)
+            engines = [SearchEngine.QUARK, SearchEngine.BAIDU, SearchEngine.BING, SearchEngine.GOOGLE]
 
         # 学术相关查询使用 Google Scholar
         if any(kw in query.lower() for kw in ["paper", "research", "论文", "研究", "学术"]):

@@ -66,7 +66,14 @@ class BaseSearchEngine(ABC):
             raise ValueError("引擎配置未加载")
 
         encoded_query = quote_plus(query)
-        return f"{self.config.baseUrl}{self.config.searchPath}{encoded_query}"
+        search_path = self.config.searchPath
+        
+        # 如果 searchPath 包含 {query} 占位符，则替换它
+        if "{query}" in search_path:
+            return f"{self.config.baseUrl}{search_path.replace('{query}', encoded_query)}"
+        else:
+            # 否则追加到末尾（保持向后兼容）
+            return f"{self.config.baseUrl}{search_path}{encoded_query}"
 
     async def setup_page_headers(self, page: Page) -> None:
         """设置页面头信息"""
@@ -266,6 +273,13 @@ class ConfigurableSearchEngine(BaseSearchEngine):
             # 获取页面
             page = await self.get_page()
 
+            # 修复：在设置headers之前应用auth profile（确保cookie生效）
+            if self.config and self.config.baseUrl:
+                try:
+                    await self.browser_manager._apply_auth_profile(page, self.config.baseUrl)
+                except Exception as e:
+                    logger.debug(f"应用auth profile失败（继续）: {e}")
+
             # 设置页面头信息
             await self.setup_page_headers(page)
 
@@ -278,12 +292,23 @@ class ConfigurableSearchEngine(BaseSearchEngine):
             # 等待页面加载
             await self.wait_for_page_load(page)
 
+            # 小红书特有处理：深度滚动加载更多笔记
+            xhs_notes = []
+            if self.engine_id == "xiaohongshu":
+                # 目标100条笔记
+                target_notes = max(100, limit * 5)
+                xhs_notes = await self._handle_xiaohongshu_specific(page, target_notes)
+
             # 保存 HTML（如果配置）
             await self.save_html(page, query)
 
             # 解析搜索结果
             results = []
-            if self.parser:
+            if self.engine_id == "xiaohongshu" and xhs_notes:
+                # 小红书：直接使用滚动收集的笔记
+                logger.info(f"小红书返回 {len(xhs_notes)} 个笔记")
+                results = xhs_notes[:limit]
+            elif self.parser:
                 results = await self.parser.parse_results(page, limit)
             else:
                 # 使用备用解析方法
@@ -344,6 +369,94 @@ class ConfigurableSearchEngine(BaseSearchEngine):
 
         finally:
             await self.close_page()
+
+    async def _handle_xiaohongshu_specific(self, page: Page, max_notes: int = 100) -> List[Dict[str, str]]:
+        """
+        小红书特有处理：持续滚动并收集笔记（处理虚拟列表）
+        
+        Args:
+            page: 浏览器页面对象
+            max_notes: 目标笔记数量（默认100条）
+            
+        Returns:
+            收集到的笔记列表（已去重）
+        """
+        try:
+            # 等待初始内容加载
+            logger.info(f"开始滚动收集笔记，目标 {max_notes} 条...")
+            await page.wait_for_timeout(3000)
+            
+            all_notes = {}  # 用 note_id 去重
+            no_new_count = 0  # 连续无新笔记计数
+            max_scrolls = 25  # 最大滚动次数
+            
+            for scroll_count in range(max_scrolls):
+                # 提取当前可见的所有笔记
+                current_notes = await page.eval_on_selector_all(
+                    'section.note-item',
+                    '''elements => {
+                        return elements.map(el => {
+                            const link = el.querySelector('a[href^="/explore/"]');
+                            const text = el.innerText || '';
+                            const lines = text.split('\\n').filter(l => l.trim());
+                            const href = link ? (link.getAttribute('href') || link.getAttribute('data-href') || '') : '';
+                            // 尝试获取完整 URL（带 xsec_token 参数）
+                            const fullLink = link ? (link.href || '') : '';
+                            return {
+                                id: href,
+                                full_url: fullLink,  // 保留完整链接（如果有 token）
+                                title: lines[0] || '',
+                                author: lines[1] || '',
+                                snippet: lines.slice(1, 3).join(' | ')
+                            };
+                        }).filter(n => n.id);
+                    }'''
+                )
+
+                # 添加到集合并去重
+                prev_size = len(all_notes)
+                for note in current_notes:
+                    note_id = note.get('id', '')
+                    if note_id and note_id not in all_notes:
+                        # 优先使用完整 URL（带 xsec_token），否则使用 note ID
+                        note_url = note.get('full_url', '') or note_id
+                        all_notes[note_id] = {
+                            'title': note.get('title', '')[:200],
+                            'link': note_url,
+                            'snippet': note.get('snippet', '')[:500],
+                        }
+                
+                new_added = len(all_notes) - prev_size
+                current_total = len(all_notes)
+                
+                # 每5次滚动记录一次
+                if (scroll_count + 1) % 5 == 0 or new_added > 0:
+                    logger.info(f"滚动 {scroll_count + 1}: 累计收集 {current_total} 个唯一笔记（本次+{new_added}）")
+                
+                # 检查是否达到目标
+                if current_total >= max_notes:
+                    logger.info(f"达到目标 {max_notes} 个笔记，停止滚动")
+                    break
+                
+                # 检查是否连续无新笔记
+                if new_added == 0:
+                    no_new_count += 1
+                    if no_new_count >= 3:
+                        logger.info(f"连续 {no_new_count} 次无新笔记，已到底部")
+                        break
+                else:
+                    no_new_count = 0
+                
+                # 滚动
+                await page.mouse.wheel(0, 1500)
+                await page.wait_for_timeout(2500)
+            
+            results = list(all_notes.values())
+            logger.info(f"滚动收集完成，共获得 {len(results)} 个唯一笔记")
+            return results
+                    
+        except Exception as e:
+            logger.debug(f"小红书特有处理失败（继续）: {e}")
 
     async def _fallback_parse(self, page: Page, limit: int) -> List[Dict[str, str]]:
         """备用解析方法"""
