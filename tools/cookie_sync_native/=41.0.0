@@ -1,6 +1,0 @@
-Requirement already satisfied: cryptography in /Users/jiachen/Projects/ai/web-rooter/.venv312/lib/python3.12/site-packages (46.0.5)
-Requirement already satisfied: cffi>=2.0.0 in /Users/jiachen/Projects/ai/web-rooter/.venv312/lib/python3.12/site-packages (from cryptography) (2.0.0)
-Requirement already satisfied: pycparser in /Users/jiachen/Projects/ai/web-rooter/.venv312/lib/python3.12/site-packages (from cffi>=2.0.0->cryptography) (3.0)
-
-[notice] A new release of pip is available: 26.0 -> 26.0.1
-[notice] To update, run: pip install --upgrade pip
