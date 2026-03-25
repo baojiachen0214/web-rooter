@@ -142,6 +142,43 @@ class MicroSkillRegistry:
                 "prefer_commands": ["wr challenge-profiles", "wr auth-hint <url>"],
                 "priority": 86,
             },
+            {
+                "id": "xiaohongshu-social-first",
+                "title": "小红书任务优先使用 wr social（浏览器方式）",
+                "message": "小红书相关任务应优先使用 `wr social --platform=xiaohongshu`（浏览器方式，无需登录，安全合规）。只有需要深度操作（如获取完整评论、点赞、发布）时才使用 `wr xhs`，且必须明确告知用户 API 方式的封号风险。",
+                "commands": ["social", "do", "do-plan", "quick", "task"],
+                "keywords": ["小红书", "xiaohongshu", "xhs", "小红书搜索", "小红书笔记", "小红书内容"],
+                "prefer_tools": ["social", "html", "do"],
+                "avoid_tools": ["xhs"],
+                "prefer_commands": [
+                    "wr social '<query>' --platform=xiaohongshu",
+                    "wr html <url> --js",
+                ],
+                "examples": [
+                    "用户: 搜索小红书上的旅游攻略 → wr social '旅游攻略' --platform=xiaohongshu",
+                    "用户: 获取小红书帖子内容 → wr html <url> --js 或 wr do '<url>'",
+                    "用户: 需要点赞/评论 → 先明确告知风险，再 wr xhs login",
+                ],
+                "priority": 97,
+            },
+            {
+                "id": "xiaohongshu-xhs-warning",
+                "title": "wr xhs 深度操作需明确风险",
+                "message": "`wr xhs` 命令直接调用小红书 API，需要登录，存在账号被封禁风险。使用前必须：1) 明确告知用户风险；2) 建议用小号测试；3) 控制操作频率；4) 禁止批量操作。该功能基于开源项目 jackwener/xiaohongshu-cli。",
+                "commands": ["xhs", "do", "do-plan"],
+                "keywords": ["小红书点赞", "小红书评论", "小红书发布", "xhs", "小红书api", "小红书登录", "小红书收藏", "小红书关注"],
+                "prefer_tools": ["xhs"],
+                "avoid_tools": [],
+                "prefer_commands": [
+                    "wr xhs login  # 先登录",
+                    "wr xhs status  # 检查状态",
+                ],
+                "examples": [
+                    "用户: 给小紅书帖子点赞 → 先警告风险，再 wr xhs login，最后 wr xhs like <id>",
+                    "用户: 获取小红书评论详情 → 先尝试 wr html <url> --js，不行再考虑 wr xhs",
+                ],
+                "priority": 96,
+            },
         ]
         hints = []
         for item in raw:

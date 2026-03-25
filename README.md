@@ -70,67 +70,27 @@ bash install.sh
 ```bash
 wr --version
 wr doctor
-wr help
 ```
 
-> 安装后默认入口是 `wr`，不是 `python main.py`。  
-> `python main.py` 仅用于源码调试和开发兜底。
+若安装过程中出现问题，`wr doctor`指令会自动检查并给出修复方案。
 
 ---
 
-## 给 AI 的“强约束规则”（直接复制）
+## 15 秒上手（零手动配置）
 
-把这段放进 Claude Project Instructions / Cursor Rules：
+安装脚本会自动注入 skills 到 Claude/Cursor/OpenCode/OpenClaw，无需手动配置！只需配置 `cookie` 即可：
 
-```text
-凡是涉及联网检索、网页抓取、引用输出，必须优先使用 Web-Rooter（wr）。
-固定流程：
-1) wr skills --resolve "<用户目标>" --compact
-2) wr do-plan "<用户目标>"
-3) wr do "<用户目标>" --dry-run
-4) wr do "<用户目标>" --strict
-禁止跳过 wr 直接给无来源结论。
-```
-
-如果 AI 偶尔还会忘记，再补一句：
-
-```text
-请先执行 wr help，并先输出你将执行的 wr 命令序列。
-```
-
-安装脚本会 best-effort 自动注入 skills 到 Claude / Codex-compatible AGENTS / Cursor / OpenCode / OpenClaw。
-
-如果某个 AI 工具“看不到 skills”，现在推荐直接执行：
+Web-Rooter 具备一键快速配置 `cookie` 能力，现已支持 Safari、Chrome、Edge、Firefox、Brave 浏览器。在终端执行以下指令即可完成配置（需要事先在上述浏览器中对所需访问网页登陆）：
 
 ```bash
-wr skills-install
-wr add-skills-dir .claude/skills --tool=claude
-wr add-skills-dir .agents/skills --tool=codex
-wr doctor
+wr cookie
 ```
 
-`doctor` 现在会把 AI skills 可发现性一并检查出来。
-
-### 执行时微提示（micro skills）
-
-当 AI 执行 `wr do` / `wr do-plan` / `wr skills --resolve` 等命令时，返回结果中会附带 `micro_skills` 微提示，指导 AI 针对当前任务类型应该：
-
-- **优先使用哪些工具**（如社交详情页优先 `do` / `social` / `auth-hint`）
-- **避免使用哪些工具**（如不要把详情页当普通 `crawl` / `site` 任务）
-
-典型场景对照：
-
-| 任务类型 | micro skills 提示 |
-|---------|------------------|
-| 社交详情页 / 评论区 | 优先 `do` / `social` / `auth-hint`，不要先用 `crawl` |
-| 学术文献检索 | 优先 `academic` 或 `do --skill=academic_relation_mining` |
-| 电商评价/比价 | 优先 `shopping` 或 `do --skill=commerce_review_mining` |
-
-这让 AI 不仅能从静态规则学习，还能在执行时获得动态的、上下文感知的指导。
+> macOS 系统中需要给终端开启 “完全磁盘访问权限” 才能访问到 Safari 的 `cookie`
 
 ---
 
-## 标准工作流（可直接跑）
+## 参考示例（可直接跑）
 
 ```bash
 wr skills --resolve "比较三篇 RAG 评测并给出处" --compact
@@ -138,17 +98,6 @@ wr do-plan "比较三篇 RAG 评测并给出处"
 wr do "比较三篇 RAG 评测并给出处" --dry-run
 wr do "比较三篇 RAG 评测并给出处" --strict
 ```
-
-现在 `do` 的执行后检查已经真正接入 `completion_contract`：
-
-- 会在 workflow 结束后判断 `body / author / engagement / comments` 等是否真的拿到
-- 会区分“执行成功”和“任务完成”
-- 会给出完成度、缺失项、是否建议走 fallback
-
-例如：
-
-- 正文拿到了，但评论区没有拿到 → 会返回 `partial`，并标注缺失 `comments`
-- 正文、作者、互动数据、评论都拿到了 → 会返回 `complete`
 
 长任务请走后台作业系统，避免阻塞：
 
@@ -187,7 +136,7 @@ wr job-result <job_id>
 
 ---
 
-## 命令选择表
+## 精选命令选择表
 
 | 目标 | 命令 |
 |---|---|
@@ -201,32 +150,19 @@ wr job-result <job_id>
 | 社交观点检索 | `wr social` |
 | 健康度/压力观测 | `wr telemetry` |
 
+> 若使用过程中遗忘，可使用 `wr help` 指令快速查看其他指令使用方法
+
 ---
 
-## v0.3.0 核心升级（AI Skills 完善与稳定性强化）
+### v0.3.0 更新日志
 
-### 重大改进
-
-- **AI Skills 自动安装**：新增 `wr skills-install` 命令，一键为 Claude/Cursor/Codex/OpenCode/OpenClaw 安装 Skills 文件
-- **Skills 可发现性检查**：`wr doctor` 现在会检查 13 个 AI skills 目标，确保 AI 工具能正确识别并使用 Web-Rooter
-- **自定义 Skills 目录**：新增 `wr add-skills-dir` 命令，支持注册任意目录为 AI skills 源
-
-### 架构优化
-
-- `CLI` 作为基底，`do` 的高层编排运行时被抽成共享模块，CLI / agent / MCP 复用同一套执行链
-- `do` 不再只看"有没有跑完 step"，而是会在 workflow 后做 completion post-check
-- `xiaohongshu` 与 `bilibili` 详情页走专门 reader，而不是完全依赖通用 HTML 硬读
-- 新增 micro_skills 细粒度提示，给 AI 更精确的命令选择指导
-
-### 稳定性修复
-
-- 修复 `SearchEngine.QUARK` 定义缺失问题
-- 修复作业系统排序和清理逻辑
-- `aiohttp` 的 SSL 策略改为"系统证书链优先 + certifi 补充"
-- 增加显式紧急开关 `WEB_ROOTER_INSECURE_SSL=1`
-- 强化 `bilibili` / `xiaohongshu` 支持：配置化浏览器搜索入口、候选搜索 URL、结果选择器
-- 发布版打包补齐 `profiles/auth`、`profiles/search_templates`、`profiles/challenge_profiles` 等运行时资源
-- 测试覆盖率提升至 99.05%（104/105 通过）
+- 修复若干已知问题：
+  - 修复 `SearchEngine.QUARK` 业务问题
+  - `aiohttp` 的 SSL 策略改为"系统证书链优先 + certifi 补充"
+- 增强了主业务链路的稳定性：
+  - 优化作业系统排序和清理逻辑
+  - 在 `workflow` 结束后判断 `body / author / engagement / comments` 等是否真的拿到
+  - 给出完成度、缺失项、是否建议走 `fallback`
 
 ---
 
@@ -253,5 +189,3 @@ wr job-result <job_id>
 
 默认分支：`main`  
 当前稳定版本：`v0.3.0`
-
-

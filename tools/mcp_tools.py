@@ -697,6 +697,249 @@ class WebTools:
         """
         return await search_social_media(query, platforms)
 
+    async def xhs_search(
+        self,
+        query: str,
+        page: int = 1,
+        sort: str = "general",
+    ) -> Dict[str, Any]:
+        """
+        小红书笔记搜索
+
+        ⚠️ 风险提示: 此方法直接调用小红书API，需要登录，存在账号被封禁风险。
+        建议仅用小号测试，控制操作频率。基于 jackwener/xiaohongshu-cli。
+
+        Args:
+            query: 搜索关键词
+            page: 页码
+            sort: 排序方式 (general/popular/latest)
+
+        Returns:
+            小红书搜索结果
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        
+        sort_map = {"general": "general", "popular": "popularity_descending", "latest": "time_descending"}
+        return client.search_notes(query, page=page, sort=sort_map.get(sort, "general"))
+
+    async def xhs_read_note(
+        self,
+        note_id: str,
+    ) -> Dict[str, Any]:
+        """
+        读取小红书笔记详情
+
+        ⚠️ 风险提示: 此方法直接调用小红书API，需要登录，存在账号被封禁风险。
+        对于公开笔记，建议优先使用浏览器方式: `wr html <url> --js`
+
+        Args:
+            note_id: 笔记ID或URL
+
+        Returns:
+            笔记详情
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        from core.social.xiaohongshu_cli.note_refs import resolve_note_reference
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        
+        note_id, token, source = resolve_note_reference(note_id)
+        return client.get_note_detail(note_id, xsec_token=token, xsec_source=source)
+
+    async def xhs_get_comments(
+        self,
+        note_id: str,
+        max_pages: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        获取小红书笔记评论
+
+        ⚠️ 风险提示: 此方法直接调用小红书API，需要登录，存在账号被封禁风险。
+        频繁获取评论可能触发风控，建议控制 max_pages 参数。
+
+        Args:
+            note_id: 笔记ID或URL
+            max_pages: 最大获取页数
+
+        Returns:
+            评论列表
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        from core.social.xiaohongshu_cli.note_refs import resolve_note_reference
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        
+        note_id, token, source = resolve_note_reference(note_id)
+        return client.get_all_comments(note_id, xsec_token=token, xsec_source=source, max_pages=max_pages)
+
+    async def xhs_get_user_info(
+        self,
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """
+        获取小红书用户信息
+
+        Args:
+            user_id: 用户ID
+
+        Returns:
+            用户信息
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        return client.get_user_info(user_id)
+
+    async def xhs_get_user_notes(
+        self,
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """
+        获取小红书用户笔记列表
+
+        Args:
+            user_id: 用户ID
+
+        Returns:
+            笔记列表
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        return client.get_user_notes(user_id)
+
+    async def xhs_login_status(self) -> Dict[str, Any]:
+        """
+        检查小红书登录状态
+
+        ⚠️ 风险提示: 使用 xhs 系列功能需要登录，存在账号被封禁风险。
+        建议仅用小号测试，控制操作频率。
+
+        Returns:
+            登录状态信息，包含用户信息和 cookie 来源
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        source, cookies = get_cookies()
+        client = XhsClient(cookies)
+        
+        try:
+            self_info = client.get_self_info()
+            return {
+                "logged_in": True,
+                "user": self_info,
+                "cookie_source": source,
+            }
+        except Exception as e:
+            return {
+                "logged_in": False,
+                "error": str(e),
+                "cookie_source": source,
+            }
+
+    async def xhs_search_topics(
+        self,
+        keyword: str,
+    ) -> Dict[str, Any]:
+        """
+        搜索小红书话题
+        
+        Args:
+            keyword: 搜索关键词
+            
+        Returns:
+            话题列表
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        return client.search_topics(keyword)
+
+    async def xhs_search_users(
+        self,
+        keyword: str,
+    ) -> Dict[str, Any]:
+        """
+        搜索小红书用户
+        
+        Args:
+            keyword: 搜索关键词
+            
+        Returns:
+            用户列表
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        return client.search_users(keyword)
+
+    async def xhs_get_hot(
+        self,
+        category: str = "homefeed.fashion_v3",
+    ) -> Dict[str, Any]:
+        """
+        获取小红书热门内容
+        
+        Args:
+            category: 热门分类，默认为时尚
+            
+        Returns:
+            热门内容列表
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        return client.get_hot_feed(category=category)
+
+    async def xhs_get_notifications(
+        self,
+        notif_type: str = "mentions",
+        num: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        获取小红书通知
+        
+        Args:
+            notif_type: 通知类型 (mentions, likes, connections)
+            num: 获取数量
+            
+        Returns:
+            通知列表
+        """
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        
+        _, cookies = get_cookies()
+        client = XhsClient(cookies)
+        
+        if notif_type == "mentions":
+            return client.get_notification_mentions(num=num)
+        elif notif_type == "likes":
+            return client.get_notification_likes(num=num)
+        elif notif_type == "connections":
+            return client.get_notification_connections(num=num)
+        else:
+            return client.get_notification_mentions(num=num)
+
     async def web_search_tech(
         self,
         query: str,
@@ -1152,6 +1395,115 @@ async def setup_mcp_server():
                 },
             ),
             Tool(
+                name="xhs_search",
+                description="[RISK: Account ban possible] Search Xiaohongshu notes by keyword. Requires login. Use test account only.", 
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search keyword"},
+                        "page": {"type": "integer", "description": "Page number", "default": 1},
+                        "sort": {"type": "string", "description": "Sort order (general/popular/latest)", "default": "general"}
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="xhs_read_note",
+                description="[RISK: Account ban possible] Read a Xiaohongshu note by ID or URL. Requires login. Consider using browser mode (wr html) for public notes.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "note_id": {"type": "string", "description": "Note ID or URL"}
+                    },
+                    "required": ["note_id"],
+                },
+            ),
+            Tool(
+                name="xhs_get_comments",
+                description="[RISK: Account ban possible] Get comments from a Xiaohongshu note. Requires login. Control frequency to avoid ban.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "note_id": {"type": "string", "description": "Note ID or URL"},
+                        "max_pages": {"type": "integer", "description": "Maximum pages to fetch", "default": 3}
+                    },
+                    "required": ["note_id"],
+                },
+            ),
+            Tool(
+                name="xhs_get_user_info",
+                description="Get Xiaohongshu user profile information",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "user_id": {"type": "string", "description": "User ID"}
+                    },
+                    "required": ["user_id"],
+                },
+            ),
+            Tool(
+                name="xhs_get_user_notes",
+                description="Get notes published by a Xiaohongshu user",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "user_id": {"type": "string", "description": "User ID"}
+                    },
+                    "required": ["user_id"],
+                },
+            ),
+            Tool(
+                name="xhs_login_status",
+                description="Check Xiaohongshu login status for xhs API tools. Note: xhs tools carry account ban risk.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="xhs_search_topics",
+                description="Search Xiaohongshu topics by keyword",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "keyword": {"type": "string", "description": "Search keyword"}
+                    },
+                    "required": ["keyword"],
+                },
+            ),
+            Tool(
+                name="xhs_search_users",
+                description="Search Xiaohongshu users by keyword",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "keyword": {"type": "string", "description": "Search keyword"}
+                    },
+                    "required": ["keyword"],
+                },
+            ),
+            Tool(
+                name="xhs_get_hot",
+                description="Get Xiaohongshu hot/trending content",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string", "description": "Hot category", "default": "homefeed.fashion_v3"}
+                    },
+                },
+            ),
+            Tool(
+                name="xhs_get_notifications",
+                description="Get Xiaohongshu notifications",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "notif_type": {"type": "string", "description": "Notification type (mentions, likes, connections)", "default": "mentions"},
+                        "num": {"type": "integer", "description": "Number of notifications", "default": 20}
+                    },
+                },
+            ),
+            Tool(
                 name="web_search_social",
                 description="Search social media platforms (Xiaohongshu, Zhihu, Tieba, Douyin, Bilibili, Weibo, Reddit, Twitter)",
                 inputSchema={
@@ -1415,6 +1767,36 @@ async def setup_mcp_server():
                     spec=arguments["spec"],
                     variables=arguments.get("variables"),
                     strict=arguments.get("strict", False),
+                )
+            elif name == "xhs_search":
+                result = await web_tools.xhs_search(
+                    arguments["query"],
+                    page=arguments.get("page", 1),
+                    sort=arguments.get("sort", "general"),
+                )
+            elif name == "xhs_read_note":
+                result = await web_tools.xhs_read_note(arguments["note_id"])
+            elif name == "xhs_get_comments":
+                result = await web_tools.xhs_get_comments(
+                    arguments["note_id"],
+                    max_pages=arguments.get("max_pages", 3),
+                )
+            elif name == "xhs_get_user_info":
+                result = await web_tools.xhs_get_user_info(arguments["user_id"])
+            elif name == "xhs_get_user_notes":
+                result = await web_tools.xhs_get_user_notes(arguments["user_id"])
+            elif name == "xhs_login_status":
+                result = await web_tools.xhs_login_status()
+            elif name == "xhs_search_topics":
+                result = await web_tools.xhs_search_topics(arguments["keyword"])
+            elif name == "xhs_search_users":
+                result = await web_tools.xhs_search_users(arguments["keyword"])
+            elif name == "xhs_get_hot":
+                result = await web_tools.xhs_get_hot(arguments.get("category", "homefeed.fashion_v3"))
+            elif name == "xhs_get_notifications":
+                result = await web_tools.xhs_get_notifications(
+                    arguments.get("notif_type", "mentions"),
+                    arguments.get("num", 20),
                 )
             elif name == "web_search_social":
                 result = await web_tools.web_search_social(
