@@ -173,3 +173,65 @@ Web-Rooter 现在把 AI skills 发现问题显式化了：
 - 给 AI 一个短而硬的执行提示
 - 约束“当前任务优先哪些命令、避免哪些命令”
 - 降低把 `crawl` / `site` / `extract` 误用于社交详情页或复杂任务的概率
+
+
+## Xiaohongshu (小红书) Usage Guide
+
+Web-Rooter provides **two ways** to access Xiaohongshu, choose based on your scenario:
+
+### Method 1: `wr social` (Recommended, Safe & Compliant)
+
+**For**: Searching notes, browsing public content
+
+**Features**:
+- ✅ No login required, works out of the box
+- ✅ Browser-based access, safe and compliant
+- ✅ Only accesses publicly visible search results
+
+**Examples**:
+```bash
+# Search XHS notes
+wr social "travel tips" --platform=xiaohongshu
+
+# Get specific note content
+wr html "https://xiaohongshu.com/explore/xxx" --js
+```
+
+### Method 2: `wr xhs` (Advanced, With Risks)
+
+⚠️ **Risk Warning**: `wr xhs` directly calls XHS internal APIs, requires login, and carries **risk of account suspension**. Based on open-source project [jackwener/xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli).
+
+**For**: Deep operations (full comments, likes, posting, etc.)
+
+**Before using**:
+1. Must explicitly inform user of the risks
+2. Recommend using a test account only
+3. Control operation frequency
+
+**Examples**:
+```bash
+# Login
+wr xhs login
+
+# Get comments
+wr xhs comments <note_id> --all
+
+# Like (high risk)
+wr xhs like <note_id>
+```
+
+### Decision Table
+
+| Need | Recommended | Reason |
+|------|-------------|--------|
+| Search/Browse | `wr social` | No login needed, safe |
+| Get note content | `wr html` / `wr do` | Browser-based, no login |
+| Full comments | `wr xhs` | Requires API access, inform risk |
+| Like/Comment/Post | `wr xhs` | High risk operations, use with caution |
+
+### Risk Disclaimer
+
+- **Account Ban Risk**: Frequent API calls, likes, comments, posts may trigger XHS anti-spam
+- **Test Account Only**: Never use your main account for `wr xhs`
+- **Rate Limiting**: Control frequency, avoid batch operations
+- **Compliance**: Respect platform Terms of Service

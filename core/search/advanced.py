@@ -2439,9 +2439,73 @@ async def _run_platform_backup_search(
     }
 
 
+async def _try_xhs_api_search(query: str) -> Optional[Dict[str, Any]]:
+    """
+    尝试使用 xiaohongshu-cli API 搜索小红书。
+    如果成功返回结果，否则返回 None。
+    """
+    try:
+        from core.social.xiaohongshu_cli.client import XhsClient
+        from core.social.xiaohongshu_cli.cookies import get_cookies
+        from core.social.xiaohongshu_cli.note_refs import save_index_from_items
+        
+        # 获取 cookies
+        try:
+            _, cookies = get_cookies()
+        except Exception:
+            return None
+        
+        # 创建客户端并搜索
+        client = XhsClient(cookies)
+        result = client.search_notes(query, page=1, page_size=20)
+        
+        # 保存索引供后续使用
+        save_index_from_items(result, xsec_source="pc_search")
+        
+        # 转换为标准格式
+        items = result.get("items", [])
+        formatted_results = []
+        
+        for item in items:
+            note_card = item.get("note_card", item)
+            note_id = item.get("id", note_card.get("note_id", ""))
+            title = note_card.get("title", "")
+            desc = note_card.get("desc", "")
+            url = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else ""
+            
+            formatted_results.append({
+                "title": title,
+                "url": url,
+                "snippet": desc[:200] if desc else title,
+                "engine": "xiaohongshu_api",
+                "rank": len(formatted_results) + 1,
+                "language": "zh",
+                "metadata": {
+                    "note_id": note_id,
+                    "xsec_token": item.get("xsec_token", note_card.get("xsec_token", "")),
+                    "author": note_card.get("user", {}).get("nickname", ""),
+                    "likes": note_card.get("interact_info", {}).get("liked_count", 0),
+                }
+            })
+        
+        return {
+            "query": query,
+            "engine": "xiaohongshu_api",
+            "results": formatted_results,
+            "total_results": len(formatted_results),
+            "search_time": 0.0,
+            "success": True,
+            "source": "xhs_api",
+        }
+    except Exception as e:
+        logger.debug("XHS API search failed: %s", e)
+        return None
+
+
 async def search_social_media(
     query: str,
     platforms: Optional[List[str]] = None,
+    use_api: bool = True,
 ) -> Dict[str, Any]:
     """
     搜索社交媒体
@@ -2449,6 +2513,7 @@ async def search_social_media(
     Args:
         query: 搜索关键词
         platforms: 指定平台（默认全部）
+        use_api: 是否优先使用 API（小红书）
 
     Returns:
         搜索结果
@@ -2515,6 +2580,21 @@ async def search_social_media(
             "weibo.com",
         ]
 
+    # 如果包含小红书且启用 API，尝试使用 API 搜索
+    xhs_api_result = None
+    if use_api and any(p in platforms for p in ["xiaohongshu", "xhs"]):
+        xhs_api_result = await _try_xhs_api_search(query)
+        if xhs_api_result and xhs_api_result.get("success") and xhs_api_result.get("results"):
+            logger.info("Using XHS API search results (%d items)", len(xhs_api_result.get("results", [])))
+            # 如果 API 搜索成功且有结果，直接返回
+            if len(xhs_api_result.get("results", [])) >= 5:
+                return _finalize_payload_with_extensions(
+                    payload=xhs_api_result,
+                    query=query,
+                    mode="social_search",
+                    source="xhs_api",
+                )
+    
     deep_search = DeepSearchEngine()
     try:
         primary = await deep_search.deep_search(

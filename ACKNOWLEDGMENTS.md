@@ -24,6 +24,11 @@ Web-Rooter is an integration-oriented project. The search/crawling architecture 
    License: MIT  
    Contribution to this project: source-grounded output style and research-oriented retrieval workflow patterns.
 
+5. xiaohongshu-cli  
+   Repository: https://github.com/jackwener/xiaohongshu-cli  
+   License: MIT  
+   Contribution to this project: Xiaohongshu (Little Red Book) API client implementation, including QR login, note operations, and social features. Integrated into Web-Rooter as `wr xhs` command set.
+
 ## Attribution Scope
 
 - The `temp/` directory stores local snapshots for engineering reference and gap analysis.

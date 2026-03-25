@@ -121,6 +121,8 @@ class WebRooterCLI:
         # 引擎类命令
         "web", "deep", "research", "mindsearch", "ms",
         "social", "shopping", "shop", "commerce", "tech", "academic", "site",
+        # 小红书 CLI
+        "xhs",
         # 编排命令（会间接执行爬虫）
         "do", "do-plan", "do_plan", "plan", "do-submit", "do_submit",
         # 快捷命令
@@ -130,6 +132,7 @@ class WebRooterCLI:
         "visit",
         "html",
         "dom",
+        "xhs",
         "do",
         "do-plan",
         "do_plan",
@@ -1108,7 +1111,29 @@ class WebRooterCLI:
             include_home = True
             if "--no-home" in args:
                 include_home = False
+            
+            # Pre-installation reminder
+            print("=" * 60, file=sys.stderr)
+            print("【重要提醒】安装 Skills 前，请先确保 Web-Rooter 环境就绪", file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
+            print("", file=sys.stderr)
+            print("建议先执行: wr doctor，确保环境检查通过", file=sys.stderr)
+            print("", file=sys.stderr)
+            
             payload = {"success": True, **install_skills(Path.cwd(), include_home=include_home)}
+            
+            # Post-installation reminder
+            print("", file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
+            print("【Skills 安装完成】重要提醒:", file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
+            print("  • 使用 WR 前，务必先执行: wr doctor", file=sys.stderr)
+            print("  • 遇到错误时，先执行: wr help <命令>", file=sys.stderr)
+            print("  • 平台任务前，务必: wr auth-hint <URL>", file=sys.stderr)
+            print("  • 如需登录，执行: wr cookie <平台>", file=sys.stderr)
+            print("  • 详细指南参见: .agents/skills/web-rooter/SKILL.md", file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
+            
             self._print_result(self._attach_micro_skill_hints(payload, "skills-install", ""))
 
         elif command in {"add-skills-dir", "add_skills_dir"}:
@@ -2036,6 +2061,7 @@ class WebRooterCLI:
         elif command == "social":
             platforms = []
             query_parts = []
+            use_api = True  # 默认启用 API
             supported_platforms = {
                 "xiaohongshu", "xhs",
                 "zhihu",
@@ -2050,6 +2076,10 @@ class WebRooterCLI:
             for arg in args:
                 if arg.startswith("--platform="):
                     platforms.append(arg.split("=", 1)[1])
+                elif arg == "--use-api":
+                    use_api = True
+                elif arg == "--no-api":
+                    use_api = False
                 elif arg in supported_platforms:
                     platforms.append(arg)
                 else:
@@ -2057,12 +2087,25 @@ class WebRooterCLI:
 
             query = " ".join(query_parts).strip()
             if not query:
-                self._print_usage("用法：social <query> [--platform=xiaohongshu|zhihu|tieba|douyin|bilibili|weibo|reddit|twitter]")
+                self._print_usage("用法：social <query> [--platform=xiaohongshu|zhihu|...] [--use-api|--no-api]")
                 return True
 
-            logger.info(f"搜索社交媒体：{query}, 平台：{platforms or '全部'}")
-            result = await search_social_media(query, platforms or None)
+            logger.info(f"搜索社交媒体：{query}, 平台：{platforms or '全部'}, API: {use_api}")
+            result = await search_social_media(query, platforms or None, use_api=use_api)
             self._print_result(self._attach_micro_skill_hints(result, "social", query))
+
+        elif command == "xhs":
+            # Xiaohongshu CLI integration
+            from core.social.xiaohongshu_cli.cli import handle_xhs_command
+            try:
+                exit_code = handle_xhs_command(args)
+                return exit_code == 0
+            except SystemExit as e:
+                return e.code == 0 if isinstance(e.code, int) else False
+            except Exception as e:
+                logger.exception("xhs command failed")
+                self._print_error(f"xhs command failed: {e}")
+                return False
 
         elif command in {"shopping", "shop", "commerce"}:
             platforms = []
@@ -2158,6 +2201,12 @@ class WebRooterCLI:
             return False
 
         else:
+            # 特殊处理：用户在交互模式下输入了 'wr'（重复输入工具名）
+            if command.lower() == "wr" and not args:
+                self._print_line("[提示] 您已经在 web-rooter 中了。直接输入命令，如：help, doctor, do, social 等", level="warn")
+                self._print_line("      如果确实想执行 'wr' 相关的任务，请使用 'do <目标>' 或输入完整命令", level="dim")
+                return True
+            
             if self._looks_like_url(command):
                 use_browser = "--js" in args
                 url_parts = [command] + [a for a in args if not a.startswith("--")]
@@ -2165,33 +2214,39 @@ class WebRooterCLI:
                 self._print_line(f"[提示] 未识别命令 '{command}'，检测为 URL，按 visit 执行。", level="warn")
                 await self._run_inferred_input(url, use_browser=use_browser)
             else:
+                # 先尝试拼写错误检测
                 unknown_payload = self._build_unknown_command_payload(command, args=args)
                 if unknown_payload:
                     self._print_result(unknown_payload)
                     return True
 
-                crawl_pages = 3
-                query_parts = []
-                i = 0
-                while i < len(args):
-                    arg = args[i]
-                    if arg.startswith("--crawl-pages="):
-                        crawl_pages = self._parse_option_int(arg.split("=", 1)[1], crawl_pages)
-                    elif arg.startswith("--crawl="):
-                        crawl_pages = self._parse_option_int(arg.split("=", 1)[1], crawl_pages)
-                    elif arg == "--crawl-pages" and i + 1 < len(args):
-                        i += 1
-                        crawl_pages = self._parse_option_int(args[i], crawl_pages)
-                    elif arg == "--crawl" and i + 1 < len(args):
-                        i += 1
-                        crawl_pages = self._parse_option_int(args[i], crawl_pages)
-                    elif not arg.startswith("--"):
-                        query_parts.append(arg)
-                    i += 1
-
-                inferred_input = " ".join([command] + query_parts).strip()
+                # 判断是否适合进入智能模式
+                inferred_input = command + " " + " ".join(args) if args else command
+                inferred_input = inferred_input.strip()
+                
+                # 如果输入看起来像自然语言（包含空格、问号、或是常见词汇），提示用户
+                is_likely_natural_language = (
+                    " " in inferred_input 
+                    or "?" in inferred_input
+                    or command.lower() in {"get", "search", "find", "show", "what", "how", "why"}
+                )
+                
                 if inferred_input:
-                    self._print_line(f"[提示] 未识别命令 '{command}'，按智能模式执行。", level="warn")
+                    if is_likely_natural_language:
+                        self._print_line(f"[提示] 未识别命令，按智能模式执行: '{inferred_input[:50]}{'...' if len(inferred_input) > 50 else ''}'", level="warn")
+                    else:
+                        self._print_line(f"[提示] 未识别命令 '{command}'，按智能模式执行。", level="warn")
+                    
+                    # 提取 crawl 参数
+                    crawl_pages = 3
+                    for i, arg in enumerate(args):
+                        if arg.startswith("--crawl-pages="):
+                            crawl_pages = self._parse_option_int(arg.split("=", 1)[1], crawl_pages)
+                        elif arg.startswith("--crawl="):
+                            crawl_pages = self._parse_option_int(arg.split("=", 1)[1], crawl_pages)
+                        elif arg == "--crawl-pages" and i + 1 < len(args):
+                            crawl_pages = self._parse_option_int(args[i + 1], crawl_pages)
+                    
                     await self._run_inferred_input(inferred_input, crawl_pages=crawl_pages)
                 else:
                     self._print_line(f"Error: 未知命令：{command}", level="error")
@@ -2383,24 +2438,73 @@ class WebRooterCLI:
 
     @staticmethod
     def _looks_like_command_typo(command: str) -> bool:
+        """
+        判断输入是否可能是命令拼写错误（而非自然语言查询）。
+        
+        规则：
+        1. 必须是纯命令格式（小写字母、数字、下划线、连字符）
+        2. 长度在 2-32 之间
+        3. 不能包含空格或标点（那是自然语言）
+        4. 不能是常见的自然语言词汇（如 "the", "and", "get" 等）
+        """
         token = str(command or "").strip().lower()
         if not token:
             return False
-        return bool(re.match(r"^[a-z][a-z0-9_-]{1,31}$", token))
+        
+        # 必须是命令格式的字符
+        if not re.match(r"^[a-z][a-z0-9_-]{1,31}$", token):
+            return False
+        
+        # 排除常见的自然语言词汇（这些输入通常不是拼写错误，而是自然语言查询）
+        common_words = {
+            "get", "the", "and", "for", "how", "what", "why", "when", "where", "who",
+            "search", "find", "look", "please", "help", "need", "want", "show", "tell",
+            "give", "list", "make", "create", "update", "delete", "add", "remove",
+            "using", "with", "from", "into", "over", "under", "above", "below",
+            "this", "that", "these", "those", "they", "them", "their", "there",
+            "about", "after", "before", "between", "during", "without", "within",
+            "through", "against", "among", "around", "behind", "beyond", "except",
+            "inside", "outside", "since", "toward", "until", "upon", "while",
+        }
+        if token in common_words:
+            return False
+        
+        return True
 
     def _build_unknown_command_payload(self, command: str, args: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        """
+        构建未知命令的友好提示信息。
+        
+        当用户可能打错命令时，提供清晰的修正建议和替代方案。
+        """
         suggestions = self._command_suggestions(command)
         if not suggestions or not self._looks_like_command_typo(command):
             return None
+        
+        # 构建更友好的提示信息
+        best_match = suggestions[0]
+        other_suggestions = suggestions[1:] if len(suggestions) > 1 else []
+        
+        # 中文提示（主）+ 英文提示（次）
+        hint_parts = [
+            f"命令 '{command}' 不存在。您是否想输入: '{best_match}'?",
+        ]
+        
+        if other_suggestions:
+            hint_parts.append(f"其他可能的命令: {', '.join(other_suggestions)}")
+        
+        hint_parts.append("提示: 输入 'help' 查看所有可用命令")
+        
         payload: Dict[str, Any] = {
             "success": False,
             "error": f"unknown_command:{command}",
-            "hint": "Possible command typo. Use suggested commands, or use `quick`/`do` for free-form goals.",
+            "hint": " | ".join(hint_parts),
+            "original_input": command,
             "suggestions": suggestions,
-            "recommended": [
-                f"wr {suggestions[0]} ...",
-                "wr do-plan \"<goal>\"",
-                "wr do \"<goal>\"",
+            "recommended_actions": [
+                f"使用正确命令: wr {best_match} ...",
+                f"或使用智能模式: wr do \"...您的任务描述...\"",
+                f"查看帮助: wr help",
             ],
         }
 
@@ -3421,22 +3525,49 @@ class WebRooterCLI:
         try:
             skills_report = doctor_skills(Path.cwd(), include_home=True)
             checks_payload = skills_report.get("checks") if isinstance(skills_report, dict) else []
+            summary = skills_report.get("summary", {}) if isinstance(skills_report, dict) else {}
+            
             if isinstance(checks_payload, list):
-                total_skills = len(checks_payload)
-                ok_skills = sum(1 for item in checks_payload if isinstance(item, dict) and item.get("ok"))
+                installed_total = summary.get("installed_total", 0)
+                installed_configured = summary.get("installed_configured", 0)
+                missing_count = summary.get("missing", 0)
+                not_installed_count = summary.get("not_installed", 0)
+                
+                # 总体检查：只要有已安装的工具且都配置好了，就是 OK
+                all_installed_ok = missing_count == 0 and installed_configured > 0
+                
                 add_check(
                     "AI Skills 安装",
-                    ok_skills > 0,
-                    f"{ok_skills}/{total_skills} 个 skills 目标可被发现",
-                    "运行: wr skills-install 或 wr add-skills-dir <path> --tool=claude",
+                    all_installed_ok,
+                    f"{installed_configured}/{installed_total} 个已安装工具已配置"
+                    + (f"（{not_installed_count} 个工具未安装）" if not_installed_count > 0 else ""),
+                    "运行: wr skills-install" if missing_count > 0 else "",
                 )
-                for item in checks_payload[:8]:
+                
+                # 显示每个工具的状态
+                for item in checks_payload[:10]:
                     if not isinstance(item, dict):
                         continue
+                    status = item.get("status")
+                    tool = item.get("tool", "")
+                    
+                    if status == "ok":
+                        status_text = "已配置"
+                        is_ok = True
+                    elif status == "missing":
+                        status_text = "未配置"
+                        is_ok = False
+                    elif status == "not_installed":
+                        status_text = "工具未安装"
+                        is_ok = True  # 未安装不算失败
+                    else:
+                        status_text = "未知"
+                        is_ok = False
+                    
                     add_check(
-                        f"skills/{item.get('tool')}",
-                        bool(item.get("ok")),
-                        str(item.get("path") or ""),
+                        f"  {tool}",
+                        is_ok,
+                        status_text,
                         str(item.get("fix") or ""),
                     )
         except Exception as exc:

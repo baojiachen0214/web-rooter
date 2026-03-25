@@ -27,3 +27,8 @@ psutil>=5.9.0
 
 # MCP SDK (for AI agent integration)
 mcp>=1.0.0
+
+# Xiaohongshu API Signing
+xhshow>=0.1.9
+httpx>=0.27.0
+pycryptodome>=3.20

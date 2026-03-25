@@ -148,12 +148,6 @@ Chrome 130 及以上版本引入了 App-Bound Encryption（应用绑定加密）
 - Chrome 130+ 上访问 Google、Microsoft 等站点的敏感 Cookie 可能无法解密
 - 其他站点和非敏感 Cookie 不受影响
 
-**解决方案:**
-1. 使用 Chrome 129 或更早版本
-2. 使用完整的 HackBrowserData 工具（调用外部二进制文件）
-
-如需了解详情，请参考：https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption
-
 ---
 
 ## 故障排除
@@ -179,20 +173,6 @@ pip install cryptography
 ### 5. Firefox 找不到配置文件
 
 确保 Firefox 至少运行过一次（创建配置文件）。
-
-## 与调用外部二进制方案的对比
-
-| 特性 | 原生 Python | 调用 HackBrowserData |
-|------|-------------|---------------------|
-| 依赖 | Python + cryptography | 需要下载二进制文件 |
-| 安装 | 简单 (pip install) | 需要下载、解压、配置路径 |
-| 速度 | 快 | 更快 (Go 编译) |
-| 功能 | Cookie 提取 | 密码、历史、书签等更多数据 |
-| 维护 | 纯 Python，易调试 | 依赖外部项目更新 |
-
-**建议:**
-- 只需要 Cookie 同步 → 使用本原生 Python 版本
-- 需要提取密码等其他数据 → 使用完整的 HackBrowserData
 
 ## License
 
