@@ -131,8 +131,8 @@ class NewsCountChangeProcessor:
         for item in raw_results:
             if not isinstance(item, dict):
                 continue
-            before = item.get("news_count_before", 0) or 0
-            after = item.get("news_links_after", 0) or 0
+            before = item.get("news_count_before", 0)
+            after = item.get("news_links_after", 0)
             increase = after - before
             total_increase += max(0, increase)
             if increase > 0:

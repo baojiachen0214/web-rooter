@@ -140,21 +140,17 @@ class TestCrawlNewsPages(unittest.TestCase):
 
     @patch("core.company_news_crawler._fetch_html_http")
     def test_crawls_multiple_pages(self, mock_http):
-        # Return 3 pages then stop
+        # Return 3 pages then stop; (-1, '') signals HTTP error → crawl stops.
         responses = [
             (200, self._make_html(1, has_next=True)),
             (200, self._make_html(2, has_next=True)),
             (200, self._make_html(3, has_next=False)),
-            (-1, ""),  # page 4 → no content, stops crawl
+            (-1, ""),
         ]
-        idx = {"val": 0}
+        response_iter = iter(responses)
 
         async def side_effect(url, timeout=20):
-            i = idx["val"]
-            idx["val"] += 1
-            if i < len(responses):
-                return responses[i]
-            return -1, ""
+            return next(response_iter, (-1, ""))
 
         mock_http.side_effect = side_effect
 

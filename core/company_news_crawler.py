@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
-from urllib.parse import urljoin, urlparse, urlencode, urlunparse, parse_qs
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from core.checkpoint import CheckpointManager
 from core.citation import build_web_citations
@@ -46,6 +46,13 @@ from core.job_system import JobStore, get_job_store
 from core.memory_optimizer import get_memory_optimizer
 from core.result_queue import ResultQueue, StreamItem
 from core.runtime_pressure import RuntimePressureController, RuntimePressurePolicy
+
+try:
+    from bs4 import BeautifulSoup as _BeautifulSoup
+    _BS4_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _BeautifulSoup = None  # type: ignore[assignment,misc]
+    _BS4_AVAILABLE = False
 
 try:
     import aiohttp
@@ -96,7 +103,7 @@ class CompanyRecord:
 
     def __post_init__(self) -> None:
         if not self.company_id:
-            safe = re.sub(r"[^\w\u4e00-\u9fff-]", "_", self.name)
+            safe = re.sub(r"[^\w\u4e00-\u9fff\-]", "_", self.name)
             self.company_id = safe[:64]
 
 
@@ -131,16 +138,6 @@ class PageCrawlResult:
 # Pagination URL discovery
 # ---------------------------------------------------------------------------
 
-# Patterns matched in order; first match wins per page.
-_PAGE_PATTERNS: List[re.Pattern[str]] = [
-    # ?page=N  or  &page=N
-    re.compile(r"[?&]page=\d+", re.IGNORECASE),
-    # /news/list/2  /news/2  /page/2
-    re.compile(r"/(page|list|p)/(\d+)", re.IGNORECASE),
-    # rel="next"
-    re.compile(r'rel=["\']next["\']', re.IGNORECASE),
-]
-
 
 def _build_page_url(base_url: str, page: int) -> str:
     """
@@ -172,10 +169,23 @@ def _build_page_url(base_url: str, page: int) -> str:
 def _extract_next_page_url(html: str, current_url: str) -> Optional[str]:
     """
     从 HTML 中提取 rel="next" 链接。若无则返回 None。
+
+    使用 BeautifulSoup 解析以正确处理各种属性顺序和引号形式；
+    当 BeautifulSoup 不可用时退回正则表达式。
     """
-    match = re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*rel=["\']next["\']', html, re.IGNORECASE)
+    if _BS4_AVAILABLE and _BeautifulSoup is not None:
+        soup = _BeautifulSoup(html, "html.parser")
+        tag = soup.find("a", rel=lambda v: v and "next" in (v if isinstance(v, list) else [v]))
+        if tag and tag.get("href"):
+            return urljoin(current_url, str(tag["href"]))
+        return None
+
+    # Regex fallback (attribute ordering may vary)
+    match = re.search(r'<a\b[^>]*rel=["\'][^"\']*\bnext\b[^"\']*["\'][^>]*href=["\']([^"\']+)["\']',
+                      html, re.IGNORECASE)
     if not match:
-        match = re.search(r'rel=["\']next["\'][^>]*href=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        match = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*rel=["\'][^"\']*\bnext\b[^"\']*["\']',
+                          html, re.IGNORECASE)
     if match:
         return urljoin(current_url, match.group(1))
     return None
@@ -184,10 +194,27 @@ def _extract_next_page_url(html: str, current_url: str) -> Optional[str]:
 def _count_news_links(html: str) -> int:
     """
     粗略统计页面中看似指向新闻详情页的链接数量。
-    匹配规则：href 包含 /news/ | /article/ | /detail/ | /content/ 的 <a> 标签。
+
+    匹配规则：href 包含 /news/ | /article/ | /detail/ | /content/ | /info/ 的 <a> 标签。
+    使用 BeautifulSoup 解析以正确处理复杂属性；
+    当 BeautifulSoup 不可用时退回正则表达式。
     """
-    pattern = re.compile(r'<a\s[^>]*href=["\'][^"\']*(?:news|article|detail|content|info)[^"\']*["\']',
-                          re.IGNORECASE)
+    _NEWS_KEYWORDS = ("news", "article", "detail", "content", "info")
+
+    if _BS4_AVAILABLE and _BeautifulSoup is not None:
+        soup = _BeautifulSoup(html, "html.parser")
+        count = 0
+        for tag in soup.find_all("a", href=True):
+            href = str(tag["href"]).lower()
+            if any(kw in href for kw in _NEWS_KEYWORDS):
+                count += 1
+        return count
+
+    # Regex fallback
+    pattern = re.compile(
+        r'<a\b[^>]*\bhref=["\'][^"\']*(?:' + "|".join(_NEWS_KEYWORDS) + r')[^"\']*["\']',
+        re.IGNORECASE,
+    )
     return len(pattern.findall(html))
 
 
