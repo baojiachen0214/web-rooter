@@ -89,6 +89,64 @@ class _QualityStatsProcessor:
         return payload
 
 
+class NewsCountChangeProcessor:
+    """
+    内置处理器：公司新闻数增量统计（用于质量验收步骤）。
+
+    期望 result 中包含::
+
+        {
+            "results": [
+                {
+                    "company_id": "...",
+                    "news_count_before": 5,
+                    "news_links_after": 23,
+                    ...
+                },
+                ...
+            ]
+        }
+
+    处理器在 result["quality"] 中追加::
+
+        {
+            "companies_improved": N,
+            "companies_unchanged": M,
+            "total_increase": K,
+        }
+    """
+
+    name = "news_count_change"
+
+    def process(self, result: Dict[str, Any], context: PostProcessContext) -> Dict[str, Any]:
+        payload = dict(result or {})
+        raw_results = payload.get("results", [])
+        if not isinstance(raw_results, list):
+            return payload
+
+        improved = 0
+        unchanged = 0
+        total_increase = 0
+
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            before = item.get("news_count_before", 0) or 0
+            after = item.get("news_links_after", 0) or 0
+            increase = after - before
+            total_increase += max(0, increase)
+            if increase > 0:
+                improved += 1
+            else:
+                unchanged += 1
+
+        payload.setdefault("quality", {})
+        payload["quality"]["companies_improved"] = improved
+        payload["quality"]["companies_unchanged"] = unchanged
+        payload["quality"]["total_increase"] = total_increase
+        return payload
+
+
 class PostProcessorRegistry:
     """后处理器注册中心（按优先级执行）。"""
 
@@ -99,6 +157,7 @@ class PostProcessorRegistry:
 
     def _register_builtin(self) -> None:
         self.register(_QualityStatsProcessor(), priority=100)
+        self.register(NewsCountChangeProcessor(), priority=110)
 
     def register(self, processor: ResultPostProcessor, priority: int = 100) -> None:
         name = getattr(processor, "name", "").strip()
