@@ -144,7 +144,7 @@ def _build_page_url(base_url: str, page: int) -> str:
     从新闻列表首页 URL 推导第 N 页的 URL。
 
     策略（按优先级）：
-    1. 如果 URL 中已有 ?page=\d+ 参数，替换页码。
+    1. 如果 URL 中已有 ``?page=\\d+`` 参数，替换页码。
     2. 如果 URL 路径符合 /list/N 或 /page/N 模式，替换数字段。
     3. 否则追加 ?page=N。
     """
