@@ -6,7 +6,7 @@
 
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT"></a>
-    <img src="https://img.shields.io/badge/version-v0.3.0-blue.svg" alt="Version v0.3.0">
+    <img src="https://img.shields.io/badge/version-v0.3.1-blue.svg" alt="Version v0.3.0">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black.svg" alt="Platforms">
   </p>
@@ -113,7 +113,7 @@ Web-Rooter 不是让用户长期手敲命令的独立工具，
 ### 方案 A：预编译安装（推荐）
 
 Release 页面：  
-[https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.0](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.0)
+[https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.1](https://github.com/baojiachen0214/web-rooter/releases/tag/v0.3.0)
 
 - Windows：运行 `install-web-rooter.bat`
 - macOS/Linux：运行 `./install-web-rooter.sh`
@@ -201,10 +201,11 @@ wr telemetry
 
 - CLI 参数：[`docs/guide/CLI.md`](./docs/guide/CLI.md)
 - 安装细节：[`docs/guide/INSTALLATION.md`](./docs/guide/INSTALLATION.md)
+- 公司新闻批量抓取：[`docs/guide/COMPANY_NEWS_MINING.md`](./docs/guide/COMPANY_NEWS_MINING.md)
 - MCP 工具：[`docs/reference/MCP_TOOLS.md`](./docs/reference/MCP_TOOLS.md)
 
 ---
 
-默认分支为 `main`，当前稳定版为 `v0.3.0`。
+默认分支为 `main`，当前稳定版为 `v0.3.1`。
 
 

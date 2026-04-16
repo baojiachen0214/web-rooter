@@ -3,5 +3,5 @@ Project version single source of truth.
 """
 
 APP_NAME = "web-rooter"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 APP_VERSION_TAG = f"v{APP_VERSION}"
