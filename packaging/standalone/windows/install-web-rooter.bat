@@ -1,5 +1,7 @@
 @echo off
 chcp 65001 >nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
 setlocal enabledelayedexpansion
 
 set SCRIPT_DIR=%~dp0
@@ -31,6 +33,9 @@ if errorlevel 1 (
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
 (
 echo @echo off
+echo chcp 65001 ^>nul
+echo set PYTHONUTF8=1
+echo set PYTHONIOENCODING=utf-8
 echo "%TARGET_EXE%" %%*
 ) > "%WR_BAT%"
 
@@ -70,4 +75,3 @@ echo   wr doctor
 echo.
 pause
 endlocal
-

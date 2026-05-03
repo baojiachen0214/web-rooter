@@ -329,6 +329,8 @@ def _ensure_camoufox_ready() -> None:
             [sys.executable, "-m", "camoufox", "path"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError) as exc:

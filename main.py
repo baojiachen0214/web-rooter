@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 import logging
 
+from core.console_io import configure_stdio, stream_supports_utf8
 from agents.web_agent import WebAgent
 from tools.mcp_tools import WebTools, run_mcp_server
 from core.search.advanced import (
@@ -67,6 +68,8 @@ except Exception:
     Table = None  # type: ignore
     Text = None  # type: ignore
     _RICH_AVAILABLE = False
+
+configure_stdio()
 
 _LOG_LEVEL_NAME = str(os.getenv("WEB_ROOTER_LOG_LEVEL", "ERROR")).strip().upper() or "ERROR"
 _LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.WARNING)
@@ -318,6 +321,7 @@ class WebRooterCLI:
         is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
         use_rich = _RICH_AVAILABLE and not rich_disabled and (force_rich or is_tty)
         self._console = Console() if use_rich else None
+        self._unicode_output = stream_supports_utf8(sys.stdout)
         self._theme = {
             "info": "bold cyan",
             "success": "bold green",
@@ -336,6 +340,24 @@ class WebRooterCLI:
                 self._console.print(text)
         else:
             print(text)
+
+    def _cookie_symbol(self, kind: str) -> str:
+        unicode_map = {
+            "ok": "✓",
+            "error": "✗",
+            "bullet": "•",
+            "arrow": "→",
+            "box": "═",
+        }
+        ascii_map = {
+            "ok": "OK",
+            "error": "X",
+            "bullet": "-",
+            "arrow": "->",
+            "box": "-",
+        }
+        mapping = unicode_map if self._unicode_output else ascii_map
+        return mapping.get(kind, kind)
 
     def _print_usage(self, text: str) -> None:
         self._print_line(text, level="usage")
@@ -3080,7 +3102,7 @@ class WebRooterCLI:
         self._print_line("[1/4] 检测可用浏览器...")
         browser_status = self._get_browser_display_names(available_browsers)
         for name, available in browser_status:
-            icon = "✓" if available else "✗"
+            icon = self._cookie_symbol("ok") if available else self._cookie_symbol("error")
             status = "" if available else " (未安装)"
             self._print_line(f"  {icon} {name}{status}")
         
@@ -3115,9 +3137,10 @@ class WebRooterCLI:
         
         # 显示检测到的平台
         for p in platforms:
-            icon = "✓"
+            icon = self._cookie_symbol("ok")
             cookie_info = f", {p['cookies_count']} cookies" if p['cookies_count'] > 0 else ""
-            self._print_line(f"  {icon} {p['display_name']} ({p['domain']}) - {p['browser']}{cookie_info}")
+            joiner = self._cookie_symbol("arrow")
+            self._print_line(f"  {icon} {p['display_name']} ({p['domain']}) {joiner} {p['browser']}{cookie_info}")
         
         # Step 3: 用户选择
         self._print_line("")
@@ -3200,28 +3223,31 @@ class WebRooterCLI:
         self._print_line("")
         for r in results:
             if r['success']:
-                self._print_line(f"  ✓ {r['platform']}: 提取 {r['cookies_count']} 个 Cookie → 已保存", level="success")
+                ok = self._cookie_symbol("ok")
+                arrow = self._cookie_symbol("arrow")
+                self._print_line(f"  {ok} {r['platform']}: 提取 {r['cookies_count']} 个 Cookie {arrow} 已保存", level="success")
             else:
-                self._print_line(f"  ✗ {r['platform']}: 失败 - {r.get('error', 'unknown')}", level="error")
+                error = self._cookie_symbol("error")
+                self._print_line(f"  {error} {r['platform']}: 失败 - {r.get('error', 'unknown')}", level="error")
         
         # 成功汇总
         successful = [r for r in results if r['success']]
         
         if successful:
             self._print_line("")
-            self._print_line("═" * 58)
+            self._print_line(self._cookie_symbol("box") * 58)
             self._print_line("配置完成！", level="success")
             self._print_line("")
             self._print_line("已配置的平台:")
             for r in successful:
-                self._print_line(f"  • {r['platform']}")
+                self._print_line(f"  {self._cookie_symbol('bullet')} {r['platform']}")
             self._print_line("")
             self._print_line("使用方法:")
             for r in successful:
                 platform_id = next((p['id'] for p in selected_platforms if p['display_name'] == r['platform']), '')
                 if platform_id:
                     self._print_line(f"  wr social \"关键词\" --platform={platform_id}")
-            self._print_line("═" * 58)
+            self._print_line(self._cookie_symbol("box") * 58)
             
             return {
                 "success": True,
@@ -3239,13 +3265,13 @@ class WebRooterCLI:
     
     def _print_cookie_header(self) -> None:
         """打印 Cookie 配置向导标题"""
-        if self._console and Panel is not None:
+        if self._console and Panel is not None and self._unicode_output:
             self._console.print(Panel.fit("Web-Rooter Cookie 智能配置", border_style="cyan"))
         else:
             print("")
-            print("╔" + "═" * 56 + "╗")
-            print("║" + " " * 13 + "Web-Rooter Cookie 智能配置" + " " * 13 + "║")
-            print("╚" + "═" * 56 + "╝")
+            print("+" + "-" * 56 + "+")
+            print("|" + " " * 13 + "Web-Rooter Cookie Smart Setup" + " " * 13 + "|")
+            print("+" + "-" * 56 + "+")
     
     def _get_browser_display_names(self, available: List[str]) -> List[Tuple[str, bool]]:
         """获取浏览器显示名称和可用状态"""
@@ -3388,6 +3414,8 @@ class WebRooterCLI:
                         [str(candidate), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=5,
                     )
                     if probe.returncode != 0:
@@ -3449,6 +3477,8 @@ class WebRooterCLI:
                     [sys.executable, "-m", "playwright", "--version"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=8,
                 )
                 if probe.returncode == 0:

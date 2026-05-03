@@ -44,3 +44,16 @@ class CLIOutputFormatTests(unittest.TestCase):
         self.assertEqual(parsed.get("success"), True)
         self.assertTrue(parsed.get("truncated"))
         self.assertEqual(parsed.get("output_limit_chars"), 600)
+
+    def test_cookie_header_falls_back_to_ascii_without_unicode_console(self) -> None:
+        cli = WebRooterCLI()
+        cli._unicode_output = False
+
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            cli._print_cookie_header()
+
+        text = stream.getvalue()
+        self.assertIn("Web-Rooter Cookie Smart Setup", text)
+        self.assertNotIn("╔", text)
+        self.assertNotIn("═", text)

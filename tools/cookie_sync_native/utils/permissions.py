@@ -72,6 +72,8 @@ def show_permission_dialog() -> bool:
             ["osascript", "-e", apple_script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30
         )
         return "去设置" in result.stdout
@@ -143,6 +145,9 @@ def request_full_disk_access() -> bool:
             subprocess.run(
                 ["osascript", "-e", restart_prompt],
                 capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30
             )
         except Exception:
@@ -214,6 +219,8 @@ def pick_safari_cookie_via_dialog() -> Path:
             ["osascript", "-e", apple_script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60
         )
         

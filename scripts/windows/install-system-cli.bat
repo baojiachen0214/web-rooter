@@ -1,5 +1,7 @@
 @echo off
 chcp 65001 >nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
 setlocal enabledelayedexpansion
 
 set NO_PAUSE=0
@@ -59,6 +61,8 @@ set WR_SCRIPT=%USER_BIN_DIR%\wr.bat
 (
 echo @echo off
 echo chcp 65001 ^>nul
+echo set PYTHONUTF8=1
+echo set PYTHONIOENCODING=utf-8
 echo "%PYTHON_PATH%" "%MAIN_PY%" %%*
 ) > "%WR_SCRIPT%"
 
